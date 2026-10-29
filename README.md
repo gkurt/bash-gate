@@ -83,6 +83,8 @@ bun run checks   # tsc, then bun test
   variables, substitutions in odd places, wrappers, strings run as code, functions, aliases, `hash -p`, git refspecs
   and config.
 - `test/analyze.test.ts`: word resolution, option parsing, shapes, spans and state.
+- `test/metamorphic.test.ts`: generated chains of equivalent rewrites of denied and asked commands, plus rewrites that
+  hide values, checked under strict and non-strict policies. Set `METAMORPHIC_RUNS` to change the number of cases.
 - `test/bash.test.ts`: runs scripts in real Bash with a `PATH` of logging stubs. Every program that ran must be one
   the analysis predicted, with those arguments. This is the check that keeps the analysis honest. Extend it before
   trusting a new construct.

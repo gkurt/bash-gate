@@ -74,6 +74,11 @@ describe('invocations', () => {
     expect(values(echo.argv)).toEqual(['echo', '<variable>', '2']);
   });
 
+  test('a recursive function emits a finding instead of silently stopping', () => {
+    const analysis = analyze('f() { f; }; f');
+    expect(analysis.findings.map((finding) => finding.kind)).toContain('too-deep');
+  });
+
   test('a pipeline runs in subshells: assignments in it do not last', () => {
     const echo = analyze('x=1; echo | x=2; echo $x').invocations.at(-1)!;
     expect(values(echo.argv)).toEqual(['echo', '1']);

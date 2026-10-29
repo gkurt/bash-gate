@@ -22,6 +22,9 @@ const scripts = [
   'shopt -s expand_aliases\nalias l="ls -la"\nl x',
   'shopt -s expand_aliases; alias l="ls -la"; l x; ls z',
   'eval "cat a; ls b"',
+  `f() { eval 'f() { cat redefined; }; f'; }; f`,
+  `exec /bin/bash -c "eval 'cat nested; ls child'"`,
+  `f() { cat exported; }; export -f f; exec /bin/bash -c f`,
   "trap 'rm x' EXIT; ls",
   'cat $(ls x) <(sort y)',
   'for f in a b; do cat "$f"; done',
@@ -75,7 +78,7 @@ describe.skipIf(!bash)('against bash', () => {
       Bun.spawnSync([bash!, '--noprofile', '--norc', 'script.sh'], { cwd: dir, env: { PATH: bin, SHELL_GATE_LOGS: logs } });
       const ran = readdirSync(logs).map((file) => readFileSync(join(logs, file), 'utf8').split('\x1f'));
       expect(ran.length).toBeGreaterThan(0);
-      const predicted = analyze(script).invocations.filter((invocation) => invocation.kind === 'external' && !invocation.via.length);
+      const predicted = analyze(script).invocations.filter((invocation) => invocation.kind === 'external' && invocation.via.every((program) => program === 'bash'));
       const missed = ran.filter((argv) => !predicted.some((invocation) => covers(invocation, argv)));
       expect(missed.map((argv) => argv.join(' '))).toEqual([]);
     });

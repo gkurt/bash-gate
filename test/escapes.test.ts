@@ -45,6 +45,8 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['sudo -u root -- rm -rf /', 'deny', 'sudo with options and --'],
   ['env FOO=1 rm -rf /', 'deny', 'env with an assignment'],
   ['sudo env FOO=1 bash -c "rm -rf /"', 'deny', 'wrappers stacked, then bash -c'],
+  [`env bash -c "eval 'rm -rf /'"`, 'deny', 'a wrapper followed by child-shell builtins'],
+  [`exec /bin/bash -c "eval 'rm -rf /'"`, 'deny', 'exec followed by child-shell builtins'],
   ['timeout 5 rm -rf /', 'deny', 'timeout skips its duration'],
   ["env -S 'rm -rf /'", 'deny', 'env -S splits a string into a command line'],
   ['nice -n 5 nohup rm -rf /', 'deny', 'nice and nohup'],
@@ -74,6 +76,9 @@ const cases: [source: string, decision: Decision, what: string][] = [
 
   // Shell state: functions, aliases, hash, enable, variables.
   ['ls() { rm -rf /; }; ls', 'deny', 'a function shadowing a command'],
+  [`f() { eval 'f() { rm -rf /; }; f'; }; f`, 'deny', 'a redefined function called while its old body runs'],
+  ['f() { f; }; f', 'ask', 'recursion the analysis cannot follow further'],
+  [`f() { rm -rf /; }; export -f f; env bash -c f`, 'deny', 'an exported function called in a wrapped child shell'],
   ['ls() { rm -rf /; }; command ls', 'allow', 'command skips functions'],
   ['ls() { rm -rf /; }; env ls', 'allow', 'env runs the program, not the function'],
   ["alias ls='rm -rf /'; ls", 'allow', 'aliases are off in a non-interactive shell'],
@@ -98,6 +103,7 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['git push origin :main', 'deny', 'deleting a remote branch through a : refspec'],
   ['git -C /tmp/x push -f', 'deny', 'git -C before the subcommand'],
   ['git -c core.pager="rm -rf /" log', 'deny', 'git config that runs code'],
+  [`env git -c "core.pager=eval 'rm -rf /'" log`, 'deny', 'git config builtins reached through a wrapper'],
   ["git -c alias.x='!rm -rf /' x", 'deny', 'a shell alias in git config'],
   ["git -c core.hooksPath=/tmp/h commit -m x", 'ask', 'git config that changes which hooks run'],
   ["git config core.pager 'rm -rf /'", 'deny', 'setting a git config that runs code later'],

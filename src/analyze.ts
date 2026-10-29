@@ -59,8 +59,8 @@ interface Context {
   nesting: string[];
   via: string[];
   depth: number;
-  /** Functions being called, so recursion stops. */
-  calls: string[];
+  /** Function bodies being called, so recursion stops even when a name is redefined. */
+  calls: FunctionNode[];
   /** Reached through `env`, `sudo`, `xargs`, `exec`…: no aliases, functions or builtins, only programs. */
   externalOnly: boolean;
   /** Files a compound command's redirections write and read, for each command in it. */
@@ -293,11 +293,15 @@ class Walker {
     const name = head.value;
     if (call.aliasable && !ctx.externalOnly && state.expandAliases !== false && this.alias(name, argv, state, ctx, call)) return;
     const fn = ctx.externalOnly || call.noFunctions ? undefined : state.functions.get(name);
-    if (fn && ctx.calls.includes(name)) return;
     if (fn) {
       this.emit(ctx, call, name, 'function', argv, emptyParsed());
-      const bodyCtx = { ...ctx, calls: [...ctx.calls, name] };
-      const outcomes = fn.bodies.map((body) => this.branch(state, bodyCtx, (s, c) => this.node(body.body, s, c)));
+      const outcomes = fn.bodies.map((body) => {
+        if (ctx.calls.includes(body)) {
+          this.finding(ctx, 'too-deep', `Recursive function \`${name}\` cannot be followed further`, call.span);
+          return clone(state);
+        }
+        return this.branch(state, { ...ctx, calls: [...ctx.calls, body] }, (s, c) => this.node(body.body, s, c));
+      });
       settle(state, fn.maybeUndefined ? [...outcomes, clone(state)] : outcomes);
       if (!fn.maybeUndefined) return;
     }
@@ -564,7 +568,7 @@ class Walker {
       }
       const remote = parsed.effects.has('exec:remote');
       const shell = remote ? freshState(undefined) : childState(state, cwd);
-      this.code(script.value, shell, { ...ctx, via: [...ctx.via, program] }, call, remote ? `${program} (remote)` : `${program} -c`);
+      this.code(script.value, shell, { ...ctx, via: [...ctx.via, program], externalOnly: false, calls: [] }, call, remote ? `${program} (remote)` : `${program} -c`);
     }
   }
 
@@ -577,7 +581,7 @@ class Walker {
     const risk = gitConfig(key, value);
     if (!risk) return;
     this.finding(ctx, 'exec-config', `git config \`${key}\` changes what git runs`, call.span);
-    if (risk.script !== undefined) this.code(risk.script, childState(state, state.cwd), { ...ctx, via: [...ctx.via, 'git'] }, call, `git ${key}`, true);
+    if (risk.script !== undefined) this.code(risk.script, childState(state, state.cwd), { ...ctx, via: [...ctx.via, 'git'], externalOnly: false, calls: [] }, call, `git ${key}`, true);
   }
 
   /** Code in a string (`bash -c`, `eval`, `trap`, an alias): parsed and walked in `state`. */

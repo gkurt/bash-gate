@@ -47,8 +47,10 @@ anywhere, nested code included, is a finding.
 **S4. Rewrites don't change the decision.** If two command lines run the same processes in a clean Bash, they're
 decided the same way, or the rewrite is decided more strictly. Examples: quoting, escapes, braces, variables,
 wrappers, `eval`, `bash -c`, functions, aliases, `hash -p`. A rewrite that hides a value from static analysis (a
-substitution, an unset variable) may turn `deny` into `ask`, never into `allow`. S4 follows from S1 and S2 if both
-hold, and is tested directly because it's where bypasses show up.
+substitution, an unset variable, or exceeding the analysis depth limit) may turn `deny` into `ask`, never into
+`allow` under the default finding decisions. The depth limit necessarily loses information even when the code is
+literal; a `too-deep` finding asks by default. S1 and S2 support S4 but don't by themselves guarantee that a
+finding retains a known denial, so S4 is also tested directly where bypasses show up.
 
 **S5. Fail closed.** No input makes the analysis or the policy throw. A syntax node the analysis doesn't know (a
 newer parser) becomes a finding. The parser version is pinned.
