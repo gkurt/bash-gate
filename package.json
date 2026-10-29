@@ -1,0 +1,23 @@
+{
+  "name": "shell-gate",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Static analysis of shell commands: what they run, with which options and effects, and whether a policy allows it.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc",
+    "checks": "tsc && bun test"
+  },
+  "dependencies": {
+    "unbash": "^6.0.1"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.3",
+    "typescript": "^7.0.2"
+  }
+}
