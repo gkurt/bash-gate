@@ -200,6 +200,11 @@ class Walker {
         return;
       case 'Coproc':
         return this.node(node.body, clone(state), ctx);
+      default: {
+        // A node this version doesn't know (a newer parser): what it runs can't be followed.
+        const unknown = node satisfies never as { type: string; pos: number; end: number };
+        this.finding(ctx, 'unknown-syntax', `Syntax the analysis doesn't know: ${unknown.type}`, this.span(ctx, unknown.pos, unknown.end));
+      }
     }
   }
 

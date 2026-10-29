@@ -6,19 +6,30 @@ import type { Analysis, Arg, Decision, Effect, Finding, FindingKind, Invocation 
 
 /**
  * A rule matches an invocation when all its conditions do. Each condition is three-valued: it matches, it doesn't, or
- * it may (a dynamic word could make it match). Deny wins over ask, and ask over allow, whatever the order.
+ * it may (a dynamic word could make it match).
+ *
+ * Conditions read the cautious way for the rule's decision. A deny or ask rule matches when *any* option, positional,
+ * write or effect fits, so having more never escapes it. An allow rule matches only when *all* of them fit, so having
+ * more never earns it.
+ *
+ * A deny rule that matches denies. Deny rules that may match, and ask rules, set a floor (ask, or deny when strict);
+ * allow rules and the default decide above it. So order doesn't matter, and nothing an invocation adds or hides
+ * lowers its decision (S2 in THREAT_MODEL.md).
  */
 export interface Rule {
   decision: Decision;
   /** The program, then subcommands, space-separated, alternatives after `|`, `*` for any: `'git push'`, `'npm run|test'`. */
   command?: string;
-  /** Any of these options is given. Spellings are read with the program's spec, so `-f` finds `--force`. */
+  /**
+   * Deny and ask: any of these options is given. Allow: every option given is one of these. Spellings are read with
+   * the program's spec, so `-f` finds `--force`.
+   */
   options?: string[];
-  /** Any positional matches any of these globs; a path also matches as resolved against where it runs. */
+  /** Deny and ask: any positional matches any glob. Allow: every one does. Paths also match as resolved against where it runs. */
   args?: string[];
-  /** Any file it writes (redirections included) matches any of these globs. */
+  /** Like `args`, for the files it writes, redirections included. */
   writes?: string[];
-  /** It has any of these effects. */
+  /** Deny and ask: it has any of these effects. Allow: it has no others. */
   effects?: Effect[];
   reason?: string;
 }
@@ -89,34 +100,40 @@ type Tri = 0 | 1 | 2;
 
 function decide(invocation: Invocation, policy: Policy): Reason {
   const base = { span: invocation.span, invocation };
-  const matches = policy.rules.map((rule) => [rule, match(rule, invocation)] as const).filter(([, tri]) => tri > 0);
+  const matches = policy.rules.map((rule) => [rule, matchRule(rule, invocation)] as const).filter(([, tri]) => tri > 0);
   const hit = (decision: Decision, tri: Tri) => matches.find(([rule, t]) => rule.decision === decision && t === tri)?.[0];
   const denied = hit('deny', 2);
   if (denied) return { ...base, decision: 'deny', certain: true, rule: denied, message: denied.reason ?? `Denied: ${describe(denied)}` };
-  const maybeDenied = hit('deny', 1);
-  if (maybeDenied) {
-    const message = `May match ${describe(maybeDenied)}${maybeDenied.reason ? ` (${maybeDenied.reason})` : ''}: arguments are only known at run time`;
-    return { ...base, decision: policy.strict ? 'deny' : 'ask', certain: false, rule: maybeDenied, message };
-  }
-  const asked = hit('ask', 2) ?? hit('ask', 1);
-  if (asked) return { ...base, decision: 'ask', certain: match(asked, invocation) === 2, rule: asked, message: asked.reason ?? `Asks: ${describe(asked)}` };
   const trusted = !invocation.path || isSystemPath(invocation.path);
   const allowed = trusted ? hit('allow', 2) : undefined;
-  if (allowed) return { ...base, decision: 'allow', certain: true, rule: allowed, message: `Allowed: ${describe(allowed)}` };
   const why = trusted ? `No rule allows \`${invocation.shape}\`` : `\`${invocation.path}\` isn't a system program`;
-  return { ...base, decision: policy.default ?? 'ask', certain: true, message: why };
+  const above: Reason = allowed
+    ? { ...base, decision: 'allow', certain: true, rule: allowed, message: `Allowed: ${describe(allowed)}` }
+    : { ...base, decision: policy.default ?? 'ask', certain: true, message: why };
+  const maybeDenied = hit('deny', 1);
+  const asked = hit('ask', 2) ?? hit('ask', 1);
+  let floor: Reason | undefined;
+  if (maybeDenied) {
+    const message = `May match ${describe(maybeDenied)}${maybeDenied.reason ? ` (${maybeDenied.reason})` : ''}: arguments are only known at run time`;
+    floor = { ...base, decision: policy.strict ? 'deny' : 'ask', certain: false, rule: maybeDenied, message };
+  } else if (asked) {
+    floor = { ...base, decision: 'ask', certain: matchRule(asked, invocation) === 2, rule: asked, message: asked.reason ?? `Asks: ${describe(asked)}` };
+  }
+  return floor && severity[floor.decision] >= severity[above.decision] ? floor : above;
 }
 
-function match(rule: Rule, invocation: Invocation): Tri {
+/** How `rule` matches `invocation`: 0 no, 1 maybe, 2 yes. Exported for the property tests. */
+export function matchRule(rule: Rule, invocation: Invocation): Tri {
+  const all = rule.decision === 'allow';
   let result: Tri = 2;
   const and = (tri: Tri) => {
     if (tri < result) result = tri;
   };
   if (rule.command !== undefined) and(matchCommand(rule.command, invocation));
-  if (rule.options && result) and(matchOptions(rule.options, invocation));
-  if (rule.args && result) and(matchPaths(rule.args, invocation.positionals, invocation));
-  if (rule.writes && result) and(matchPaths(rule.writes, invocation.writes, invocation));
-  if (rule.effects && result) and(matchEffects(rule.effects, invocation));
+  if (rule.options && result) and(matchOptions(rule.options, invocation, all));
+  if (rule.args && result) and(matchPaths(rule.args, invocation.positionals, invocation, all));
+  if (rule.writes && result) and(matchPaths(rule.writes, invocation.writes, invocation, all));
+  if (rule.effects && result) and(matchEffects(rule.effects, invocation, all));
   return result;
 }
 
@@ -138,40 +155,56 @@ function matchCommand(pattern: string, invocation: Invocation): Tri {
   return result;
 }
 
-function matchOptions(names: string[], invocation: Invocation): Tri {
+/** Any of `names` is given (`all`: every option given is one of `names`). */
+function matchOptions(names: string[], invocation: Invocation, all: boolean): Tri {
   const root = invocation.program === null ? undefined : specFor(invocation.program);
   const leaf = specAt(root, invocation.subcommands);
-  const canonical = (name: string) => {
-    const atLeaf = canonicalOption(leaf, name);
-    return atLeaf !== name ? atLeaf : canonicalOption(root, name);
-  };
-  if (names.some((name) => invocation.options[canonical(name)])) return 2;
-  return invocation.maybeOptions || invocation.program === null ? 1 : 0;
+  const canonical = new Set(
+    names.map((name) => {
+      const atLeaf = canonicalOption(leaf, name);
+      return atLeaf !== name ? atLeaf : canonicalOption(root, name);
+    }),
+  );
+  const unsure = invocation.maybeOptions || invocation.program === null;
+  if (all) {
+    if (Object.keys(invocation.options).some((name) => !canonical.has(name))) return 0;
+    return unsure ? 1 : 2;
+  }
+  if (Object.keys(invocation.options).some((name) => canonical.has(name))) return 2;
+  return unsure ? 1 : 0;
 }
 
-function matchEffects(effects: Effect[], invocation: Invocation): Tri {
+/** It has any of `effects` (`all`: it has no others). A dynamic option may be one with effects of its own. */
+function matchEffects(effects: Effect[], invocation: Invocation, all: boolean): Tri {
+  const root = invocation.program === null ? undefined : specFor(invocation.program);
+  const possible = invocation.maybeOptions ? [root, specAt(root, invocation.subcommands)].flatMap((spec) => spec?.options?.flatMap((option) => option.effects ?? []) ?? []) : [];
+  if (all) {
+    if (invocation.effects.some((effect) => !effects.includes(effect))) return 0;
+    return invocation.program === null || possible.some((effect) => !effects.includes(effect)) ? 1 : 2;
+  }
   if (effects.some((effect) => invocation.effects.includes(effect))) return 2;
-  if (invocation.program === null) return 1;
-  if (!invocation.maybeOptions) return 0;
-  const root = specFor(invocation.program);
-  const levels = [root, specAt(root, invocation.subcommands)];
-  const possible = levels.flatMap((spec) => spec?.options?.flatMap((option) => option.effects ?? []) ?? []);
-  return effects.some((effect) => possible.includes(effect)) ? 1 : 0;
+  return invocation.program === null || effects.some((effect) => possible.includes(effect)) ? 1 : 0;
 }
 
-/** Whether any of `args` matches any of `globs`, as written or as a path resolved against where the invocation runs. */
-function matchPaths(globs: string[], args: Arg[], invocation: Invocation): Tri {
+/**
+ * Whether any of `args` matches any of `globs` (`all`: every one does), as written or as a path resolved against
+ * where the invocation runs. A path that can't be resolved may be anywhere.
+ */
+function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: boolean): Tri {
   const patterns = globs.map(globToRegExp);
-  let result: Tri = 0;
+  const absolute = globs.some((glob) => glob.startsWith('/') || glob.startsWith('~'));
+  let result: Tri = all ? 2 : 0;
   for (const arg of args) {
     if (arg.kind === 'dynamic') {
       result = 1;
       continue;
     }
     const resolved = resolvePath(invocation.cwd, arg.value);
-    if (patterns.some((pattern) => pattern.test(arg.value) || (resolved !== undefined && pattern.test(resolved)))) return 2;
+    const matches = patterns.some((pattern) => pattern.test(arg.value) || (resolved !== undefined && pattern.test(resolved)));
+    if (all && !matches) return 0;
+    if (!all && matches) return 2;
     const outside = resolved === undefined || resolved === '..' || resolved.startsWith('../');
-    if (outside && globs.some((glob) => glob.startsWith('/') || glob.startsWith('~'))) result = 1;
+    if (!all && outside && absolute) result = 1;
   }
   return result;
 }

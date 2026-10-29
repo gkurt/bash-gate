@@ -77,7 +77,8 @@ export type FindingKind =
   | 'loads-code'
   | 'sensitive-variable'
   | 'exec-config'
-  | 'too-deep';
+  | 'too-deep'
+  | 'unknown-syntax';
 
 /** Something about the script itself, not one invocation, that a gate should know: what the analysis couldn't follow. */
 export interface Finding {

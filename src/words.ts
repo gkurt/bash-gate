@@ -123,6 +123,11 @@ function resolvePart(part: WordPart | DoubleQuotedChild, lookup: Lookup, quoted:
       return [[{ kind: 'dynamic', reason: 'glob', split: true }]];
     case 'BraceExpansion':
       return expandBraces(part.text, lookup);
+    default:
+      // A part this version doesn't know (a newer parser): its value can't be known. Substitutions inside it are
+      // still found, by the generic walk in the analysis.
+      part satisfies never;
+      return [[{ kind: 'dynamic', reason: 'substitution', split: true }]];
   }
 }
 
