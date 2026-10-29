@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "shell-gate",
+      "name": "bash-gate",
       "dependencies": {
         "unbash": "6.0.1",
       },

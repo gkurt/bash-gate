@@ -1,4 +1,4 @@
-# shell-gate
+# bash-gate
 
 Static analysis of Bash commands: every program a command line may run, with its subcommands, options, paths and
 effects, and a policy that allows, asks about or denies it. Built for gating the commands an AI agent runs, but the
@@ -7,7 +7,7 @@ analysis stands on its own: highlighting, auditing, explaining commands.
 Prototype. Parsing is [unbash](https://github.com/webpro-nl/unbash); everything else is here.
 
 ```ts
-import { check, recommended } from 'shell-gate';
+import { check, recommended } from 'bash-gate';
 
 check('git status && rm -rf /', recommended).decision; // 'deny'
 check('sudo env FOO=1 bash -c "rm -rf /"', recommended).decision; // 'deny'
@@ -46,7 +46,7 @@ analyze('sudo -u root rm -rf "$dir"').invocations.map((i) => [i.shape, i.via, i.
 ## Rules
 
 ```ts
-import { allow, ask, deny, type Policy } from 'shell-gate';
+import { allow, ask, deny, type Policy } from 'bash-gate';
 
 const policy: Policy = {
   default: 'ask',

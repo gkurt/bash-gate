@@ -1,6 +1,6 @@
 # Threat model
 
-What shell-gate promises, under which assumptions, and how each promise is checked. A change that weakens one of
+What bash-gate promises, under which assumptions, and how each promise is checked. A change that weakens one of
 these needs a reason written here.
 
 ## The setting

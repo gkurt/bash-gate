@@ -57,12 +57,12 @@ function covers(invocation: Invocation, argv: string[]): boolean {
 }
 
 describe.skipIf(!bash)('against bash', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'shell-gate-'));
+  const dir = mkdtempSync(join(tmpdir(), 'bash-gate-'));
   const bin = join(dir, 'bin');
   const logs = join(dir, 'logs');
   mkdirSync(bin);
   // One log per process: substitutions run alongside the command, and their writes would interleave.
-  const stub = `#!/bin/sh\n{ printf '%s' "\${0##*/}"; for a in "$@"; do printf '\\037%s' "$a"; done; } > "$SHELL_GATE_LOGS/$$"\n`;
+  const stub = `#!/bin/sh\n{ printf '%s' "\${0##*/}"; for a in "$@"; do printf '\\037%s' "$a"; done; } > "$BASH_GATE_LOGS/$$"\n`;
   for (const name of stubs) {
     writeFileSync(join(bin, name), stub);
     chmodSync(join(bin, name), 0o755);
@@ -75,7 +75,7 @@ describe.skipIf(!bash)('against bash', () => {
       mkdirSync(logs);
       // From a file: Git Bash's runtime expands braces and globs in the arguments a Windows process gives it.
       writeFileSync(join(dir, 'script.sh'), script);
-      Bun.spawnSync([bash!, '--noprofile', '--norc', 'script.sh'], { cwd: dir, env: { PATH: bin, SHELL_GATE_LOGS: logs } });
+      Bun.spawnSync([bash!, '--noprofile', '--norc', 'script.sh'], { cwd: dir, env: { PATH: bin, BASH_GATE_LOGS: logs } });
       const ran = readdirSync(logs).map((file) => readFileSync(join(logs, file), 'utf8').split('\x1f'));
       expect(ran.length).toBeGreaterThan(0);
       const predicted = analyze(script).invocations.filter((invocation) => invocation.kind === 'external' && invocation.via.every((program) => program === 'bash'));

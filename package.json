@@ -1,8 +1,8 @@
 {
-  "name": "shell-gate",
+  "name": "bash-gate",
   "version": "0.0.0",
   "private": true,
-  "description": "Static analysis of shell commands: what they run, with which options and effects, and whether a policy allows it.",
+  "description": "Static analysis of Bash commands: what they run, with which options and effects, and whether a policy allows it.",
   "license": "MIT",
   "type": "module",
   "exports": {
