@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  checks:
+    # Linux, so test/bash.test.ts checks the analysis against a real Linux Bash.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+      - run: bun i --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run test
+        env:
+          PROPERTY_RUNS: 5000
+      - run: bun run build
+      # The built package, as Node loads it.
+      - run: node --input-type=module -e "import { check, recommended } from './dist/index.js'; if (check('rm -rf /', recommended).decision !== 'deny') process.exit(1);"
+      - run: npm pack --dry-run

@@ -4,7 +4,12 @@ Static analysis of Bash commands: every program a command line may run, with its
 effects, and a policy that allows, asks about or denies it. Built for gating the commands an AI agent runs, but the
 analysis stands on its own: highlighting, auditing, explaining commands.
 
-Prototype. Parsing is [unbash](https://github.com/webpro-nl/unbash); everything else is here.
+Prototype. Parsing is [unbash](https://github.com/webpro-nl/unbash); everything else is here. It runs anywhere
+JavaScript does: no Node APIs, no native code.
+
+```sh
+npm install bash-gate
+```
 
 ```ts
 import { check, recommended } from 'bash-gate';

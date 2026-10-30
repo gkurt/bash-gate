@@ -6,7 +6,11 @@
 bun run test       # All tests, including test/bash.test.ts (skipped without bash)
 bun run typecheck  # tsc (TypeScript 7)
 bun run checks     # Both
+bun run build      # dist/ via tsdown (ESM and .d.ts), what npm gets
 ```
+
+`PROPERTY_RUNS` and `METAMORPHIC_RUNS` set how many cases the generated tests try. CI (`.github/workflows/ci.yml`)
+runs everything on Linux, then builds and loads `dist/` in Node.
 
 ## Structure
 
