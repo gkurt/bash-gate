@@ -21,8 +21,10 @@ Out of scope:
 - **What programs do with their input.** `cat` reading a file, a compiler running build scripts, git reading the
   repository's `.git/config`. Specs say what's known about a program's arguments (`git -c`, `find -exec`). A program
   without a spec, or whose behaviour depends on files, is only as safe as the policy that allows it.
-- **What the filesystem holds.** Globs, symlinks, which files exist, `$HOME`.
-- **Other shells.** zsh, fish, PowerShell, cmd.exe.
+- **What the filesystem holds.** Globs, symlinks, which files exist. `$HOME` too, unless the script sets it or the
+  integration passes it in `env`.
+- **Other shells.** zsh, fish, PowerShell, cmd.exe. Their code run from Bash (`zsh -c`) is never parsed as Bash: it
+  counts as code the analysis can't see into.
 - **Timing and resources.** Fork bombs and `sleep 1e9` are effects of allowed programs.
 
 ## What is promised
@@ -52,8 +54,9 @@ substitution, an unset variable, or exceeding the analysis depth limit) may turn
 literal; a `too-deep` finding asks by default. S1 and S2 support S4 but don't by themselves guarantee that a
 finding retains a known denial, so S4 is also tested directly where bypasses show up.
 
-**S5. Fail closed.** No input makes the analysis or the policy throw. A syntax node the analysis doesn't know (a
-newer parser) becomes a finding. The parser version is pinned.
+**S5. Fail closed.** No input makes the analysis or the policy throw, or run without bound: past a work budget, the
+walk stops with a `too-deep` finding. A syntax node the analysis doesn't know (a newer parser) becomes a finding. The
+parser version is pinned.
 
 ## What is trusted
 
@@ -72,6 +75,7 @@ newer parser) becomes a finding. The parser version is pinned.
 | S3 | Property tests: generated commands with findings or maybe-matches are never allowed | `test/properties.test.ts` |
 | S4 | Metamorphic tests: chains of generated rewrites of denied and asked commands | `test/metamorphic.test.ts` |
 | S5 | Property tests: arbitrary token soup never throws | `test/properties.test.ts` |
+| S5 | Deeply nested loops stay cheap and below the budget | `test/analyze.test.ts` |
 | S5 | Exhaustive `switch`es with a fail-closed `default` | `src/analyze.ts` |
 
 Still to come: differential fuzzing in a Linux container with `strace` as the oracle, an LLM red team judged by that

@@ -35,12 +35,14 @@ analyze('sudo -u root rm -rf "$dir"').invocations.map((i) => [i.shape, i.via, i.
 2. **Resolve words** (`src/words.ts`): quotes and escapes removed, braces expanded, known variables substituted, unquoted
    expansions split. A word is either static strings or one dynamic argument that says why (`variable`, `glob`,
    `substitution`…) and whether it may become several words.
-3. **Walk with shell state** (`src/analyze.ts`): variables (constant propagation, joined across branches, made dynamic by
-   loops), functions, aliases (only with `expand_aliases`, and only from the next line), `hash -p`, `enable -n/-f`,
-   `cd`, exports into child shells. Subshells, pipelines and substitutions get copies of the state.
+3. **Walk with shell state** (`src/analyze.ts`): variables (constant propagation, joined across branches, loops walked
+   until they settle), functions, aliases, `hash -p`, `enable -n/-f`, `cd`, exports into child shells. Aliases expand
+   as Bash parses: with `expand_aliases`, POSIX mode, `sh` or an interactive shell, from the next line, and in a
+   function body as they were when it was defined. Subshells, pipelines and substitutions get copies of the state.
 4. **Dispatch** as Bash does: alias, then function, then builtin, then program. `command`, `builtin` and `exec` change
-   that order. `eval`, `trap`, `mapfile -C`, `compgen -C`, `bash -c`, `ssh host cmd`, `watch`, git aliases and git config
-   commands parse their strings and walk them as code.
+   that order. `eval`, `trap`, `mapfile -C`, `compgen -C`, `bash -c`, `ssh host cmd`, `watch`, git aliases, git config
+   commands, prompt strings (`PS4`) and `PROMPT_COMMAND` parse their strings and walk them as code. Code for other
+   shells (`zsh -c`, `fish -c`, `pwsh`) is never parsed as Bash: it's code the analysis can't see into.
 5. **Read argv with a spec** (`src/specs.ts`, `src/argv.ts`): options under canonical names (`-f`, `--forc`, `-fu` →
    `--force`), clusters, attached values, `--`, POSIX vs GNU ordering, subcommands, paths read and written, and the
    command lines that wrappers run (`sudo`, `env`, `timeout`, `xargs`, `find -exec`, `git bisect run`…).
@@ -68,6 +70,8 @@ const policy: Policy = {
 - `command`: the program, then subcommands, alternatives after `|`, and `*` for any.
 - `options`: any of these options is given, spelled however the spec allows.
 - `args` and `writes`: globs matched against paths as written and as resolved against the tracked working directory.
+  When `$HOME` is known (set in the script, or given in `env`), `~` globs match absolute paths under it, and the other
+  way round. Another user's home (`~root`) may be anywhere.
 - `effects`: `fs:read`, `fs:write`, `fs:delete`, `network`, `privilege`, `exec:arbitrary`, `exec:project`, `exec:file`,
   `exec:remote`, `shell-state`.
 - An allow rule never applies to a program given by a non-system path (`./ls`).
@@ -84,9 +88,9 @@ the working directory. It does not ask about `exec:project` (`npm test`, `make`,
 bun run checks   # tsc, then bun test
 ```
 
-- `test/escapes.test.ts`: about 100 commands and the decision `recommended` must reach. They cover quoting, braces,
-  variables, substitutions in odd places, wrappers, strings run as code, functions, aliases, `hash -p`, git refspecs
-  and config.
+- `test/escapes.test.ts`: about 130 commands and the decision `recommended` must reach. They cover quoting, braces,
+  variables, substitutions in odd places, wrappers, strings run as code, functions, aliases, `hash -p`, loops, prompt
+  strings, `~` paths, other shells, git refspecs and config.
 - `test/analyze.test.ts`: word resolution, option parsing, shapes, spans and state.
 - `test/metamorphic.test.ts`: generated chains of equivalent rewrites of denied and asked commands, plus rewrites that
   hide values, checked under strict and non-strict policies. Set `METAMORPHIC_RUNS` to change the number of cases.
@@ -96,16 +100,17 @@ bun run checks   # tsc, then bun test
 
 ## Known gaps
 
-- **Bash only.** zsh, fish, PowerShell and cmd.exe need adapters that produce the same invocations.
+- **Bash only.** zsh, fish, PowerShell and cmd.exe need adapters that produce the same invocations. Until then, their
+  code run from Bash (`zsh -c`, `pwsh -Command`) counts as `exec:arbitrary`.
 - **Specs cover a few dozen programs.** Programs without one get their options guessed. Programs that run code
   through their arguments aren't described yet: `sed`'s `e`/`w`, `awk`'s `system()`, `tar --to-command`,
   `rsync -e`, `vim -c`, `less`, `zip -TT` and the rest of [GTFOBins](https://gtfobins.github.io/).
 - **Project code isn't analysed.** `npm test`, `make` and git hooks are flagged `exec:project`. A repository's
   `.git/config` can make any git command run code (`core.fsmonitor`); only `-c` and `git config` entries are seen.
-- `PS4` and `PROMPT_COMMAND` values aren't parsed as code. Setting them is only a `sensitive-variable` finding.
+- **Code that runs later is walked as of when it's set.** Trap actions, prompt strings and `PROMPT_COMMAND` see the
+  variables, functions and aliases of the moment they're defined, not of when they run.
 - Arithmetic evaluates variables' values as expressions, so `(( x ))` runs `$(…)` in `x`'s value. That's followed
   only for literal subscripts.
-- Aliases ending in a space (which expand the next word too) aren't handled. Line numbers for aliases inside `eval`
-  strings are approximate.
-- Paths: `~` isn't expanded to a real home, and symlinks aren't known.
-- A loop body is walked twice, so deeply nested loops cost exponentially more (depth is bounded).
+- An aliased command with a here-document is parsed again without the document's body: a parse error, which asks.
+- Paths: `~` is only a real directory when `$HOME` is known, and symlinks aren't known.
+- The walk has a work budget. A script past it gets a `too-deep` finding rather than a full analysis.

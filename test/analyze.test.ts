@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { analyze, check, deny, type Arg } from '../src/index.ts';
+import { analyze, check, deny, recommended, type Arg } from '../src/index.ts';
 
 const values = (args: Arg[]) => args.map((arg) => (arg.kind === 'static' ? arg.value : `<${arg.reason}>`));
 const only = (source: string) => {
@@ -92,6 +92,22 @@ describe('invocations', () => {
     expect(analyze('cd "$d"; ls').invocations.at(-1)!.cwd).toBeUndefined();
   });
 
+  test('a loop is walked until it settles, so a value three iterations away is seen', () => {
+    const analysis = analyze('x=ls; y=ls; z=ls; for i in 1 2 3; do $z /; z=$y; y=$x; x=rm; done');
+    expect(analysis.invocations.some((invocation) => invocation.program === null)).toBe(true);
+  });
+
+  test('deeply nested loops cost little more than shallow ones', () => {
+    const plain = 'for a in 1 2; do '.repeat(40) + 'ls $a; ' + 'done; '.repeat(40);
+    const reassigning = Array.from({ length: 40 }, (_, i) => `y${i}=ls; for a in 1; do $y${i}; y${i}=rm; cd d${i}; `).join('') + 'done; '.repeat(40);
+    for (const source of [plain, reassigning]) {
+      const start = performance.now();
+      const analysis = analyze(source);
+      expect(performance.now() - start).toBeLessThan(1000);
+      expect(analysis.findings.map((finding) => finding.kind)).not.toContain('too-deep');
+    }
+  });
+
   test('xargs appends arguments, so its command may have any option', () => {
     const rm = analyze('xargs rm').invocations[1]!;
     expect(rm.open).toBe(true);
@@ -114,6 +130,15 @@ describe('policy', () => {
 
   test('rule options use the spec spelling at the subcommand', () => {
     expect(check('git branch -D x', { rules: [deny('git branch', { options: ['-d'] })], default: 'allow' }).decision).toBe('deny');
+  });
+
+  test('~ is $HOME when it is known, so ~ globs match absolute paths and the other way round', () => {
+    const env = { HOME: '/home/me' };
+    expect(check('rm -rf /home/me', recommended, { env }).decision).toBe('deny');
+    expect(check('rm -rf ~/', recommended, { env }).decision).toBe('deny');
+    expect(check('cd && rm -rf .', recommended, { env }).decision).toBe('deny');
+    expect(check('echo hi > ~/.bashrc', { rules: [deny({ writes: ['/home/me/**'] })], default: 'allow' }, { env }).decision).toBe('deny');
+    expect(check('HOME=/tmp/h; echo hi > ~/x', { rules: [deny({ writes: ['/tmp/h/*'] })], default: 'allow' }).decision).toBe('deny');
   });
 
   test('reasons point at the source', () => {

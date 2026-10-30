@@ -58,6 +58,8 @@ export interface Invocation {
   writes: Arg[];
   /** The working directory it runs in, relative to where the script starts unless that was given; `undefined` when unknown. */
   cwd: string | undefined;
+  /** The directory `~` stands for where it runs: `$HOME`, when that's known and absolute. */
+  home?: string;
   /** Wrappers it runs under, outermost first: `['sudo', 'env']`. */
   via: string[];
   /** How it's reached from the top-level script: `['$(…)', 'bash -c', 'eval']`. */

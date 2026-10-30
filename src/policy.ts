@@ -1,6 +1,6 @@
 import { analyze, type AnalyzeOptions } from './analyze.ts';
 import { canonicalOption, specAt } from './argv.ts';
-import { isSystemPath, resolvePath } from './paths.ts';
+import { isSystemPath, resolvePath, tildePath } from './paths.ts';
 import { specFor } from './specs.ts';
 import type { Analysis, Arg, Decision, Effect, Finding, FindingKind, Invocation } from './types.ts';
 
@@ -199,8 +199,9 @@ function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: b
       result = 1;
       continue;
     }
-    const resolved = resolvePath(invocation.cwd, arg.value);
-    const matches = patterns.some((pattern) => pattern.test(arg.value) || (resolved !== undefined && pattern.test(resolved)));
+    const resolved = resolvePath(invocation.cwd, arg.value, invocation.home);
+    const forms = [arg.value, resolved, resolved === undefined ? undefined : tildePath(resolved, invocation.home)].filter((form) => form !== undefined);
+    const matches = patterns.some((pattern) => forms.some((form) => pattern.test(form)));
     if (all && !matches) return 0;
     if (!all && matches) return 2;
     const outside = resolved === undefined || resolved === '..' || resolved.startsWith('../');

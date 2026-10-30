@@ -464,7 +464,12 @@ const ownership: CommandSpec = {
 
 /** Programs by name, aliases after `|`. */
 const programs: Record<string, CommandSpec> = {
-  'bash|sh|zsh|dash|ksh|mksh|ash|busybox-sh': shell,
+  'bash|sh|dash|ksh|mksh|ash|busybox-sh': shell,
+  // Shells whose code isn't Bash (zsh's glob qualifiers run code, fish and PowerShell are other languages): their code
+  // is code the analysis can't see into, never parsed as Bash.
+  'zsh|csh|tcsh': interpreter(opts(inline('-c'), '-i', '-l --login', '-f --no-rcs', '-e', '-x', '-v', '-n', '-o=')),
+  fish: interpreter(opts(inline('-c= --command='), inline('-C= --init-command='), '-i --interactive', '-l --login', '-n --no-execute', '-N --no-config', '-P --private')),
+  'pwsh|powershell|pwsh.exe|powershell.exe|cmd|cmd.exe|nu|xonsh|elvish': { effects: ['exec:arbitrary'] },
   sudo: {
     posix: true,
     effects: ['privilege'],
