@@ -64,7 +64,7 @@
     "prepublishOnly": "bun run checks && bun run build"
   },
   "dependencies": {
-    "unbash": "6.0.1"
+    "unbash": "6.0.2"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
@@ -76,7 +76,7 @@
     "oxlint": "^1.90.0",
     "oxlint-tsgolint": "^7.0.2005",
     "tegami": "^1.5.0",
-    "tsdown": "^0.23.1",
+    "tsdown": "^0.23.4",
     "typescript": "^7.0.2"
   },
   "lint-staged": {
