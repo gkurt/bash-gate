@@ -6,7 +6,7 @@ This file provides guidance to AI agents when working with code in this reposito
 
 ```bash
 bun run test       # All tests, including test/bash.test.ts (skipped without bash)
-bun typecheck      # tsc (TypeScript 7)
+bun typecheck      # tsc (TypeScript 7) over everything, then src/ alone with no runtime types
 bun run lint       # Oxlint
 bun run format     # Oxfmt
 bun run fix        # Lint + format + autofix
@@ -46,6 +46,9 @@ runs everything on Linux, then builds and loads `dist/` in Node.
 
 ## Coding Conventions
 
+- Bun runs the scripts and tests, but code is written against Node: `node:*` modules, never `Bun.*` (`tsc` has only
+  the `bun:test` module's types). `src/` uses no runtime APIs at all: `src/tsconfig.json` has no Node, Bun or DOM
+  types, so the package runs wherever JavaScript does.
 - Prefer colocation.
 - Avoid verbose code comments; write self-explanatory code. Comments are acceptable for:
   - Explaining complex logic, workarounds, or decisions

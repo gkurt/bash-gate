@@ -5,7 +5,8 @@
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "moduleDetection": "force",
-    "types": ["bun"],
+    // Node for tests and scripts; bun-types only for the `bun:test` module, so `Bun.*` APIs don't typecheck.
+    "types": ["node", "bun-types/test"],
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "erasableSyntaxOnly": true,

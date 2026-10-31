@@ -33,6 +33,7 @@
   "files": [
     "dist",
     "src",
+    "!src/tsconfig.json",
     "THREAT_MODEL.md"
   ],
   "type": "module",
@@ -51,7 +52,7 @@
   },
   "scripts": {
     "build": "tsdown",
-    "typecheck": "tsc",
+    "typecheck": "tsc && tsc -p src",
     "lint": "oxlint",
     "format": "oxfmt",
     "check": "oxlint && oxfmt --check",
@@ -66,7 +67,8 @@
     "unbash": "6.0.1"
   },
   "devDependencies": {
-    "@types/bun": "^1.4.4",
+    "@types/node": "^26.6.6",
+    "bun-types": "^1.4.4",
     "fast-check": "^4.10.2",
     "husky": "^9.1.7",
     "lint-staged": "^17.6.0",

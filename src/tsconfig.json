@@ -1,0 +1,6 @@
+{
+  // The library runs wherever JavaScript does: no Node, Bun or DOM types here.
+  "extends": "../tsconfig.json",
+  "compilerOptions": { "types": [] },
+  "include": ["./**/*.ts"]
+}

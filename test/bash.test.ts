@@ -1,7 +1,19 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import * as fc from 'fast-check';
 import { analyze, type Arg, type FindingKind, type Invocation } from '#src/index.ts';
 
@@ -72,7 +84,25 @@ const scripts = [
 ];
 
 const stubs = ['rm', 'ls', 'cat', 'sort', 'git', 'grep', 'echo', 'env', 'sudo', 'xargs'];
-const bash = Bun.which('bash');
+/** The first executable `name` on `PATH`, with Windows' executable extensions, as a shell would find it. */
+function which(name: string): string | null {
+  const extensions = process.platform === 'win32' ? (process.env.PATHEXT ?? '.EXE').split(';') : [''];
+  for (const directory of (process.env.PATH ?? '').split(delimiter).filter(Boolean)) {
+    for (const extension of extensions) {
+      const path = join(directory, name + extension);
+      if (!statSync(path, { throwIfNoEntry: false })?.isFile()) continue;
+      try {
+        accessSync(path, constants.X_OK);
+        return path;
+      } catch {
+        continue;
+      }
+    }
+  }
+  return null;
+}
+
+const bash = which('bash');
 const compatibleBash = bash !== null && !(process.platform === 'win32' && /\\Windows\\System32\\bash\.exe$/i.test(bash));
 
 /** Findings that leave code unseen, such as a command name only known at run time (`eval`?): any run is accounted for. */
@@ -223,7 +253,8 @@ describe.skipIf(!compatibleBash)('against bash', () => {
     writeFileSync(join(bin, name), stub);
     chmodSync(join(bin, name), 0o755);
   }
-  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  // On Windows a process substitution still running holds the directory for a moment (EBUSY).
+  afterAll(() => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 
   /** Runs the script in Bash and returns the argv of every stub that ran. */
   function run(script: string): string[][] {
@@ -232,12 +263,14 @@ describe.skipIf(!compatibleBash)('against bash', () => {
     // From a file: Git Bash's runtime expands braces and globs in the arguments a Windows process gives it.
     writeFileSync(join(dir, 'script.sh'), script);
     // FUNCNEST only stops runaway recursion: it can make Bash run less than the analysis predicts, never more.
-    const result = Bun.spawnSync([bash!, '--noprofile', '--norc', 'script.sh'], {
+    const result = spawnSync(bash!, ['--noprofile', '--norc', 'script.sh'], {
       cwd: dir,
       env: { PATH: bin, BASH_GATE_LOGS: logs, FUNCNEST: '8' },
+      stdio: 'ignore',
       timeout: 10_000,
     });
-    if (result.exitedDueToTimeout) throw new Error(`Bash didn't finish:\n${script}`);
+    if (result.error && 'code' in result.error && result.error.code === 'ETIMEDOUT') throw new Error(`Bash didn't finish:\n${script}`);
+    if (result.error) throw result.error;
     const ran = readdirSync(logs).map((file) => readFileSync(join(logs, file), 'utf8').split('\x1f'));
     rmSync(logs, { recursive: true, force: true });
     return ran;
