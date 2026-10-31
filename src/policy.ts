@@ -62,6 +62,13 @@ export interface Verdict {
   analysis: Analysis;
 }
 
+export interface EvaluateOptions {
+  /** Resolves a path to its filesystem target. Called only when the invocation has an absolute working directory. */
+  realpath?: (path: string) => string | undefined;
+}
+
+export interface CheckOptions extends AnalyzeOptions, EvaluateOptions {}
+
 type Conditions = Omit<Rule, 'decision'>;
 
 export const allow = (command: string | Conditions, conditions?: Conditions): Rule => rule('allow', command, conditions);
@@ -73,16 +80,16 @@ function rule(decision: Decision, command: string | Conditions, conditions: Cond
 }
 
 /** Analyses `source` and decides it under `policy`. */
-export function check(source: string, policy: Policy, options?: AnalyzeOptions): Verdict {
-  return evaluate(analyze(source, options), policy);
+export function check(source: string, policy: Policy, options?: CheckOptions): Verdict {
+  return evaluate(analyze(source, options), policy, options);
 }
 
 const severity: Record<Decision, number> = { allow: 0, ask: 1, deny: 2 };
 
-export function evaluate(analysis: Analysis, policy: Policy): Verdict {
+export function evaluate(analysis: Analysis, policy: Policy, options: EvaluateOptions = {}): Verdict {
   const reasons: Reason[] = [];
   for (const invocation of analysis.invocations) {
-    if (invocation.kind !== 'function') reasons.push(decide(invocation, policy));
+    if (invocation.kind !== 'function') reasons.push(decide(invocation, policy, options.realpath));
   }
   for (const finding of analysis.findings) {
     reasons.push({ decision: policy.findings?.[finding.kind] ?? 'ask', message: finding.message, span: finding.span, certain: true, finding });
@@ -98,9 +105,9 @@ export function evaluate(analysis: Analysis, policy: Policy): Verdict {
 /** No, maybe, yes. */
 type Tri = 0 | 1 | 2;
 
-function decide(invocation: Invocation, policy: Policy): Reason {
+function decide(invocation: Invocation, policy: Policy, realpath?: EvaluateOptions['realpath']): Reason {
   const base = { span: invocation.span, invocation };
-  const matches = policy.rules.map((rule) => [rule, matchRule(rule, invocation)] as const).filter(([, tri]) => tri > 0);
+  const matches = policy.rules.map((rule) => [rule, matchRule(rule, invocation, realpath)] as const).filter(([, tri]) => tri > 0);
   const hit = (decision: Decision, tri: Tri) => matches.find(([rule, t]) => rule.decision === decision && t === tri)?.[0];
   const denied = hit('deny', 2);
   if (denied) return { ...base, decision: 'deny', certain: true, rule: denied, message: denied.reason ?? `Denied: ${describe(denied)}` };
@@ -123,7 +130,7 @@ function decide(invocation: Invocation, policy: Policy): Reason {
 }
 
 /** How `rule` matches `invocation`: 0 no, 1 maybe, 2 yes. Exported for the property tests. */
-export function matchRule(rule: Rule, invocation: Invocation): Tri {
+export function matchRule(rule: Rule, invocation: Invocation, realpath?: EvaluateOptions['realpath']): Tri {
   const all = rule.decision === 'allow';
   let result: Tri = 2;
   const and = (tri: Tri) => {
@@ -131,8 +138,8 @@ export function matchRule(rule: Rule, invocation: Invocation): Tri {
   };
   if (rule.command !== undefined) and(matchCommand(rule.command, invocation));
   if (rule.options && result) and(matchOptions(rule.options, invocation, all));
-  if (rule.args && result) and(matchPaths(rule.args, invocation.positionals, invocation, all));
-  if (rule.writes && result) and(matchPaths(rule.writes, invocation.writes, invocation, all));
+  if (rule.args && result) and(matchPaths(rule.args, invocation.positionals, invocation, all, realpath));
+  if (rule.writes && result) and(matchPaths(rule.writes, invocation.writes, invocation, all, realpath));
   if (rule.effects && result) and(matchEffects(rule.effects, invocation, all));
   return result;
 }
@@ -190,7 +197,7 @@ function matchEffects(effects: Effect[], invocation: Invocation, all: boolean): 
  * Whether any of `args` matches any of `globs` (`all`: every one does), as written or as a path resolved against
  * where the invocation runs. A path that can't be resolved may be anywhere.
  */
-function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: boolean): Tri {
+function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: boolean, realpath?: EvaluateOptions['realpath']): Tri {
   const patterns = globs.map(globToRegExp);
   const absolute = globs.some((glob) => glob.startsWith('/') || glob.startsWith('~'));
   let result: Tri = all ? 2 : 0;
@@ -200,9 +207,12 @@ function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: b
       continue;
     }
     const resolved = resolvePath(invocation.cwd, arg.value, invocation.home);
-    const forms = [arg.value, resolved, resolved === undefined ? undefined : tildePath(resolved, invocation.home)].filter((form) => form !== undefined);
+    const physical =
+      realpath && invocation.cwd?.startsWith('/') && resolved?.startsWith('/') ? realpath(resolved) : undefined;
+    const forms = [arg.value, resolved, resolved === undefined ? undefined : tildePath(resolved, invocation.home), physical].filter((form) => form !== undefined);
     const matches = patterns.some((pattern) => forms.some((form) => pattern.test(form)));
-    if (all && !matches) return 0;
+    const realMatches = physical !== undefined && patterns.some((pattern) => pattern.test(physical));
+    if (all && (!matches || (realpath !== undefined && !realMatches))) return 0;
     if (!all && matches) return 2;
     const outside = resolved === undefined || resolved === '..' || resolved.startsWith('../');
     if (!all && outside && absolute) result = 1;

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { analyze, check, deny, recommended, type Arg } from '../src/index.ts';
+import { allow, analyze, check, deny, recommended, type Arg } from '../src/index.ts';
 
 const values = (args: Arg[]) => args.map((arg) => (arg.kind === 'static' ? arg.value : `<${arg.reason}>`));
 const only = (source: string) => {
@@ -54,6 +54,18 @@ describe('options', () => {
     const invocation = only('cowsay -ab --cd=1 hi');
     expect(invocation.specified).toBe(false);
     expect(invocation.unknownOptions).toEqual(['-a', '-b', '--cd']);
+  });
+
+  test('output-file positionals are writes, not reads', () => {
+    for (const source of ['uniq input output', 'xxd -r input output']) {
+      const invocation = only(source);
+      expect(values(invocation.reads)).toEqual(['input']);
+      expect(values(invocation.writes)).toEqual(['output']);
+    }
+
+    const vim = only('vim -S startup.vim');
+    expect(values(vim.reads)).toEqual(['startup.vim']);
+    expect(vim.effects).toContain('exec:file');
   });
 });
 
@@ -118,6 +130,62 @@ describe('invocations', () => {
     const rm = analyze("find . -exec rm {} ';'").invocations[1]!;
     expect(values(rm.argv)).toEqual(['rm', '<placeholder>']);
   });
+
+  test('reads Git config includes, hooks and package lifecycle scripts through the supplied hook', () => {
+    const files: Record<string, string> = {
+      '/repo/.git': 'gitdir: .git/worktrees/app',
+      '/repo/.git/worktrees/app/commondir': '../..',
+      '/repo/.git/config': '[include]\n path = extra.conf\n[core]\n hooksPath = /repo/custom-hooks',
+      '/repo/.git/extra.conf': '[core]\n pager = cat configured\n',
+      '/repo/custom-hooks/pre-commit': 'cat hook',
+      '/repo/package.json': JSON.stringify({ scripts: { pretest: 'cat before', test: 'cat run', posttest: 'cat after' } }),
+      '/repo/ssh.conf': 'Match exec "cat match"\n',
+    };
+    const readFile = (path: string) => files[path];
+    const git = analyze('git commit -m x', { cwd: '/repo', readFile });
+    expect(git.invocations.filter((invocation) => invocation.program === 'cat').map((invocation) => values(invocation.argv))).toEqual([
+      ['cat', 'configured'],
+      ['cat', 'hook'],
+    ]);
+    expect(git.findings.some((finding) => finding.kind === 'exec-config')).toBe(true);
+
+    const npm = analyze('npm test', { cwd: '/repo', readFile });
+    expect(npm.invocations.filter((invocation) => invocation.program === 'cat').map((invocation) => values(invocation.argv))).toEqual([
+      ['cat', 'before'],
+      ['cat', 'run'],
+      ['cat', 'after'],
+    ]);
+
+    const ssh = analyze('ssh -F ssh.conf host', { cwd: '/repo', readFile });
+    expect(ssh.invocations.some((invocation) => invocation.program === 'cat' && values(invocation.argv).includes('match'))).toBe(true);
+  });
+});
+
+describe('arithmetic', () => {
+  const dynamicContexts = [
+    'x="$v"; (( x ))',
+    'x="$v"; (( x++ ))',
+    'x="$v"; (( x += 1 ))',
+    'x="$v"; echo $((x))',
+    'x="$v"; for ((i=x; i<1; i++)); do :; done',
+    'x="$v"; let x',
+    'x="$v"; [[ x -eq 1 ]]',
+    'x="$v"; a[x]=1',
+    'x="$v"; echo ${s:x}',
+    'x="$v"; declare -i n=x',
+  ];
+
+  for (const source of dynamicContexts) {
+    test(`asks about a non-numeric dynamic value in ${source}`, () => {
+      expect(analyze(source).findings.some((finding) => finding.kind === 'dynamic-arithmetic')).toBe(true);
+    });
+  }
+
+  test('follows static values recursively and keeps arithmetic results numeric', () => {
+    for (const source of ['x=1+2; ((x))', 'x=foo; foo=1+2; ((x))', 'n=$((1+2)); ((n))', 'i=0; while ((i<2)); do ((i++)); done']) {
+      expect(analyze(source).findings.some((finding) => finding.kind === 'dynamic-arithmetic')).toBe(false);
+    }
+  });
 });
 
 describe('policy', () => {
@@ -139,6 +207,13 @@ describe('policy', () => {
     expect(check('cd && rm -rf .', recommended, { env }).decision).toBe('deny');
     expect(check('echo hi > ~/.bashrc', { rules: [deny({ writes: ['/home/me/**'] })], default: 'allow' }, { env }).decision).toBe('deny');
     expect(check('HOME=/tmp/h; echo hi > ~/x', { rules: [deny({ writes: ['/tmp/h/*'] })], default: 'allow' }).decision).toBe('deny');
+  });
+
+  test('real paths participate in deny and ask matching, and are required for an allow match', () => {
+    const realpath = (path: string) => path === '/repo/link' ? '/outside/secret' : undefined;
+    expect(check('cat link', { rules: [deny({ args: ['/outside/**'] })], default: 'allow' }, { cwd: '/repo', realpath }).decision).toBe('deny');
+    expect(check('cat link', { rules: [allow({ args: ['/repo/link'] })], default: 'deny' }, { cwd: '/repo', realpath }).decision).toBe('deny');
+    expect(check('cat link', { rules: [allow({ args: ['/outside/**'] })], default: 'deny' }, { cwd: '/repo', realpath }).decision).toBe('allow');
   });
 
   test('reasons point at the source', () => {

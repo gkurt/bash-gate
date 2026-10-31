@@ -16,13 +16,18 @@ known variables), no `BASH_ENV` or `ENV`, a `PATH` of system directories only, n
 default shell options. Everything the shell knows comes from the command itself. When the integration can't
 guarantee this, the gate's answers are about some other shell.
 
+The integration may provide `readFile(path)` to inspect repository-controlled configuration and scripts (return
+`undefined` for missing or non-file paths), and `realpath(path)` to resolve paths. These are synchronous, use
+`/`-separated paths, and callback errors propagate to the caller. Without these hooks, the limits below apply.
+
 Out of scope:
 
-- **What programs do with their input.** `cat` reading a file, a compiler running build scripts, git reading the
-  repository's `.git/config`. Specs say what's known about a program's arguments (`git -c`, `find -exec`). A program
-  without a spec, or whose behaviour depends on files, is only as safe as the policy that allows it.
-- **What the filesystem holds.** Globs, symlinks, which files exist. `$HOME` too, unless the script sets it or the
-  integration passes it in `env`.
+- **What programs do with their input.** `cat` reading a file, a compiler running build scripts, and file-based
+  configuration when no `readFile` hook is supplied. With the hook, repository Git config (and includes), Git hooks,
+  SSH config passed with `-F`, and npm lifecycle scripts are followed. Specs describe other known argument behavior.
+- **What the filesystem holds.** Globs and which files exist. `$HOME` too, unless the script sets it or the integration
+  passes it in `env`. Symlink targets are considered only when `realpath` is supplied and the invocation's `cwd` is
+  absolute. Deny and ask rules match any path form; allow rules must match the resolved real path as well.
 - **Other shells.** zsh, fish, PowerShell, cmd.exe. Their code run from Bash (`zsh -c`) is never parsed as Bash: it
   counts as code the analysis can't see into.
 - **Timing and resources.** Fork bombs and `sleep 1e9` are effects of allowed programs.
@@ -39,7 +44,8 @@ must become a finding, or a dynamic argument, command, option or `open` invocati
 under `strict: true`. That means adding an option, positional, write or effect, making a static argument dynamic,
 making the program dynamic, setting `maybeOptions` or `open`, or giving the program a non-system path. Without
 `strict`, it may lower `deny` to `ask` (a rule that only may match asks), but never to `allow`. Conditions on allow
-rules hold for *all* of an invocation's paths and effects; on deny and ask rules, for *any*.
+rules hold for *all* of an invocation's paths and effects (including the real path when provided); on deny and ask
+rules, for *any* path form.
 
 **S3. Allow is earned.** A command line is allowed only when every finding is one the policy allows (none by
 default), and every invocation is allowed with no deny or ask rule even possibly matching it. An invocation is allowed
@@ -54,9 +60,9 @@ substitution, an unset variable, or exceeding the analysis depth limit) may turn
 literal; a `too-deep` finding asks by default. S1 and S2 support S4 but don't by themselves guarantee that a
 finding retains a known denial, so S4 is also tested directly where bypasses show up.
 
-**S5. Fail closed.** No input makes the analysis or the policy throw, or run without bound: past a work budget, the
-walk stops with a `too-deep` finding. A syntax node the analysis doesn't know (a newer parser) becomes a finding. The
-parser version is pinned.
+**S5. Fail closed.** No shell input makes the analysis or the policy throw, or run without bound: past a work budget,
+the walk stops with a `too-deep` finding. A syntax node the analysis doesn't know (a newer parser) becomes a finding.
+The parser version is pinned. Errors thrown by caller-supplied filesystem callbacks propagate to the caller.
 
 ## What is trusted
 

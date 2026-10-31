@@ -2,7 +2,7 @@ import { parse, type DoubleQuotedChild, type Word, type WordPart } from 'unbash'
 import type { Arg, DynamicReason } from './types.ts';
 
 /** A variable as the analysis knows it: its value, or only that it has one at run time. */
-export type Value = { kind: 'static'; value: string } | { kind: 'dynamic' };
+export type Value = { kind: 'static'; value: string } | { kind: 'dynamic'; numeric?: boolean };
 
 /** Looks variables up; `undefined` for one never assigned. */
 export type Lookup = (name: string) => Value | undefined;
@@ -32,6 +32,7 @@ export function resolveWord(word: Word, lookup: Lookup): Arg[] {
 /** The value an assignment stores: no brace expansion, globbing or splitting. */
 export function resolveValue(word: Word, lookup: Lookup): Value {
   if (!word.parts) return { kind: 'static', value: word.value };
+  if (word.parts.length === 1 && word.parts[0]?.type === 'ArithmeticExpansion') return { kind: 'dynamic', numeric: true };
   let value = '';
   for (const part of word.parts) {
     if (part.type === 'Glob' || part.type === 'BraceExpansion' || part.type === 'ExtendedGlob') {

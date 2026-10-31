@@ -70,17 +70,27 @@ const policy: Policy = {
 - `command`: the program, then subcommands, alternatives after `|`, and `*` for any.
 - `options`: any of these options is given, spelled however the spec allows.
 - `args` and `writes`: globs matched against paths as written and as resolved against the tracked working directory.
+  `check` and `evaluate` also accept an optional `realpath` callback; it is called only with an absolute path when the
+  invocation has an absolute `cwd`. Deny and ask rules match any path form. Allow rules must match a known path form
+  and the real path.
   When `$HOME` is known (set in the script, or given in `env`), `~` globs match absolute paths under it, and the other
   way round. Another user's home (`~root`) may be anywhere.
 - `effects`: `fs:read`, `fs:write`, `fs:delete`, `network`, `privilege`, `exec:arbitrary`, `exec:project`, `exec:file`,
   `exec:remote`, `shell-state`.
 - An allow rule never applies to a program given by a non-system path (`./ls`).
-- Findings (`parse-error`, `dynamic-command`, `dynamic-script`, `sensitive-variable`, `exec-config`, `loads-code`,
-  `unknown-alias`, `too-deep`) ask unless `policy.findings` says otherwise.
+- Findings (`parse-error`, `dynamic-command`, `dynamic-script`, `dynamic-arithmetic`, `sensitive-variable`,
+  `exec-config`, `loads-code`, `unknown-alias`, `too-deep`) ask unless `policy.findings` says otherwise.
 
 `recommended` (`src/recommended.ts`) is a starting point. It allows reading and everyday git, denies force pushes and
-deleting top-level directories, and asks about deleting, network, privilege, code it can't see, and writes outside
-the working directory. It does not ask about `exec:project` (`npm test`, `make`, git hooks); add that if it matters.
+deleting top-level directories, and asks about deleting, network, privilege, code it can't see, writes outside the
+working directory, and writes to `.git/config` or `.git/hooks`. It does not ask about `exec:project` (`npm test`,
+`make`, git hooks); add that if it matters.
+
+`analyze` has an optional `readFile(path)` hook. It should return `undefined` for missing or non-file paths; callback
+errors otherwise propagate. When provided, Git repository config (including `include.path` and
+`.git` pointer files), applicable Git hook scripts, SSH config files passed with `-F`, and npm lifecycle scripts are
+read and walked as code. The library uses no Node filesystem APIs. `make` remains `exec:project`; Makefiles aren't
+parsed.
 
 ## Tests
 
@@ -102,15 +112,19 @@ bun run checks   # tsc, then bun test
 
 - **Bash only.** zsh, fish, PowerShell and cmd.exe need adapters that produce the same invocations. Until then, their
   code run from Bash (`zsh -c`, `pwsh -Command`) counts as `exec:arbitrary`.
-- **Specs cover a few dozen programs.** Programs without one get their options guessed. Programs that run code
-  through their arguments aren't described yet: `sed`'s `e`/`w`, `awk`'s `system()`, `tar --to-command`,
-  `rsync -e`, `vim -c`, `less`, `zip -TT` and the rest of [GTFOBins](https://gtfobins.github.io/).
-- **Project code isn't analysed.** `npm test`, `make` and git hooks are flagged `exec:project`. A repository's
-  `.git/config` can make any git command run code (`core.fsmonitor`); only `-c` and `git config` entries are seen.
+- **Program specs are intentionally conservative.** The listed `sed`, `awk`, `tar`, `rsync`, `vim`, `zip`, `ssh`,
+  output-file and command-wrapper forms are flagged or followed where their arguments identify code or paths. Some
+  language-specific snippets are effect findings rather than fully interpreted programs, and other programs remain
+  unspecified. `less` and `more` are not on the recommended read allowlist because their command modes can run code.
+- **Project code depends on the integration.** Without `readFile`, npm scripts, Git hooks and config includes cannot be
+  followed; commands remain `exec:project`, and the recommended policy asks about direct writes to `.git/config` and
+  `.git/hooks/**`. `make` is `exec:project` and Makefiles aren't parsed.
 - **Code that runs later is walked as of when it's set.** Trap actions, prompt strings and `PROMPT_COMMAND` see the
   variables, functions and aliases of the moment they're defined, not of when they run.
-- Arithmetic evaluates variables' values as expressions, so `(( x ))` runs `$(…)` in `x`'s value. That's followed
-  only for literal subscripts.
+- Dynamic arithmetic values are findings unless the analyzer can establish they are numeric. Static values are
+  recursively followed in arithmetic commands, expansions, loops, `let`, integer tests, array indices, substring
+  offsets and integer declarations.
 - An aliased command with a here-document is parsed again without the document's body: a parse error, which asks.
-- Paths: `~` is only a real directory when `$HOME` is known, and symlinks aren't known.
+- Paths: `~` is only a real directory when `$HOME` is known. Symlinks are resolved only when the caller provides
+  `realpath` and an absolute working directory.
 - The walk has a work budget. A script past it gets a `too-deep` finding rather than a full analysis.

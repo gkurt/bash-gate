@@ -26,6 +26,8 @@ export interface AnalyzeOptions {
   cwd?: string;
   /** Variables the shell starts with. Any other variable read before it's set is dynamic. */
   env?: Record<string, string>;
+  /** Reads repository files for Git config, hooks and package scripts. Paths use `/`; return undefined when absent or not a file. */
+  readFile?: (path: string) => string | undefined;
   /** How deep code inside code (`bash -c "eval '…'"`) is followed before the analysis gives up on it. */
   maxDepth?: number;
 }
@@ -45,6 +47,8 @@ interface State {
   hashed: Map<string, string | undefined>;
   /** Builtins turned off with `enable -n`: the name runs the program instead. */
   disabled: Set<string>;
+  /** Variables with the integer attribute (`declare -i`): what they're assigned is evaluated as arithmetic. */
+  integers: Set<string>;
   cwd: string | undefined;
 }
 
@@ -137,6 +141,7 @@ export function analyze(source: string, options: AnalyzeOptions = {}): Analysis 
     expandAliases: false,
     hashed: new Map(),
     disabled: new Set(),
+    integers: new Set(),
     cwd: options.cwd ?? '.',
   };
   const context: Context = {
@@ -153,7 +158,7 @@ export function analyze(source: string, options: AnalyzeOptions = {}): Analysis 
     silent: false,
     open: false,
   };
-  new Walker(analysis, options.maxDepth ?? 12).script(parse(source), state, context);
+  new Walker(analysis, options.maxDepth ?? 12, options.readFile).script(parse(source), state, context);
   return analysis;
 }
 
@@ -173,10 +178,12 @@ class Walker {
   /** Where each loop settles, by what held when it began (see `loop`). */
   settled = new Map<object, Map<string, State>>();
   ids = new Map<object, number>();
+  readFile: AnalyzeOptions['readFile'];
 
-  constructor(analysis: Analysis, maxDepth: number) {
+  constructor(analysis: Analysis, maxDepth: number, readFile?: AnalyzeOptions['readFile']) {
     this.analysis = analysis;
     this.maxDepth = maxDepth;
+    this.readFile = readFile;
   }
 
   /**
@@ -235,8 +242,7 @@ class Walker {
         const values = (node.wordlist ?? []).flatMap((word) => resolveWord(word, lookupIn(state)));
         const only = values.length === 1 ? values[0] : undefined;
         const value: Value = only?.kind === 'static' ? { kind: 'static', value: only.value } : { kind: 'dynamic' };
-        this.assigned(node.name.value, value, state, ctx, this.at(ctx, state, node), true);
-        state.vars.set(node.name.value, value);
+        state.vars.set(node.name.value, this.assigned(node.name.value, value, state, ctx, this.at(ctx, state, node), true));
         return this.loop(state, ctx, node, (s, c) => this.list(node.body.commands, s, c));
       }
       case 'ArithmeticFor':
@@ -327,6 +333,7 @@ class Walker {
       state.expandAliases ?? null,
       sorted(state.hashed).map(([name, path]) => [name, path ?? null]),
       [...state.disabled].sort(),
+      [...state.integers].sort(),
       state.cwd ?? null,
       ctx.depth,
       ctx.externalOnly,
@@ -364,21 +371,88 @@ class Walker {
     return body;
   }
 
-  /** Command and process substitutions anywhere in `nodes`, each run in a subshell of its own. */
+  /** Command substitutions and arithmetic evaluation hidden in `nodes`. */
   substitutions(nodes: readonly SyntaxNode[], state: State, ctx: Context): void {
     const visit = (node: SyntaxNode) => {
-      if (node.type !== 'Script') return forEachChild(node, visit);
-      const scriptCtx = node.source === undefined ? ctx : { ...ctx, source: node.source, outer: ctx.outer ?? [node.pos, node.end] };
-      this.script(node, clone(state), { ...scriptCtx, nesting: [...ctx.nesting, '$(…)'] });
+      if (node.type === 'Script') {
+        const scriptCtx = node.source === undefined ? ctx : { ...ctx, source: node.source, outer: ctx.outer ?? [node.pos, node.end] };
+        this.script(node, clone(state), { ...scriptCtx, nesting: [...ctx.nesting, '$(…)'] });
+        return;
+      }
+      if (node.type === 'ArithmeticExpansion') {
+        if (node.expression) this.arithmetic(node.expression, state, ctx);
+        return;
+      }
+      if (node.type === 'ParameterExpansion') {
+        if (node.index && node.index.value !== '@' && node.index.value !== '*') this.arithmeticWord(node.index, state, ctx);
+        if (node.operation?.type === 'Slice') {
+          this.arithmeticWord(node.operation.offset, state, ctx);
+          if (node.operation.length) this.arithmeticWord(node.operation.length, state, ctx);
+        }
+      }
+      if (node.type === 'Assignment' && node.index) this.arithmeticWord(node.index, state, ctx);
+      if (node.type === 'Assignment' && node.value.type === 'ArrayValue') {
+        // `a=([i]=v)`: the subscript is arithmetic, as in `a[i]=v`.
+        for (const element of node.value.elements) {
+          const subscript = /^\[([\s\S]*?)\]\+?=/.exec(element.text)?.[1];
+          if (subscript !== undefined) this.arithmeticText(subscript, state, ctx, element.text, this.span(ctx, element.pos, element.end));
+        }
+      }
+      if (node.type === 'TestBinary' && ['-eq', '-ne', '-lt', '-le', '-gt', '-ge'].includes(node.operator)) {
+        this.arithmeticWord(node.left, state, ctx);
+        this.arithmeticWord(node.right, state, ctx);
+      }
+      forEachChild(node, visit);
     };
     for (const node of nodes) visit(node);
   }
 
-  /** Arithmetic runs the substitutions in it (even in array subscripts), and its assignments change variables. */
-  arithmetic(expression: ArithmeticExpression, state: State, ctx: Context): void {
-    this.substitutions([expression], state, ctx);
+  /** A word Bash evaluates as arithmetic (`[[ x -eq y ]]`, an index, an offset): an expression, after expansion. */
+  arithmeticWord(word: Word, state: State, ctx: Context): void {
+    const span = this.span(ctx, word.pos, word.end);
+    const item = operand(word.value, word.parts, lookupIn(state));
+    if (item.kind === 'name') this.arithmeticText(word.value, state, ctx, word.text, span);
+    else if (item.kind === 'text') this.arithmeticText(item.text, state, ctx, word.text, span);
+    else if (item.kind === 'dynamic') this.finding(ctx, 'dynamic-arithmetic', `Arithmetic operand is only known at run time: ${word.text}`, span);
+  }
+
+  /**
+   * Arithmetic in `text` (a variable's value, a subscript), which Bash parses and evaluates when it gets there. Whether
+   * its result is surely a number. `seen` holds the variables being evaluated, to stop at a value that refers to itself.
+   */
+  arithmeticText(text: string, state: State, ctx: Context, label: string, span: [number, number], seen = new Set<string>()): boolean {
+    if (!text.trim()) return true;
+    if (seen.size > 32) {
+      this.finding(ctx, 'dynamic-arithmetic', `Arithmetic nests deeper than the analysis follows: ${label}`, span);
+      return false;
+    }
+    const script = parse(`(( ${text} ))`);
+    const command = script.commands[0]?.command;
+    if (script.errors?.length || script.commands.length !== 1 || command?.type !== 'ArithmeticCommand' || !command.expression) {
+      this.finding(ctx, 'dynamic-arithmetic', `Arithmetic expression is only known at run time: ${label}`, span);
+      return false;
+    }
+    const numeric = this.numericExpression(command.expression, state, seen);
+    this.arithmetic(command.expression, state, ctx, seen, span);
+    return numeric;
+  }
+
+  /**
+   * Arithmetic: its operands are evaluated in turn (a variable's value is an expression, and so is a subscript), and its
+   * assignments change variables. `span` is where to report what's found in text parsed from elsewhere; without it, the
+   * expression is in the source and the substitutions in it run first.
+   */
+  arithmetic(expression: ArithmeticExpression, state: State, ctx: Context, seen = new Set<string>(), span?: [number, number]): void {
+    if (!span) this.substitutions([expression], state, ctx);
+    const where = (node: SyntaxNode) => span ?? this.span(ctx, node.pos, node.end);
+    const lookup = lookupIn(state);
+    const reads = new Map<SyntaxNode, boolean>();
+    const writes: { variable: string; numeric: boolean }[] = [];
     const visit = (node: SyntaxNode) => {
-      if (node.type === 'Script') return;
+      if (node.type === 'Script') {
+        this.finding(ctx, 'dynamic-arithmetic', 'Arithmetic result depends on a run-time substitution', where(node));
+        return;
+      }
       const target =
         node.type === 'ArithmeticBinary' && /^([-+*/%&|^]|<<|>>)?=$/.test(node.operator)
           ? node.left
@@ -386,13 +460,79 @@ class Walker {
             ? node.operand
             : undefined;
       if (target?.type === 'ArithmeticWord') {
-        const variable = target.value.replace(/\[.*$/, '');
-        this.assigned(variable, { kind: 'dynamic' }, state, ctx, this.at(ctx, state, expression), true);
-        state.vars.set(variable, { kind: 'dynamic' });
+        reads.set(target, node.type === 'ArithmeticUnary' || (node.type === 'ArithmeticBinary' && node.operator !== '='));
+        // The target is a name once expanded: \`(( $x = 1 ))\` assigns the variable x names.
+        const text = /^[A-Za-z_]\w*\[/.test(target.value) ? target.value : expanded(target.value, target.parts, lookup);
+        const variable = text === undefined ? undefined : /^([A-Za-z_]\w*)(?:\[[\s\S]*\])?$/.exec(text)?.[1];
+        if (variable) writes.push({ variable, numeric: this.numericExpression(expression, state, new Set(seen)) });
+        else this.finding(ctx, 'sensitive-variable', `Arithmetic assigns a variable named only at run time: ${target.value}`, where(target));
+      }
+      if (node.type === 'ArithmeticWord') return this.operand(node, reads.get(node) ?? true, state, ctx, seen, where(node));
+      forEachChild(node, visit);
+    };
+    visit(expression);
+    for (const { variable, numeric } of writes) {
+      const value: Value = { kind: 'dynamic', ...(numeric ? { numeric: true } : {}) };
+      state.vars.set(variable, this.assigned(variable, value, state, ctx, this.at(ctx, state, expression), true));
+    }
+  }
+
+  /** An operand: its subscript is evaluated, and so is the value it reads (`reads`: not the target of a plain `=`). */
+  operand(word: { value: string; parts?: Word['parts'] }, reads: boolean, state: State, ctx: Context, seen: Set<string>, span: [number, number]): void {
+    const subscript = /^[^[]*?\[([\s\S]*)\]\}?$/.exec(word.value)?.[1];
+    if (subscript !== undefined && subscript !== '@' && subscript !== '*') this.arithmeticText(subscript, state, ctx, word.value, span, seen);
+    if (!reads) return;
+    const item = operand(word.value, word.parts, lookupIn(state));
+    if (item.kind === 'name') this.arithmeticVariable(item.name, state, ctx, span, seen);
+    else if (item.kind === 'text' && item.text !== word.value) this.arithmeticText(item.text, state, ctx, word.value, span, new Set([...seen, `\0${seen.size}`]));
+    else if (item.kind !== 'number') this.finding(ctx, 'dynamic-arithmetic', `Arithmetic operand is only known at run time: ${word.value}`, span);
+  }
+
+  /** A variable read in arithmetic: Bash evaluates its value as an expression, recursively. */
+  arithmeticVariable(variable: string, state: State, ctx: Context, span: [number, number], seen: Set<string>): void {
+    const value = state.vars.get(variable);
+    if (!value || numericValue(value)) return;
+    if (value.kind === 'dynamic') return this.finding(ctx, 'dynamic-arithmetic', `Arithmetic value of \`${variable}\` is only known at run time`, span);
+    if (seen.has(variable)) return this.finding(ctx, 'dynamic-arithmetic', `Arithmetic variable \`${variable}\` refers to itself`, span);
+    this.arithmeticText(value.value, state, ctx, variable, span, new Set([...seen, variable]));
+  }
+
+  /** Whether `expression` surely evaluates to a number, with the values variables hold now. */
+  numericExpression(expression: ArithmeticExpression, state: State, seen: Set<string>): boolean {
+    const lookup = lookupIn(state);
+    const nested = (text: string, next: Set<string>) => {
+      if (next.size > 32) return false;
+      const script = parse(`(( ${text} ))`);
+      const command = script.commands[0]?.command;
+      return !script.errors?.length && command?.type === 'ArithmeticCommand' && !!command.expression && this.numericExpression(command.expression, state, next);
+    };
+    const value = (name: string): boolean => {
+      const current = state.vars.get(name);
+      if (!current || numericValue(current)) return true;
+      if (current.kind === 'dynamic' || seen.has(name)) return false;
+      return !current.value.trim() || nested(current.value, new Set([...seen, name]));
+    };
+    const plainTargets = new Set<SyntaxNode>();
+    let numeric = true;
+    const visit = (node: SyntaxNode) => {
+      if (!numeric) return;
+      if (node.type === 'Script' || node.type === 'ArithmeticCommandExpansion') {
+        numeric = false;
+        return;
+      }
+      if (node.type === 'ArithmeticBinary' && node.operator === '=') plainTargets.add(node.left);
+      if (node.type === 'ArithmeticWord') {
+        if (plainTargets.has(node)) return;
+        const item = operand(node.value, node.parts, lookup);
+        if (item.kind === 'name') numeric = value(item.name);
+        else if (item.kind === 'text') numeric = nested(item.text, new Set([...seen, `\0${seen.size}`]));
+        else if (item.kind === 'dynamic') numeric = false;
+        return;
       }
       forEachChild(node, visit);
     };
     visit(expression);
+    return numeric;
   }
 
   simple(command: Command, state: State, ctx: Context): void {
@@ -414,8 +554,8 @@ class Walker {
     };
     for (const assignment of assignments) {
       const value = assignmentValue(assignment, lookup);
-      this.assigned(assignment.name, value, state, ctx, call, !argv.length);
-      if (!argv.length) state.vars.set(assignment.name, value);
+      const stored = this.assigned(assignment.name, value, state, ctx, call, !argv.length);
+      if (!argv.length) state.vars.set(assignment.name, stored);
     }
     if (argv.length) return this.dispatch(argv, state, ctx, call);
     if (files.writes.length || files.reads.length) this.emit(ctx, call, ':', 'builtin', [{ kind: 'static', value: ':' }], emptyParsed());
@@ -647,9 +787,10 @@ class Walker {
             continue;
           }
           if (name === 'export' || flags.includes('x')) state.exported.add(variable);
+          if (flags.includes('i')) state.integers.add(variable);
           const value: Value = flags.includes('n') || match[2] === '+=' || arg.kind === 'dynamic' ? { kind: 'dynamic' } : { kind: 'static', value: text.slice(match[0].length) };
-          if (match[2]) this.assigned(variable, value, state, ctx, call, true);
-          if (match[2] || value.kind === 'dynamic') state.vars.set(variable, value);
+          const stored = match[2] ? this.assigned(variable, value, state, ctx, call, true) : value;
+          if (match[2] || value.kind === 'dynamic') state.vars.set(variable, stored);
         }
         break;
       }
@@ -669,8 +810,13 @@ class Walker {
       case 'mapfile':
       case 'readarray':
       case 'printf':
-      case 'let':
         this.assigns(name, args, state, ctx, call);
+        break;
+      case 'let':
+        for (const arg of args) {
+          if (arg.kind === 'static') this.arithmeticText(arg.value, state, ctx, arg.value, call.span);
+          else this.finding(ctx, 'dynamic-arithmetic', 'let evaluates an arithmetic expression only known at run time', call.span);
+        }
         break;
       case 'compgen':
       case 'complete': {
@@ -687,7 +833,7 @@ class Walker {
     this.emit(ctx, call, name, 'builtin', argv, parsed);
   }
 
-  /** Builtins that set variables from input (`read`, `mapfile`, `printf -v`, `let`): those become dynamic. */
+  /** Builtins that set variables from input (`read`, `mapfile`, `printf -v`): those become dynamic. */
   assigns(name: string, args: Arg[], state: State, ctx: Context, call: Call): void {
     const values = args.map((arg) => (arg.kind === 'static' ? arg.value : undefined));
     /** Sets a variable by name; `null` for a name only known at run time, which may be any variable. */
@@ -695,14 +841,9 @@ class Walker {
       if (variable === null) return this.finding(ctx, 'sensitive-variable', `${name} sets a variable named only at run time`, call.span);
       if (!variable) return;
       const base = variable.replace(/\[.*$/, '');
-      this.assigned(base, { kind: 'dynamic' }, state, ctx, call, true);
-      state.vars.set(base, { kind: 'dynamic' });
+      state.vars.set(base, this.assigned(base, { kind: 'dynamic' }, state, ctx, call, true));
     };
     const named = (i: number) => (args[i]?.kind === 'dynamic' ? null : values[i]);
-    if (name === 'let') {
-      for (const value of values) for (const match of (value ?? '').matchAll(/([A-Za-z_]\w*)\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)|([A-Za-z_]\w*)\s*(?:\+\+|--)|(?:\+\+|--)\s*([A-Za-z_]\w*)/g)) set(match[1] ?? match[2] ?? match[3]);
-      return;
-    }
     if (name === 'printf') {
       if (values.includes('-v')) set(named(values.indexOf('-v') + 1));
       return;
@@ -743,11 +884,28 @@ class Walker {
     for (const entry of parsed.env) {
       if (entry.kind !== 'static') continue;
       const equals = entry.value.indexOf('=');
-      this.assigned(entry.value.slice(0, equals), { kind: 'static', value: entry.value.slice(equals + 1) }, state, ctx, call, false);
+      this.assigned(entry.value.slice(0, equals), { kind: 'static', value: entry.value.slice(equals + 1) }, state, ctx, call, false, false);
     }
     this.emit(ctx, call, program, 'external', argv, parsed, path);
-    if (program === 'git') for (const config of parsed.configs) this.gitConfigEntry(config, state, ctx, call);
     const cwd = parsed.cwd?.kind === 'static' ? resolvePath(call.cwd, parsed.cwd.value, call.home) : parsed.cwd ? undefined : call.cwd;
+    if (program === 'git') {
+      for (const config of parsed.configs) this.gitConfigEntry(config, state, ctx, call);
+      this.gitProject(cwd, parsed, state, ctx, call);
+    } else if (program === 'npm') {
+      this.npmScripts(cwd, argv, parsed, state, ctx, call);
+    } else if (program === 'ssh') {
+      for (const value of parsed.options['-o'] ?? []) {
+        if (value === true || value.kind === 'dynamic') this.finding(ctx, 'dynamic-script', 'ssh -o contains a local command only known at run time', call.span);
+        else {
+          const match = /^(?:ProxyCommand|LocalCommand|KnownHostsCommand)(?:\s+|=\s*)(.+)$/i.exec(value.value);
+          if (match) this.code(match[1]!, childState(state, cwd), ctx, call, `ssh ${value.value.split(/\s/, 1)[0]}`);
+        }
+      }
+      for (const file of parsed.options['-F'] ?? []) {
+        if (file === true || file.kind === 'dynamic') this.finding(ctx, 'exec-config', 'ssh config file is only known at run time', call.span);
+        else this.sshConfig(resolvePath(cwd, file.value) ?? file.value, cwd, state, ctx, call, new Set(), 0);
+      }
+    }
     const inner: Context = { ...ctx, via: [...ctx.via, program], externalOnly: true };
     const innerCall = (open: boolean): Call => ({ ...call, writes: [], reads: [], command: undefined, noFunctions: true, open: open || call.open, cwd });
     for (const nested of parsed.nested) this.dispatch(nested.argv, clone(state), inner, innerCall(nested.open));
@@ -780,6 +938,162 @@ class Walker {
     if (risk.script !== undefined) this.code(risk.script, childState(state, state.cwd), { ...ctx, via: [...ctx.via, 'git'], externalOnly: false, calls: [] }, call, `git ${key}`, true);
   }
 
+  gitProject(cwd: string | undefined, parsed: Parsed, state: State, ctx: Context, call: Call): void {
+    const readFile = this.readFile;
+    if (!readFile || !cwd) return;
+    let repoRoot = cwd;
+    let gitDir: string | undefined;
+    let commonDir: string | undefined;
+    let configPath: string | undefined;
+    let direct: string | undefined;
+    for (let depth = 0; depth < 16; depth++) {
+      const candidate = resolvePath(repoRoot, '.git');
+      if (!candidate) return;
+      const config = readFile(`${candidate}/config`);
+      if (config !== undefined) {
+        gitDir = candidate;
+        configPath = `${candidate}/config`;
+        direct = config;
+        break;
+      }
+      const marker = readFile(candidate);
+      const pointer = marker && /^gitdir:\s*(.+?)\s*$/im.exec(marker)?.[1];
+      if (pointer) {
+        gitDir = resolvePath(repoRoot, pointer) ?? pointer;
+        const commonPointer = readFile(`${gitDir}/commondir`)?.trim();
+        commonDir = commonPointer ? resolvePath(gitDir, commonPointer) ?? commonPointer : gitDir;
+        configPath = `${commonDir}/config`;
+        direct = readFile(configPath);
+        break;
+      }
+      const parent = resolvePath(repoRoot, '..');
+      if (!parent || parent === repoRoot) return;
+      repoRoot = parent;
+    }
+    if (!gitDir || !configPath) return;
+    const entries: { key: string; value: string }[] = [];
+    const visited = new Set<string>();
+    const load = (path: string, depth: number): void => {
+      if (visited.has(path)) return;
+      if (depth > 16) {
+        this.finding(ctx, 'exec-config', 'Git config includes exceed the analysis limit', call.span);
+        return;
+      }
+      visited.add(path);
+      const text = path === configPath && direct !== undefined ? direct : readFile(path);
+      if (text === undefined) return;
+      const parsedEntries = parseGitConfig(text);
+      for (const entry of parsedEntries) {
+        if (entry.key === 'include.path' || entry.key.startsWith('includeif.') && entry.key.endsWith('.path')) {
+          if (/[${}]/.test(entry.value)) {
+            this.finding(ctx, 'exec-config', `Git config include path is dynamic: ${entry.value}`, call.span);
+            continue;
+          }
+          const base = path.slice(0, Math.max(0, path.lastIndexOf('/'))) || '.';
+          load(resolvePath(base, entry.value) ?? `${base}/${entry.value}`, depth + 1);
+        } else {
+          entries.push(entry);
+        }
+      }
+    };
+    load(configPath, 0);
+    let hooksPath: string | undefined;
+    for (const entry of entries) {
+      const risk = gitConfig(entry.key, entry.value);
+      if (risk) this.gitConfigEntry({ kind: 'static', value: `${entry.key}=${entry.value}` }, state, ctx, call);
+      if (entry.key.toLowerCase() === 'core.hookspath') hooksPath = entry.value;
+    }
+
+    const subcommand = parsed.subcommands.at(-1);
+    if (!subcommand) return;
+    const hooks: Record<string, string[]> = {
+      commit: ['pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit'],
+      push: ['pre-push'],
+      checkout: ['post-checkout'],
+      switch: ['post-checkout'],
+      merge: ['pre-merge-commit', 'prepare-commit-msg', 'post-merge'],
+      rebase: ['pre-rebase', 'post-rewrite'],
+      'cherry-pick': ['pre-commit', 'prepare-commit-msg', 'post-commit'],
+      revert: ['pre-commit', 'prepare-commit-msg', 'post-commit'],
+      'apply|am': ['applypatch-msg', 'pre-applypatch', 'post-applypatch'],
+    };
+    const names = hooks[subcommand] ?? (subcommand === 'apply' || subcommand === 'am' ? hooks['apply|am'] : undefined);
+    if (!names) return;
+    const directory = hooksPath ? resolvePath(repoRoot, hooksPath) ?? hooksPath : `${commonDir ?? gitDir}/hooks`;
+    for (const name of names) {
+      if (parsed.options['--no-verify'] && ['pre-commit', 'commit-msg', 'pre-push'].includes(name)) continue;
+      const path = `${directory}/${name}`;
+      const script = readFile(path);
+      if (script !== undefined) this.code(script, childState(state, repoRoot), ctx, call, `git hook ${name}`);
+    }
+  }
+
+  npmScripts(cwd: string | undefined, argv: Arg[], parsed: Parsed, state: State, ctx: Context, call: Call): void {
+    if (!this.readFile || !cwd) return;
+    const manifest = this.readFile(`${cwd}/package.json`);
+    if (manifest === undefined) return;
+    let packageJson: unknown;
+    try {
+      packageJson = JSON.parse(manifest);
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      return this.finding(ctx, 'exec-config', 'package.json is invalid JSON; npm scripts cannot be inspected', call.span);
+    }
+
+    if (typeof packageJson !== 'object' || packageJson === null || !('scripts' in packageJson) || typeof packageJson.scripts !== 'object' || packageJson.scripts === null) {
+      return this.finding(ctx, 'exec-config', 'package.json scripts are not a readable object', call.span);
+    }
+    if (parsed.subcommands[0] !== 'run') return;
+    const verbs = new Set(['run', 'run-script', 'test', 't', 'start', 'stop', 'restart']);
+    let verb: string | undefined;
+    for (let i = 1; i < argv.length; i++) {
+      const arg = argv[i]!;
+      if (arg.kind !== 'static') continue;
+      if (['--prefix', '-C', '-w', '--workspace'].includes(arg.value)) {
+        i++;
+        continue;
+      }
+      if (arg.value.startsWith('-')) continue;
+      if (verbs.has(arg.value)) verb = arg.value;
+      break;
+    }
+    const name = verb === 'run' || verb === 'run-script'
+      ? parsed.positionals[0]?.kind === 'static' ? parsed.positionals[0].value : undefined
+      : verb === 't' ? 'test' : verb;
+    if (!name) return;
+    const scripts = packageJson.scripts as Record<string, unknown>;
+    for (const scriptName of [`pre${name}`, name, `post${name}`]) {
+      const script = scripts[scriptName];
+      if (typeof script !== 'string') {
+        if (script !== undefined) this.finding(ctx, 'exec-config', `npm script ${scriptName} is not a string`, call.span);
+        continue;
+      }
+      this.code(script, childState(state, cwd), ctx, call, `npm ${scriptName}`);
+    }
+  }
+
+  sshConfig(path: string, cwd: string | undefined, state: State, ctx: Context, call: Call, visited: Set<string>, depth: number): void {
+    if (!this.readFile || visited.has(path)) return;
+    if (depth > 16) return this.finding(ctx, 'exec-config', 'SSH config includes exceed the analysis limit', call.span);
+    visited.add(path);
+    const text = this.readFile(path);
+    if (text === undefined) return;
+    for (const raw of text.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      const [directive, ...rest] = line.split(/\s+/);
+      const value = rest.join(' ').replace(/^(['"])(.*)\1$/, '$2');
+      if (/^(?:ProxyCommand|LocalCommand|KnownHostsCommand)$/i.test(directive!)) {
+        this.code(value, childState(state, cwd), ctx, call, `ssh ${directive}`);
+      } else if (/^Match$/i.test(directive!) && /^exec\s+/i.test(value)) {
+        this.code(value.replace(/^exec\s+/i, '').replace(/^(['"])(.*)\1$/, '$2'), childState(state, cwd), ctx, call, 'ssh Match exec');
+      } else if (/^Include$/i.test(directive!)) {
+        if (/[*?[]/.test(value)) this.finding(ctx, 'exec-config', `SSH config include has a glob: ${value}`, call.span);
+        else this.sshConfig(resolvePath(path.slice(0, Math.max(0, path.lastIndexOf('/'))), value) ?? value, cwd, state, ctx, call, visited, depth + 1);
+      }
+    }
+  }
+
   /** Code in a string (`bash -c`, `eval`, `trap`, an alias): parsed and walked in `state`. */
   code(text: string, state: State, ctx: Context, call: Call, label: string, open = false): void {
     if (ctx.depth >= this.maxDepth) return this.finding(ctx, 'too-deep', `Code nests deeper than the analysis follows (${label})`, call.span);
@@ -789,9 +1103,10 @@ class Walker {
   /**
    * `variable` set to `value`, in the shell itself (`shell`) or in the environment of what it runs. Some variables
    * change what runs, a finding. Prompt strings and `PROMPT_COMMAND` hold code, which is walked when it's known: they
-   * run later, so it's walked in a copy of the state as it is now.
+   * run later, so it's walked in a copy of the state as it is now. An integer variable's value is evaluated first
+   * when Bash itself assigns it (`bash`); the result is what it holds.
    */
-  assigned(variable: string, value: Value, state: State, ctx: Context, call: Call, shell: boolean): void {
+  assigned(variable: string, value: Value, state: State, ctx: Context, call: Call, shell: boolean, bash = true): Value {
     if (shell && variable === 'POSIXLY_CORRECT') state.expandAliases = true;
     const prompt = /^PS[0124]$/.test(variable);
     if ((prompt || variable === 'PROMPT_COMMAND') && value.kind === 'static') {
@@ -800,6 +1115,14 @@ class Walker {
     } else if (prompt || variable === 'PROMPT_COMMAND' || sensitive.test(variable)) {
       this.finding(ctx, 'sensitive-variable', `Setting ${variable} changes what runs or how`, call.span);
     }
+    if (!bash || !state.integers.has(variable)) return value;
+    // An integer variable evaluates what it's assigned as arithmetic, so that's what it holds.
+    if (value.kind === 'static') {
+      return { kind: 'dynamic', ...(this.arithmeticText(value.value, state, ctx, value.value, call.span) ? { numeric: true } : {}) };
+    }
+    if (value.numeric) return value;
+    this.finding(ctx, 'dynamic-arithmetic', `${variable} is an integer variable, and is assigned a value only known at run time`, call.span);
+    return { kind: 'dynamic' };
   }
 
   /** Text expanded like a here-document's body (a prompt string): the substitutions in it run. */
@@ -871,6 +1194,28 @@ function shape(invocation: Invocation): string {
   return [invocation.program ?? '<dynamic>', ...invocation.subcommands, ...options, ...positionals].join(' ');
 }
 
+function parseGitConfig(text: string): { key: string; value: string }[] {
+  const entries: { key: string; value: string }[] = [];
+  let section = '';
+  let subsection = '';
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || /^[#;]/.test(line)) continue;
+    const header = /^\[([^\s\]]+)(?:\s+"((?:\\.|[^"])*)")?\]$/.exec(line);
+    if (header) {
+      section = header[1]!.toLowerCase();
+      subsection = header[2]?.replace(/\\(.)/g, '$1').toLowerCase() ?? '';
+      continue;
+    }
+    const setting = /^([A-Za-z][A-Za-z0-9.-]*)\s*(?:=\s*(.*))?$/.exec(line);
+    if (!setting || !section) continue;
+    const value = (setting[2] ?? 'true').replace(/^\s*"(.*)"\s*$/, '$1').replace(/^\s*'(.*)'\s*$/, '$1').replace(/\\(.)/g, '$1').trim();
+    const key = subsection ? `${section}.${subsection}.${setting[1]!.toLowerCase()}` : `${section}.${setting[1]!.toLowerCase()}`;
+    entries.push({ key, value });
+  }
+  return entries;
+}
+
 function argument(item: Command['suffix'][number], lookup: Lookup): Arg[] {
   if (item.type === 'Word') return resolveWord(item, lookup);
   if (item.type !== 'Assignment') return [];
@@ -932,7 +1277,9 @@ function sameSet<T>(a: Set<T>, b: Set<T>): boolean {
 /** Whether two states know the same, for when a loop has settled. */
 function equal(a: State, b: State): boolean {
   return (
-    sameMap(a.vars, b.vars, (x, y) => (x.kind === 'dynamic' ? y.kind === 'dynamic' : y.kind === 'static' && x.value === y.value)) &&
+    sameMap(a.vars, b.vars, (x, y) =>
+      x.kind === 'dynamic' ? y.kind === 'dynamic' && x.numeric === y.numeric : y.kind === 'static' && x.value === y.value,
+    ) &&
     sameSet(a.exported, b.exported) &&
     sameMap(a.functions, b.functions, (x, y) => x.maybeUndefined === y.maybeUndefined && sameSet(new Set(x.bodies), new Set(y.bodies))) &&
     sameSet(a.exportedFunctions, b.exportedFunctions) &&
@@ -941,6 +1288,7 @@ function equal(a: State, b: State): boolean {
     a.expandAliases === b.expandAliases &&
     sameMap(a.hashed, b.hashed) &&
     sameSet(a.disabled, b.disabled) &&
+    sameSet(a.integers, b.integers) &&
     a.cwd === b.cwd
   );
 }
@@ -956,6 +1304,7 @@ function clone(state: State): State {
     expandAliases: state.expandAliases,
     hashed: new Map(state.hashed),
     disabled: new Set(state.disabled),
+    integers: new Set(state.integers),
     cwd: state.cwd,
   };
 }
@@ -997,6 +1346,7 @@ function freshState(cwd: string | undefined): State {
     expandAliases: false,
     hashed: new Map(),
     disabled: new Set(),
+    integers: new Set(),
     cwd,
   };
 }
@@ -1014,9 +1364,12 @@ function join(state: State, other: State): void {
   for (const name of new Set([...state.vars.keys(), ...other.vars.keys()])) {
     const a = state.vars.get(name);
     const b = other.vars.get(name);
-    if (!a || !b || a.kind === 'dynamic' || b.kind === 'dynamic' || a.value !== b.value) state.vars.set(name, { kind: 'dynamic' });
+    if (!a || !b || a.kind === 'dynamic' || b.kind === 'dynamic' || a.value !== b.value) {
+      state.vars.set(name, { kind: 'dynamic', ...(a && b && numericValue(a) && numericValue(b) ? { numeric: true } : {}) });
+    }
   }
   for (const name of other.exported) state.exported.add(name);
+  for (const name of other.integers) state.integers.add(name);
   for (const name of new Set([...state.functions.keys(), ...other.functions.keys()])) {
     const a = state.functions.get(name);
     const b = other.functions.get(name);
@@ -1043,4 +1396,34 @@ function join(state: State, other: State): void {
 function homeOf(state: State): string | undefined {
   const home = state.vars.get('HOME');
   return home?.kind === 'static' && home.value.startsWith('/') ? home.value : undefined;
+}
+
+/** What an arithmetic operand stands for: a number, a variable (whose value is evaluated in turn), the text it expands to, or a value only the run knows. */
+type Operand = { kind: 'number' } | { kind: 'name'; name: string } | { kind: 'text'; text: string } | { kind: 'dynamic' };
+
+function operand(value: string, parts: Word['parts'], lookup: Lookup): Operand {
+  const element = /^([A-Za-z_]\w*)(?:\[[\s\S]*\])?$/.exec(value);
+  if (element) return { kind: 'name', name: element[1]! };
+  if (/^(?:0[xX][\da-fA-F]+|\d+(?:#[\w@]+)?)$/.test(value)) return { kind: 'number' };
+  const expansion = /^\$(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)\})$/.exec(value);
+  if (expansion) return { kind: 'name', name: (expansion[1] ?? expansion[2])! };
+  if (/^\$(?:[#?$!]|\{[#?$!]\}|\{#[^}]*\})$/.test(value)) return { kind: 'number' };
+  const text = expanded(value, parts, lookup);
+  return text === undefined ? { kind: 'dynamic' } : { kind: 'text', text };
+}
+
+/** The text an arithmetic operand expands to, before Bash evaluates it, when that's known. */
+function expanded(value: string, parts: Word['parts'], lookup: Lookup): string | undefined {
+  const simple = /^\$(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)\})$/.exec(value);
+  if (simple) {
+    const current = lookup((simple[1] ?? simple[2])!);
+    return current?.kind === 'static' ? current.value : undefined;
+  }
+  if (!parts) return value.includes('$') ? undefined : value;
+  const resolved = resolveWord({ type: 'Word', pos: 0, end: value.length, text: value, value, parts } as Word, lookup);
+  return resolved.length === 1 && resolved[0]!.kind === 'static' ? resolved[0]!.value : undefined;
+}
+
+function numericValue(value: Value): boolean {
+  return value.kind === 'dynamic' ? value.numeric === true : /^[+-]?(?:0[xX][\da-fA-F]+|0[0-7]*|[1-9]\d*)$/.test(value.value.trim());
 }

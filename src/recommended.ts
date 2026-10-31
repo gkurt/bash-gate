@@ -9,7 +9,7 @@ export const recommended: Policy = {
   default: 'ask',
   rules: [
     allow(
-      'cat|less|head|tail|wc|stat|file|nl|od|xxd|strings|md5sum|sha1sum|sha256sum|sha512sum|cmp|tac|rev|base64|grep|egrep|fgrep|rg|ls|tree|du|sort|uniq|cut|tr|paste|join|fold|fmt|column|diff|comm|jq|yq|realpath|readlink|basename|dirname|find|which|type|echo|printf|true|false|:|test|[|pwd|cd|pushd|popd|date|whoami|id|uname|hostname|seq|sleep|exit|return|set|shift|local|declare|export|read|unset|wait|mkdir|touch|cp|mv|tee',
+      'cat|head|tail|wc|stat|file|nl|od|strings|md5sum|sha1sum|sha256sum|sha512sum|cmp|tac|rev|base64|grep|egrep|fgrep|rg|ls|du|sort|cut|tr|paste|join|fold|fmt|column|diff|comm|jq|yq|realpath|readlink|basename|dirname|find|which|type|echo|printf|true|false|:|test|[|pwd|cd|pushd|popd|whoami|id|uname|seq|sleep|exit|return|set|shift|local|declare|export|read|unset|wait|mkdir|touch|cp|mv|tee',
     ),
     // Wrappers: what they run is judged on its own. Aliases are followed, so defining them is harmless.
     allow('env|xargs|timeout|nice|nohup|time|stdbuf|watch|alias|unalias|shopt'),
@@ -24,5 +24,7 @@ export const recommended: Policy = {
     deny('rm', { options: ['--no-preserve-root'], reason: 'Lets rm delete /' }),
     ask({ effects: ['exec:arbitrary', 'exec:file', 'exec:remote', 'privilege', 'network', 'fs:delete'] }),
     ask({ writes: ['/**', '~', '~/**', '..', '../**'], reason: 'Writes outside the working directory' }),
+    ask('uniq|xxd|tree', { writes: ['**'], reason: 'Writes through an output-file argument' }),
+    ask({ writes: ['.git/config', '**/.git/config', '.git/hooks/**', '**/.git/hooks/**'], reason: 'Changes Git configuration or hooks that can run code later' }),
   ],
 };

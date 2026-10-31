@@ -77,6 +77,7 @@ export type FindingKind =
   | 'dynamic-script'
   | 'unknown-alias'
   | 'loads-code'
+  | 'dynamic-arithmetic'
   | 'sensitive-variable'
   | 'exec-config'
   | 'too-deep'

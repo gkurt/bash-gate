@@ -100,6 +100,10 @@ function writer(effect: Effect, ...options: (string | OptionSpec)[]): CommandSpe
   return { abbreviations: true, positionals: effect === 'fs:delete' ? 'delete' : 'write', effects: [effect], options: opts(...options) };
 }
 
+function noCommandWithPid(parsed: Parsed): void {
+  if (parsed.options['--pid']) parsed.nested = [];
+}
+
 /** `git push`: a refspec starting with `+` forces, one starting with `:` deletes. */
 function finishPush(parsed: Parsed): void {
   for (const refspec of parsed.positionals.slice(1)) {
@@ -139,6 +143,10 @@ function finishConfig(parsed: Parsed): void {
   const [key, value] = parsed.positionals;
   if (!key || !value) return;
   parsed.effects.add('fs:write');
+  if (!parsed.options['--global'] && !parsed.options['--system'] && !parsed.options['--worktree']) {
+    const file = parsed.options['--file']?.[0];
+    parsed.writes.push(file && file !== true ? file : { kind: 'static', value: '.git/config' });
+  }
   const k = staticValue(key);
   const v = staticValue(value);
   parsed.configs.push(k !== undefined && v !== undefined ? { kind: 'static', value: `${k}=${v}` } : value);
@@ -566,12 +574,117 @@ const programs: Record<string, CommandSpec> = {
       ...'-4 -6 -A -a -C -f -G -g -K -k -M -N -n -q -s -T -t -V -v -X -x -Y -y'.split(' '),
     ),
     finish(parsed) {
+      parsed.reads.push(...(parsed.options['-F'] ?? []).filter((value): value is Arg => value !== true));
+      for (const value of parsed.options['-o'] ?? []) {
+        if (value === true) continue;
+        if (value.kind === 'dynamic') {
+          parsed.maybeOptions = true;
+          continue;
+        }
+        const match = /^(?:ProxyCommand|LocalCommand|KnownHostsCommand)(?:\s+|=\s*)(.+)$/i.exec(value.value);
+        if (match) parsed.effects.add('exec:arbitrary');
+      }
       const command = parsed.positionals.slice(1);
       if (!command.length) return;
       parsed.effects.add('exec:remote');
       const dynamic = command.find((arg) => arg.kind === 'dynamic');
       parsed.scripts.push(dynamic ?? { kind: 'static', value: command.map((arg) => staticValue(arg)).join(' ') });
     },
+  },
+  setsid: { posix: true, command: {}, options: opts('-w --wait', '-f --fork', '-c --ctty') },
+  strace: {
+    posix: true,
+    command: {},
+    options: opts(
+      '-f --follow-forks',
+      '-c --summary',
+      '-C --summary-only',
+      '-q --quiet',
+      '-r --relative-timestamps',
+      '-t --absolute-timestamps',
+      '-T --syscall-times',
+      '-v --verbose',
+      '-x --strings-in-hex',
+      '-xx --strings-in-hex-all',
+      '-y --decode-fds',
+      '-yy --decode-fds',
+      o('-e=', { role: 'read' }),
+      o('-o= --output=', { role: 'write' }),
+      '-p= --attach=',
+      '-s= --string-limit=',
+      '-u= --user=',
+      '-E= --env=',
+      '-I= --interruptible=',
+      '-b= --detach-on=',
+      '-P= --trace-path=',
+    ),
+  },
+  unshare: {
+    posix: true,
+    command: {},
+    options: opts(
+      '-m --mount',
+      '-u --uts',
+      '-i --ipc',
+      '-n --net',
+      '-p --pid',
+      '-U --user',
+      '-C --cgroup',
+      '-T --time',
+      '-f --fork',
+      '-r --map-root-user',
+      '--mount-proc',
+      '--propagation=',
+      '-S= --setuid=',
+      '-G= --setgid=',
+      '--keep-caps',
+      '--kill-child=?',
+    ),
+  },
+  ionice: { posix: true, command: {}, options: opts('-c= --class=', '-n= --classdata=', '-p= --pid=', '-P= --pgid=', '-u= --uid=') },
+  // `chrt -p` and `taskset -p` change a running process: there's no command. `taskset -c` reads the mask as a list; it's still a positional.
+  chrt: { posix: true, command: { skip: 1 }, options: opts('-f --fifo', '-r --rr', '-o --other', '-b --batch', '-i --idle', '-d --deadline', '-p --pid', '-R --reset-on-fork', '-m --max', '-a --all-tasks', '-v --verbose'), finish: noCommandWithPid },
+  taskset: { posix: true, command: { skip: 1 }, options: opts('-c --cpu-list', '-p --pid', '-a --all-tasks'), finish: noCommandWithPid },
+  flock: {
+    posix: true,
+    command: { skip: 1 },
+    options: opts('-n --nb --nonblock', '-s --shared', '-x -e --exclusive', '-u --unlock', '-o --close', '-F --no-fork', '--verbose', '--fcntl', '-w= --wait= --timeout=', '-E= --conflict-exit-code=', o('-c= --command=', { role: 'script' })),
+    finish(parsed) {
+      // `flock FILE -c CODE`: -c after the lock file gives shell code, not a program.
+      const [nested] = parsed.nested;
+      const first = nested?.argv[0];
+      if (first?.kind !== 'static' || (first.value !== '-c' && first.value !== '--command')) return;
+      parsed.nested = [];
+      if (nested!.argv[1]) parsed.scripts.push(nested!.argv[1]);
+    },
+  },
+  script: {
+    options: opts(
+      o('-c= --command=', { role: 'script' }),
+      '-q --quiet',
+      '-e --return',
+      '-f --flush',
+      '-a --append',
+      '-E= --echo=',
+      '-m= --logging-format=',
+      '-o= --output-limit=',
+      o('-t=? --timing=?', { role: 'write' }),
+      o('-T= --log-timing=', { role: 'write' }),
+      o('-I= --log-in=', { role: 'write' }),
+      o('-O= --log-out=', { role: 'write' }),
+      o('-B= --log-io=', { role: 'write' }),
+    ),
+    finish(parsed) {
+      // Without -c, it starts an interactive shell. The positional is where the session is logged.
+      if (!parsed.options['--command']) parsed.effects.add('exec:arbitrary');
+      const log = parsed.positionals[0];
+      if (log && staticValue(log) !== '/dev/null') parsed.writes.push(log);
+      if (parsed.writes.length) parsed.effects.add('fs:write');
+    },
+  },
+  busybox: {
+    posix: true,
+    command: {},
   },
   'python|python3|python2': interpreter(opts(inline('-c='), o('-m=', { effects: ['exec:project'] }), '-B', '-E', '-I', '-O', '-q', '-s', '-S', '-u', '-v', '-x', '-W=', '-X=')),
   'node|nodejs': interpreter(
@@ -597,6 +710,158 @@ const programs: Record<string, CommandSpec> = {
     effects: ['exec:project'],
     options: opts(o('-C= --directory=', { role: 'cwd' }), o('-f= --file= --makefile=', { role: 'read' }), '-j --jobs=?', '-k --keep-going', '-n --just-print --dry-run', '-s --silent', '-B --always-make', '-e'),
   },
+  tar: {
+    effects: ['fs:read'],
+    options: opts(
+      '-f= --file=',
+      o('-C= --directory=', { role: 'cwd' }),
+      o('-I= --use-compress-program=', { effects: ['exec:arbitrary'] }),
+      o('--to-command=', { effects: ['exec:arbitrary'] }),
+      o('--checkpoint-action=', { effects: ['exec:arbitrary'] }),
+      o('-F= --info-script=', { effects: ['exec:arbitrary'] }),
+      o('--info-script=', { effects: ['exec:arbitrary'] }),
+      o('--transform=', { effects: ['exec:arbitrary'] }),
+      o('--exclude-from=', { role: 'read' }),
+      o('-T= --files-from=', { role: 'read' }),
+      ...'-x --extract --get -c --create -t --list -v --verbose -z --gzip -j --bzip2 -J --xz -p --preserve-permissions -P --absolute-names -k --keep-old-files -O --to-stdout'.split(' ').map((name) => o(name)),
+    ),
+    finish(parsed) {
+      const oldMode = parsed.positionals[0]?.kind === 'static' ? parsed.positionals[0].value : '';
+      const mode = `${oldMode}${Object.keys(parsed.options).join(' ')}`;
+      const extracting = /(?:\bx\b|^[a-zA-Z]*x[a-zA-Z]*$)|--extract|--get/.test(mode);
+      const creating = /(?:\bc\b|^[a-zA-Z]*c[a-zA-Z]*$)|--create/.test(mode);
+      const archive = parsed.options['--file']?.[0] ?? (oldMode ? parsed.positionals[1] : undefined);
+      if (archive && archive !== true) {
+        if (creating) {
+          parsed.writes.push(archive);
+          parsed.effects.add('fs:write');
+        } else parsed.reads.push(archive);
+      }
+      if (extracting) {
+        parsed.effects.add('fs:write');
+        parsed.writes.push({ kind: 'dynamic', text: 'tar extraction path', reason: 'placeholder', split: true, prefix: '' });
+      }
+      if (parsed.positionals.some((arg) => arg.kind === 'dynamic')) parsed.maybeOptions = true;
+    },
+  },
+  rsync: {
+    effects: ['fs:write', 'network'],
+    options: opts(
+      o('-e= --rsh=', { effects: ['exec:arbitrary'] }),
+      o('--rsync-path=', { effects: ['exec:arbitrary'] }),
+      o('--files-from=', { role: 'read' }),
+      o('--exclude-from=', { role: 'read' }),
+      o('--include-from=', { role: 'read' }),
+      o('--backup-dir=', { role: 'write' }),
+      o('--log-file=', { role: 'write' }),
+      ...'-a --archive -r --recursive -v --verbose -n --dry-run -d --dirs -l --links -t --times -p --perms -g --group -o --owner -D --devices -z --compress -e --rsh -P --partial'.split(' ').map((name) => o(name)),
+    ),
+    finish(parsed) {
+      parsed.writes.push({ kind: 'dynamic', text: 'rsync destination', reason: 'placeholder', split: false, prefix: '' });
+    },
+  },
+  vim: {
+    options: opts(
+      o('-c= --cmd=', { effects: ['exec:arbitrary'] }),
+      o('-S=', { role: 'read', effects: ['exec:file'] }),
+      '-R --readonly',
+      '-M',
+      '-u=',
+      '-U=',
+    ),
+    finish(parsed) {
+      if (parsed.positionals.some((arg) => arg.kind === 'dynamic' || arg.kind === 'static' && arg.value.startsWith('+'))) parsed.effects.add('exec:arbitrary');
+    },
+  },
+  zip: {
+    effects: ['fs:write'],
+    options: opts(o('-T', { effects: ['exec:arbitrary'] }), '-r --recurse-paths', '-q --quiet', '-v --verbose', '-j --junk-paths'),
+    finish(parsed) {
+      if (parsed.positionals[0]) parsed.writes.push(parsed.positionals[0]);
+    },
+  },
+  sed: {
+    effects: ['fs:read'],
+    positionals: 'read',
+    options: opts(
+      o('-e= --expression='),
+      o('-f= --file=', { role: 'read' }),
+      o('-i=? --in-place=?', { effects: ['fs:write'] }),
+      '-n --quiet --silent',
+      '-E --regexp-extended',
+      '-r',
+      '-s --separate',
+      '-u --unbuffered',
+      '--sandbox',
+    ),
+    finish(parsed) {
+      for (const script of [...(parsed.options['--expression'] ?? []), ...parsed.positionals]) {
+        if (script === true) continue;
+        if (script.kind === 'dynamic') {
+          parsed.maybeOptions = true;
+          continue;
+        }
+        if (/(?:^|;)\s*(?:e|s[\s\S]*?\/[gIpMw]*e)(?:\s|;|$)/.test(script.value)) parsed.effects.add('exec:arbitrary');
+        for (const match of script.value.matchAll(/(?:^|;)\s*[wW]\s+([^;\s]+)/g)) {
+          parsed.writes.push({ kind: 'static', value: match[1]! });
+          parsed.effects.add('fs:write');
+        }
+      }
+      if (parsed.options['--in-place'] || parsed.options['-i']) {
+        const inputs = parsed.options['--expression'] || parsed.options['--file'] ? parsed.positionals : parsed.positionals.slice(1);
+        parsed.writes.push(...inputs);
+        parsed.effects.add('fs:write');
+      }
+      if (!parsed.options['--expression'] && !parsed.options['--file'] && parsed.positionals.length) {
+        parsed.reads = parsed.reads.filter((arg) => arg !== parsed.positionals[0]);
+      }
+    },
+  },
+  awk: {
+    effects: ['fs:read'],
+    options: opts(o('-f=', { role: 'read', effects: ['exec:project'] }), o('-e=', { effects: ['exec:arbitrary'] }), o('-F=', {}), o('-v=', {}), o('-l=', { effects: ['exec:project'] }), '--posix', '--sandbox', '-safe'),
+    finish(parsed) {
+      const code = [...(parsed.options['-e'] ?? []), ...parsed.positionals].map((arg) => (arg === true ? '' : staticValue(arg) ?? '')).join('\n');
+      if (/\bsystem\s*\(|\|(?:\s*getline|[^;]*$)|(?:print|printf)[^;\n]*>>?\s*[^=]/.test(code)) parsed.effects.add('exec:arbitrary');
+      if (code.includes('@load')) parsed.effects.add('exec:project');
+      for (const match of code.matchAll(/(?:print|printf)\b[^;\n]*?(?:>>|>)\s*(?:"([^"]+)"|'([^']+)'|([^\s;]+))/g)) {
+        const target = match[1] ?? match[2];
+        parsed.writes.push(target ? { kind: 'static', value: target } : { kind: 'dynamic', text: `awk output ${match[3] ?? ''}`, reason: 'variable', split: false, prefix: '' });
+        parsed.effects.add('fs:write');
+      }
+      if ([...(parsed.options['-f'] ?? []), ...(parsed.options['-l'] ?? [])].some((arg) => arg !== true && arg.kind === 'dynamic')) parsed.maybeOptions = true;
+    },
+  },
+  uniq: {
+    ...reader('-c --count', '-d --repeated', '-u --unique', '-i --ignore-case', '-f= --skip-fields=', '-s= --skip-chars=', '-w= --check-chars='),
+    options: opts('-c --count', '-d --repeated', '-u --unique', '-i --ignore-case', '-f= --skip-fields=', '-s= --skip-chars=', '-w= --check-chars='),
+    finish(parsed) {
+      const output = parsed.positionals[1];
+      if (output) {
+        parsed.reads = parsed.reads.filter((arg) => arg !== output);
+        parsed.writes.push(output);
+        parsed.effects.add('fs:write');
+      }
+    },
+  },
+  xxd: {
+    ...reader('-a --autoskip', '-b --bits', '-c= --cols=', '-g= --groupsize=', '-l= --len=', '-s= --seek=', '-u --uppercase', '-p --postscript', '-r --revert'),
+    options: opts('-a --autoskip', '-b --bits', '-c= --cols=', '-g= --groupsize=', '-l= --len=', '-s= --seek=', '-u --uppercase', '-p --postscript', '-r --revert'),
+    finish(parsed) {
+      const output = parsed.positionals[1];
+      if (output) {
+        parsed.reads = parsed.reads.filter((arg) => arg !== output);
+        parsed.writes.push(output);
+        parsed.effects.add('fs:write');
+      }
+    },
+  },
+  tree: {
+    ...reader('-d --dirs-only', '-L= --level=', '-a --all', '-f --full-path', '-h --human-readable', '-i --no-indent', '-p --permissions', '-u --owner', '-g --group', '-s --size', '-D --date'),
+    options: opts('-d --dirs-only', '-L= --level=', '-a --all', '-f --full-path', '-h --human-readable', '-i --no-indent', '-p --permissions', '-u --owner', '-g --group', '-s --size', '-D --date', o('-o= --output=', { role: 'write', effects: ['fs:write'] })),
+  },
+  date: { options: opts(o('-f= --file=', { role: 'read' }), o('-s= --set=', { effects: ['privilege'] }), '-u --utc', '-R --rfc-email', '-I=? --iso-8601=?', '--debug', '--date=', '--reference=') },
+  hostname: { options: opts('-f --fqdn', '-s --short', '-d --domain', '-y --yp', '-i --ip-address', '-I --all-ip-addresses', '-A --all-fqdns'), finish(parsed) { if (parsed.positionals.length) parsed.effects.add('privilege'); } },
   rm: writer('fs:delete', '-f --force', '-i', '-I', '--interactive=?', '-r -R --recursive', '-d --dir', '-v --verbose', '--one-file-system', '--no-preserve-root', '--preserve-root=?'),
   'rmdir|unlink|shred': writer('fs:delete', '-p --parents', '-v --verbose', '-u --remove=?', '-z --zero', '-n= --iterations=', '-f --force'),
   'mkdir|touch|truncate': writer('fs:write', '-p --parents', '-m= --mode=', '-v --verbose', '-s= --size=', '-r= --reference=', '-d= --date=', '-t=', '-a', '-c --no-create'),
@@ -661,7 +926,7 @@ const programs: Record<string, CommandSpec> = {
       '-T= --timeout=',
     ),
   },
-  'cat|less|more|wc|stat|file|nl|od|xxd|strings|md5sum|sha1sum|sha256sum|sha512sum|cmp|tac|rev|base64': reader('-n', '-c', '-l', '-w', '-b', '-s', '-v', '-A', '-E', '-T'),
+  'cat|less|more|wc|stat|file|nl|od|strings|md5sum|sha1sum|sha256sum|sha512sum|cmp|tac|rev|base64': reader('-n', '-c', '-l', '-w', '-b', '-s', '-v', '-A', '-E', '-T'),
   'head|tail': reader('-n= --lines=', '-c= --bytes=', '-f --follow=?', '-F', '-q --quiet', '-v --verbose', '-z --zero-terminated'),
   'grep|egrep|fgrep': reader(
     '-e= --regexp=',
@@ -748,14 +1013,14 @@ const programs: Record<string, CommandSpec> = {
     o('-o= --output=', { role: 'write', effects: ['fs:write'] }),
     o('--compress-program=', { effects: ['exec:arbitrary'] }),
   ),
-  'uniq|cut|tr|paste|join|fold|fmt|column|expand|unexpand|diff|comm|jq|yq|tree|du|realpath|readlink|basename|dirname': reader(
+  'cut|tr|paste|join|fold|fmt|column|expand|unexpand|diff|comm|jq|yq|du|realpath|readlink|basename|dirname': reader(
     '-d= --delimiter=',
     '-f= --fields=',
     '-c --count',
     '-L= --level=',
   ),
   ls: reader('-I= --ignore=', '-w= --width=', '--color=?', '--sort=', '--time-style=', '--format=', '-a --all', '-A --almost-all', '-l', '-h --human-readable', '-R --recursive', '-1', '-t', '-r --reverse', '-S', '-d --directory', '-F --classify'),
-  'echo|printf|true|false|pwd|date|whoami|id|uname|hostname|which|seq|sleep|yes|nproc|uptime|tput|clear': {},
+  'echo|printf|true|false|pwd|whoami|id|uname|which|seq|sleep|yes|nproc|uptime|tput|clear': {},
 };
 
 /** The spec for a program by name, or `undefined` when it has none. */

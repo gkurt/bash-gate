@@ -31,6 +31,15 @@ const scripts = [
   'if true; then cat a; else ls b; fi',
   'cat <<EOF\n$(ls x)\nEOF',
   '(( a[$(ls q)] = 1 ))',
+  '(( a[$(cat arithmetic)] = 1 ))',
+  'echo $(( $(cat arithmetic) ))',
+  'for ((i=$(cat arithmetic); i<1; i++)); do :; done',
+  'let "i=$(cat arithmetic)"',
+  '[[ $(cat arithmetic) -eq 1 ]]',
+  'a[$(cat arithmetic)]=value',
+  'echo "${a[$(cat arithmetic)]}"',
+  's=abcdef; echo "${s:$(cat arithmetic)}"',
+  'declare -i n=$(cat arithmetic)',
   'mapfile -C cat -c 1 arr <<< "line"',
   "compgen -C 'ls -1' x",
   'echo `ls y`',
@@ -57,6 +66,7 @@ const scripts = [
 
 const stubs = ['rm', 'ls', 'cat', 'sort', 'git', 'grep', 'echo', 'env', 'sudo', 'xargs'];
 const bash = Bun.which('bash');
+const compatibleBash = bash && !(process.platform === 'win32' && /\\Windows\\System32\\bash\.exe$/i.test(bash));
 
 /** Whether the invocation predicts this run: the program, and every static argument where it stands. */
 function covers(invocation: Invocation, argv: string[]): boolean {
@@ -69,7 +79,7 @@ function covers(invocation: Invocation, argv: string[]): boolean {
   return predicted.length === args.length && predicted.every((arg, i) => arg.kind === 'dynamic' || arg.value === args[i]);
 }
 
-describe.skipIf(!bash)('against bash', () => {
+describe.skipIf(!compatibleBash)('against bash', () => {
   const dir = mkdtempSync(join(tmpdir(), 'bash-gate-'));
   const bin = join(dir, 'bin');
   const logs = join(dir, 'logs');
