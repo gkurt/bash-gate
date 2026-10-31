@@ -77,6 +77,7 @@ The parser version is pinned. Errors thrown by caller-supplied filesystem callba
 | Promise | Check                                                                               | Where                      |
 | ------- | ----------------------------------------------------------------------------------- | -------------------------- |
 | S1      | Scripts run in real Bash with logging stubs: everything that ran must be covered    | `test/bash.test.ts`        |
+| S1      | The same, for generated scripts mixing the constructs the analysis follows          | `test/bash.test.ts`        |
 | S1      | Known escapes, one per construct                                                    | `test/escapes.test.ts`     |
 | S2      | Property tests over generated invocations and policies                              | `test/properties.test.ts`  |
 | S3      | Property tests: generated commands with findings or maybe-matches are never allowed | `test/properties.test.ts`  |
@@ -85,5 +86,6 @@ The parser version is pinned. Errors thrown by caller-supplied filesystem callba
 | S5      | Deeply nested loops stay cheap and below the budget                                 | `test/analyze.test.ts`     |
 | S5      | Exhaustive `switch`es with a fail-closed `default`                                  | `src/analyze.ts`           |
 
-Still to come: differential fuzzing in a Linux container with `strace` as the oracle, an LLM red team judged by that
-oracle, and enforcement at exec time so that a gap in S1 is a refused command rather than an escape.
+Still to come: `strace` in a Linux container as the oracle, so every program started counts, not only the stubbed
+ones; an LLM red team judged by that oracle; and enforcement at exec time so that a gap in S1 is a refused command
+rather than an escape.

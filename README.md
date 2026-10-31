@@ -108,7 +108,9 @@ bun run checks   # tsc, then bun test
   hide values, checked under strict and non-strict policies. Set `METAMORPHIC_RUNS` to change the number of cases.
 - `test/bash.test.ts`: runs scripts in real Bash with a `PATH` of logging stubs. Every program that ran must be one
   the analysis predicted, with those arguments. This is the check that keeps the analysis honest. Extend it before
-  trusting a new construct.
+  trusting a new construct. Besides the hand-written scripts, it generates scripts that mix variables, functions,
+  aliases, `hash -p`, loops, substitutions, `eval`, `bash -c` and traps over a few shared names. Set `BASH_RUNS` to
+  change the number of generated scripts.
 
 ## Known gaps
 
@@ -121,12 +123,16 @@ bun run checks   # tsc, then bun test
 - **Project code depends on the integration.** Without `readFile`, npm scripts, Git hooks and config includes cannot be
   followed; commands remain `exec:project`, and the recommended policy asks about direct writes to `.git/config` and
   `.git/hooks/**`. `make` is `exec:project` and Makefiles aren't parsed.
-- **Code that runs later is walked as of when it's set.** Trap actions, prompt strings and `PROMPT_COMMAND` see the
-  variables, functions and aliases of the moment they're defined, not of when they run.
+- **Code that runs later is walked twice.** Trap actions, prompt strings and `PROMPT_COMMAND` are walked with the
+  variables, functions and aliases of the moment they're set, and again with those at the end of the script. A
+  definition that's replaced before the end, while the code may run in between (an `ERR` trap), is only seen if it
+  was there when the code was set.
 - Dynamic arithmetic values are findings unless the analyzer can establish they are numeric. Static values are
   recursively followed in arithmetic commands, expansions, loops, `let`, integer tests, array indices, substring
   offsets and integer declarations.
 - An aliased command with a here-document is parsed again without the document's body: a parse error, which asks.
+- unbash rejects some redirection targets Bash accepts, an empty `$''` (`cat > $''`) and a here-string that is a
+  process substitution (`cat <<< <(f)`): a parse error, which asks.
 - Paths: `~` is only a real directory when `$HOME` is known. Symlinks are resolved only when the caller provides
   `realpath` and an absolute working directory.
 - The walk has a work budget. A script past it gets a `too-deep` finding rather than a full analysis.

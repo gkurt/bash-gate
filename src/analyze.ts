@@ -14,6 +14,7 @@ import {
   type Statement,
   type SyntaxNode,
   type Word,
+  type WordPart,
 } from 'unbash';
 import { emptyParsed, normalize, type Parsed } from './argv.ts';
 import { basename, isSystemPath, resolvePath } from './paths.ts';
@@ -158,7 +159,9 @@ export function analyze(source: string, options: AnalyzeOptions = {}): Analysis 
     silent: false,
     open: false,
   };
-  new Walker(analysis, options.maxDepth ?? 12, options.readFile).script(parse(source), state, context);
+  const walker = new Walker(analysis, options.maxDepth ?? 12, options.readFile);
+  walker.script(parse(source), state, context);
+  walker.finish(state);
   return analysis;
 }
 
@@ -178,6 +181,10 @@ class Walker {
   /** Where each loop settles, by what held when it began (see `loop`). */
   settled = new Map<object, Map<string, State>>();
   ids = new Map<object, number>();
+  /** Code that runs later, by where it was set (see `later`). */
+  pending = new Map<string, (state: State) => void>();
+  /** While `finish` walks it again, what was already emitted. */
+  emitted: Set<string> | undefined;
   readFile: AnalyzeOptions['readFile'];
 
   constructor(analysis: Analysis, maxDepth: number, readFile?: AnalyzeOptions['readFile']) {
@@ -565,7 +572,8 @@ class Walker {
     return numeric;
   }
 
-  simple(command: Command, state: State, ctx: Context): void {
+  simple(parsed: Command, state: State, ctx: Context): void {
+    const command = rejoined(parsed);
     this.substitutions([command], state, ctx);
     const lookup = lookupIn(state);
     const assignments = command.prefix.filter((item): item is Assignment => item.type === 'Assignment');
@@ -602,7 +610,15 @@ class Walker {
       const parsed = emptyParsed();
       parsed.positionals = argv.slice(1);
       parsed.maybeOptions = true;
-      return this.emit(ctx, call, null, 'external', argv, parsed);
+      this.emit(ctx, call, null, 'external', argv, parsed);
+      // A word that expands to nothing leaves the next one as the command, past alias expansion.
+      if (head.split && head.prefix === '' && argv.length > 1) {
+        settle(state, [
+          clone(state),
+          this.branch(state, ctx, (s, c) => this.dispatch(argv.slice(1), s, c, { ...call, command: undefined })),
+        ]);
+      }
+      return;
     }
     const name = head.value;
     if (call.command && !ctx.externalOnly && ctx.aliases.expand !== false && this.alias(name, argv, state, ctx, call)) return;
@@ -739,8 +755,12 @@ class Walker {
       case 'trap': {
         if (args.length < 2 || values[0]?.startsWith('-')) break;
         const action = args[0]!;
-        if (action.kind === 'dynamic') this.finding(ctx, 'dynamic-script', 'trap runs a string only known at run time', call.span);
-        else if (action.value !== '' && action.value !== '-') this.code(action.value, clone(state), ctx, call, 'trap');
+        if (action.kind === 'dynamic') {
+          this.finding(ctx, 'dynamic-script', 'trap runs a string only known at run time', call.span);
+        } else if (action.value !== '' && action.value !== '-') {
+          const text = action.value;
+          this.later(state, 'trap', text, call, (s) => this.code(text, s, ctx, call, 'trap'));
+        }
         break;
       }
       case 'alias':
@@ -827,6 +847,8 @@ class Walker {
       case 'local':
       case 'export':
       case 'readonly': {
+        // Outside a function, `local` is an error that changes nothing.
+        if (name === 'local' && ctx.calls.length === 0) break;
         const flags = values.filter((value) => value?.startsWith('-')).join('');
         for (const arg of args) {
           const text = arg.kind === 'static' ? arg.value : arg.prefix;
@@ -1197,6 +1219,26 @@ class Walker {
   }
 
   /** Code in a string (`bash -c`, `eval`, `trap`, an alias): parsed and walked in `state`. */
+  /**
+   * Code that runs later (a trap action, a prompt string): walked now, in a copy of the state, and again by `finish`
+   * with the state at the end of the script, so it sees functions and aliases defined after it was set.
+   */
+  later(state: State, label: string, text: string, call: Call, walk: (state: State) => void): void {
+    walk(clone(state));
+    this.pending.set(`${label}\0${call.span.join()}\0${text}`, walk);
+  }
+
+  finish(state: State): void {
+    this.emitted = new Set(this.analysis.invocations.map((invocation) => JSON.stringify(invocation)));
+    const walked = new Set<string>();
+    for (;;) {
+      const next = [...this.pending].find(([key]) => !walked.has(key));
+      if (!next) return;
+      walked.add(next[0]);
+      next[1](clone(state));
+    }
+  }
+
   code(text: string, state: State, ctx: Context, call: Call, label: string, open = false): void {
     if (ctx.depth >= this.maxDepth)
       return this.finding(ctx, 'too-deep', `Code nests deeper than the analysis follows (${label})`, call.span);
@@ -1215,15 +1257,17 @@ class Walker {
   /**
    * `variable` set to `value`, in the shell itself (`shell`) or in the environment of what it runs. Some variables
    * change what runs, a finding. Prompt strings and `PROMPT_COMMAND` hold code, which is walked when it's known: they
-   * run later, so it's walked in a copy of the state as it is now. An integer variable's value is evaluated first
+   * run later, so it's walked as code that runs later (see `later`). An integer variable's value is evaluated first
    * when Bash itself assigns it (`bash`); the result is what it holds.
    */
   assigned(variable: string, value: Value, state: State, ctx: Context, call: Call, shell: boolean, bash = true): Value {
     if (shell && variable === 'POSIXLY_CORRECT') state.expandAliases = true;
     const prompt = /^PS[0124]$/.test(variable);
     if ((prompt || variable === 'PROMPT_COMMAND') && value.kind === 'static') {
-      if (prompt) this.expansions(value.value, clone(state), ctx, call, variable);
-      else this.code(value.value, clone(state), ctx, call, variable);
+      const text = value.value;
+      this.later(state, variable, text, call, (s) =>
+        prompt ? this.expansions(text, s, ctx, call, variable) : this.code(text, s, ctx, call, variable),
+      );
     } else if (prompt || variable === 'PROMPT_COMMAND' || sensitive.test(variable)) {
       this.finding(ctx, 'sensitive-variable', `Setting ${variable} changes what runs or how`, call.span);
     }
@@ -1287,6 +1331,11 @@ class Walker {
       text: this.analysis.source.slice(call.span[0], call.span[1]),
     };
     invocation.shape = shape(invocation);
+    if (this.emitted) {
+      const key = JSON.stringify(invocation);
+      if (this.emitted.has(key)) return;
+      this.emitted.add(key);
+    }
     this.analysis.invocations.push(invocation);
   }
 
@@ -1336,6 +1385,105 @@ function parseGitConfig(text: string): { key: string; value: string }[] {
     entries.push({ key, value });
   }
   return entries;
+}
+
+/**
+ * unbash ends a word at a process substitution (`x=<(f) rm`, `a<(f)b`), where Bash keeps one word going: rejoins
+ * the words and assignments that touch, then finds the command word again.
+ */
+function rejoined(command: Command): Command {
+  const items = [...command.prefix, ...(command.name ? [command.name] : []), ...command.suffix];
+  const joined: typeof items = [];
+  for (const item of items) {
+    const previous = joined.at(-1);
+    const tail = previous?.type === 'Assignment' ? previous.value : previous;
+    const next = item.type === 'Assignment' ? asWord(item) : item.type === 'Word' ? item : undefined;
+    if (!previous || tail?.type !== 'Word' || !next || previous.end !== item.pos) {
+      joined.push(item);
+      continue;
+    }
+    const value: Word = {
+      type: 'Word',
+      text: tail.text + next.text,
+      value: tail.value + next.value,
+      pos: tail.pos,
+      end: next.end,
+      parts: [...wordParts(tail), ...wordParts(next)],
+    };
+    joined[joined.length - 1] =
+      previous.type === 'Assignment' ? { ...previous, text: previous.text + next.text, end: next.end, value } : value;
+  }
+  if (joined.length === items.length) return command;
+  const prefix: Command['prefix'][number][] = [];
+  let name: Word | undefined;
+  let at = 0;
+  for (; at < joined.length; at++) {
+    const item = joined[at]!;
+    const assignment = item.type === 'Word' ? asAssignment(item) : item;
+    if (assignment) {
+      prefix.push(assignment);
+    } else if (item.type === 'Word') {
+      name = item;
+      break;
+    }
+  }
+  const suffix = joined.slice(at + 1);
+  return {
+    ...command,
+    name,
+    prefix,
+    suffix,
+    args: suffix.filter((item) => item.type === 'Word' || item.type === 'Assignment'),
+    redirects: command.redirects,
+  };
+}
+
+function wordParts(word: Word): WordPart[] {
+  return word.parts ? [...word.parts] : [{ type: 'Literal', pos: word.pos, end: word.end, text: word.text, value: word.value }];
+}
+
+/** An assignment as the word it was written as. */
+function asWord(assignment: Assignment): Word | undefined {
+  if (assignment.value.type !== 'Word' || assignment.index) return undefined;
+  const head = `${assignment.name}${assignment.append ? '+=' : '='}`;
+  const name: Word = { type: 'Word', text: head, value: head, pos: assignment.pos, end: assignment.value.pos };
+  const { value } = assignment;
+  return {
+    ...value,
+    text: assignment.text,
+    value: head + value.value,
+    pos: assignment.pos,
+    parts: [...wordParts(name), ...wordParts(value)],
+  };
+}
+
+/** A word in assignment position that Bash reads as one: `name=` or `name+=` unquoted at its start. */
+function asAssignment(word: Word): Assignment | undefined {
+  const [first, ...rest] = wordParts(word);
+  if (first?.type !== 'Literal') return undefined;
+  const match = /^([A-Za-z_]\w*)(\+?)=/.exec(first.text);
+  if (!match) return undefined;
+  const cut = match[0].length;
+  const head: WordPart[] =
+    first.text.length > cut ? [{ ...first, text: first.text.slice(cut), value: first.value.slice(cut), pos: first.pos + cut }] : [];
+  const value: Word = {
+    type: 'Word',
+    text: word.text.slice(cut),
+    value: word.value.slice(cut),
+    pos: word.pos + cut,
+    end: word.end,
+    parts: [...head, ...rest],
+  };
+  return {
+    type: 'Assignment',
+    pos: word.pos,
+    end: word.end,
+    text: word.text,
+    name: match[1]!,
+    append: match[2] === '+',
+    index: undefined,
+    value,
+  };
 }
 
 function argument(item: Command['suffix'][number], lookup: Lookup): Arg[] {
@@ -1507,8 +1655,11 @@ function join(state: State, other: State): void {
   }
   state.aliasesUnknown ||= other.aliasesUnknown;
   if (state.expandAliases !== other.expandAliases) state.expandAliases = undefined;
-  for (const name of new Set([...state.hashed.keys(), ...other.hashed.keys()]))
-    if (state.hashed.get(name) !== other.hashed.get(name)) state.hashed.set(name, undefined);
+  // `undefined` is a path only known at run time, which isn't the same as no `hash -p` at all.
+  for (const name of new Set([...state.hashed.keys(), ...other.hashed.keys()])) {
+    if (!state.hashed.has(name) || !other.hashed.has(name) || state.hashed.get(name) !== other.hashed.get(name))
+      state.hashed.set(name, undefined);
+  }
 
   for (const name of other.disabled) state.disabled.add(name);
   if (state.cwd !== other.cwd) state.cwd = undefined;

@@ -189,6 +189,11 @@ describe('arithmetic', () => {
     for (const source of ['x=1+2; ((x))', 'x=foo; foo=1+2; ((x))', 'n=$((1+2)); ((n))', 'i=0; while ((i<2)); do ((i++)); done'])
       expect(analyze(source).findings.some((finding) => finding.kind === 'dynamic-arithmetic')).toBe(false);
   });
+
+  test('a name hashed in only one branch, to a path only known at run time, may be anything', () => {
+    const source = 'if a; then :; else hash -p /bin/cat h; for i in 1; do hash -p /bin/rm h; done; fi; h';
+    expect(analyze(source).findings.some((finding) => finding.kind === 'loads-code')).toBe(true);
+  });
 });
 
 describe('policy', () => {
