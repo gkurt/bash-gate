@@ -1,0 +1,59 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["eslint", "typescript", "unicorn", "oxc", "import"],
+  // Type-aware rules run through `oxlint-tsgolint` (TypeScript 7), using each file's tsconfig.
+  "options": { "typeAware": true },
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "ignorePatterns": ["**/.claude", "**/build", "**/*.gen.ts"],
+  "rules": {
+    "no-unused-vars": ["warn", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_", "ignoreRestSiblings": true }],
+    // Also bans inline `import('./x.ts').Type` annotations.
+    "typescript/consistent-type-imports": "error",
+    // Escape hatch: `// oxlint-disable-next-line typescript/no-explicit-any -- <why>`.
+    "typescript/no-explicit-any": "error",
+
+    // Shape: braces only for multi-line bodies, early returns over `else`, no nested lonely `if`s, short files.
+    "curly": ["error", "multi-or-nest", "consistent"],
+    "no-else-return": ["error", { "allowElseIf": false }],
+    "no-lonely-if": "error",
+    "unicorn/no-lonely-if": "error",
+    "max-lines": ["warn", { "max": 1000, "skipBlankLines": true, "skipComments": true }],
+
+    // Type-aware.
+    "typescript/no-floating-promises": "error",
+    "typescript/no-misused-promises": "error",
+    "typescript/await-thenable": "error",
+    "typescript/switch-exhaustiveness-check": "error",
+    "typescript/no-unnecessary-type-assertion": "warn",
+    "typescript/no-deprecated": "warn",
+    "typescript/strict-boolean-expressions": [
+      "error",
+      { "allowNumber": false, "allowNullableBoolean": true, "allowNullableString": true, "allowAny": true }
+    ],
+
+    // Suspicious-category rules that are mostly noise.
+    "no-shadow": "off",
+    "no-underscore-dangle": "off",
+    "unicorn/consistent-function-scoping": "off",
+    "unicorn/no-array-sort": "off",
+    "unicorn/no-array-reverse": "off",
+    "import/no-unassigned-import": "off",
+    "import/no-named-as-default": "off",
+
+    // Parent-directory imports go through the `#*` subpath alias; `./` siblings are fine.
+    "no-restricted-imports": [
+      "error",
+      {
+        "patterns": [
+          {
+            "regex": "^[.]{2}/",
+            "message": "Import from parent directories through the `#src/` alias, with the extension (e.g. `#src/env.ts`)"
+          }
+        ]
+      }
+    ]
+  }
+}

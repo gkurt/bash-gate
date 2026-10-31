@@ -1,0 +1,3 @@
+# LF everywhere, whatever the OS or core.autocrlf: text is stored and checked
+# out with LF. Git detects binary files itself and leaves them alone.
+* text=auto eol=lf

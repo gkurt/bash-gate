@@ -136,9 +136,9 @@ export function normalize(args: Arg[], spec: CommandSpec | undefined): Parsed {
     if (current?.positionals === 'read') parsed.reads.push(arg);
     if (current?.positionals === 'write' || current?.positionals === 'delete') parsed.writes.push(arg);
   }
-  if (current?.command?.fallback && !parsed.nested.length) {
+  if (current?.command?.fallback && parsed.nested.length === 0)
     parsed.nested.push({ argv: [{ kind: 'static', value: current.command.fallback }], open: !!current.command.open });
-  }
+
   for (const level of levels) level.finish?.(parsed);
   return parsed;
 }
@@ -176,7 +176,7 @@ function readOption(args: Arg[], i: number, spec: CommandSpec | undefined, parse
       unknown(parsed, name, attached === undefined ? true : { kind: 'static', value: attached });
       return i;
     }
-    const takes = option.value && (!option.valued || option.valued.some((spelling) => spelling.startsWith('--')));
+    const takes = (option.value ?? false) !== false && (!option.valued || option.valued.some((spelling) => spelling.startsWith('--')));
     let optionValue: Arg | true = true;
     if (takes && attached !== undefined) optionValue = { kind: 'static', value: attached };
     else if (takes && option.value === true && i + 1 < args.length) optionValue = args[++i]!;
@@ -190,7 +190,7 @@ function readOption(args: Arg[], i: number, spec: CommandSpec | undefined, parse
       unknown(parsed, name, true);
       continue;
     }
-    if (!option.value || (option.valued && !option.valued.includes(name))) {
+    if ((option.value ?? false) === false || (option.valued && !option.valued.includes(name))) {
       record(parsed, option, true);
       continue;
     }

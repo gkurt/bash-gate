@@ -1,0 +1,28 @@
+{
+  "models": [
+    {
+      "id": "claude-fable-5-1",
+      "aliases": ["fable-5-1"],
+      "cutoff": "2026-06",
+      "source": "https://platform.claude.com/docs/en/about-claude/models/overview"
+    },
+    {
+      "id": "claude-opus-5-5",
+      "aliases": ["opus-5-5"],
+      "cutoff": "2026-06",
+      "source": "https://platform.claude.com/docs/en/about-claude/models/overview"
+    },
+    {
+      "id": "claude-sonnet-5-5",
+      "aliases": ["sonnet-5-5"],
+      "cutoff": "2026-06",
+      "source": "https://platform.claude.com/docs/en/about-claude/models/overview"
+    },
+    {
+      "id": "claude-haiku-5-5",
+      "aliases": ["haiku-5-5"],
+      "cutoff": "2026-06",
+      "source": "https://platform.claude.com/docs/en/about-claude/models/overview"
+    }
+  ]
+}

@@ -1,13 +1,35 @@
 import { describe, expect, test } from 'bun:test';
-import fc from 'fast-check';
-import { analyze, check, evaluate, recommended, type Arg, type Decision, type Effect, type Invocation, type Policy, type Rule } from '../src/index.ts';
-import { matchRule } from '../src/policy.ts';
+import * as fc from 'fast-check';
+import {
+  analyze,
+  check,
+  evaluate,
+  recommended,
+  type Arg,
+  type Decision,
+  type Effect,
+  type Invocation,
+  type Policy,
+  type Rule,
+} from '#src/index.ts';
+import { matchRule } from '#src/policy.ts';
 
 /** Properties S2, S3 and S5 of THREAT_MODEL.md. */
 
 const runs = Number(process.env.PROPERTY_RUNS ?? 2000);
 const severity: Record<Decision, number> = { allow: 0, ask: 1, deny: 2 };
-const effects: Effect[] = ['fs:read', 'fs:write', 'fs:delete', 'network', 'privilege', 'exec:arbitrary', 'exec:project', 'exec:file', 'exec:remote', 'shell-state'];
+const effects: Effect[] = [
+  'fs:read',
+  'fs:write',
+  'fs:delete',
+  'network',
+  'privilege',
+  'exec:arbitrary',
+  'exec:project',
+  'exec:file',
+  'exec:remote',
+  'shell-state',
+];
 
 const staticArg = (value: string): Arg => ({ kind: 'static', value });
 const dynamicArg = fc.record({
@@ -34,30 +56,28 @@ const invocation: fc.Arbitrary<Invocation> = fc
     path: fc.constantFrom(undefined, '/bin/x', './x'),
     cwd: fc.constantFrom('.', '/', '/srv', undefined),
   })
-  .map(
-    (r): Invocation => ({
-      program: r.program,
-      ...(r.path ? { path: r.path } : {}),
-      kind: 'external',
-      argv: [],
-      subcommands: r.program === 'git' ? [...r.subcommands] : [],
-      options: Object.fromEntries(r.options.map((name) => [name, [true]])),
-      unknownOptions: [],
-      positionals: r.positionals,
-      maybeOptions: r.maybeOptions || r.open,
-      open: r.open,
-      specified: true,
-      effects: r.effects,
-      reads: [],
-      writes: r.writes,
-      cwd: r.cwd,
-      via: [],
-      nesting: [],
-      shape: '',
-      span: [0, 0],
-      text: '',
-    }),
-  );
+  .map((r): Invocation => ({
+    program: r.program,
+    ...(r.path ? { path: r.path } : {}),
+    kind: 'external',
+    argv: [],
+    subcommands: r.program === 'git' ? [...r.subcommands] : [],
+    options: Object.fromEntries(r.options.map((name) => [name, [true]])),
+    unknownOptions: [],
+    positionals: r.positionals,
+    maybeOptions: r.maybeOptions || r.open,
+    open: r.open,
+    specified: true,
+    effects: r.effects,
+    reads: [],
+    writes: r.writes,
+    cwd: r.cwd,
+    via: [],
+    nesting: [],
+    shape: '',
+    span: [0, 0],
+    text: '',
+  }));
 
 const optional = <T>(arbitrary: fc.Arbitrary<T>) => fc.option(arbitrary, { nil: undefined });
 const rule: fc.Arbitrary<Rule> = fc
@@ -89,11 +109,23 @@ const additions: fc.Arbitrary<(i: Invocation) => Invocation> = fc.oneof(
 
 /** Ways to make something about an invocation unknown. */
 const unknowns: fc.Arbitrary<(i: Invocation) => Invocation> = fc.oneof(
-  dynamicArg.chain((a) => fc.nat().map((n) => (i: Invocation) => ({ ...i, positionals: i.positionals.map((p, k) => (k === n % Math.max(1, i.positionals.length) ? a : p)) }))),
-  dynamicArg.chain((a) => fc.nat().map((n) => (i: Invocation) => ({ ...i, writes: i.writes.map((w, k) => (k === n % Math.max(1, i.writes.length) ? a : w)) }))),
+  dynamicArg.chain((a) =>
+    fc.nat().map((n) => (i: Invocation) => ({
+      ...i,
+      positionals: i.positionals.map((p, k) => (k === n % Math.max(1, i.positionals.length) ? a : p)),
+    })),
+  ),
+  dynamicArg.chain((a) =>
+    fc.nat().map((n) => (i: Invocation) => ({ ...i, writes: i.writes.map((w, k) => (k === n % Math.max(1, i.writes.length) ? a : w)) })),
+  ),
   fc.constant((i: Invocation) => ({ ...i, program: null })),
   fc.constant((i: Invocation) => ({ ...i, maybeOptions: true })),
-  fc.constant((i: Invocation) => ({ ...i, open: true, maybeOptions: true, positionals: [...i.positionals, { kind: 'dynamic', text: '…', reason: 'stdin', split: true, prefix: '' } as Arg] })),
+  fc.constant((i: Invocation): Invocation => ({
+    ...i,
+    open: true,
+    maybeOptions: true,
+    positionals: [...i.positionals, { kind: 'dynamic', text: '…', reason: 'stdin', split: true, prefix: '' }],
+  })),
   fc.constant((i: Invocation) => ({ ...i, path: './x' })),
 );
 
@@ -153,11 +185,88 @@ describe('S3: allow is earned', () => {
 
 /** Words a shell line is made of, to make syntax soup. */
 const tokens = [
-  'rm', '-rf', '/', 'git', 'push', '-f', 'bash', '-c', 'eval', 'env', 'sudo', 'xargs', 'find', '-exec', '{}', ';', '+',
-  '&&', '||', '|', '&', ';;', '(', ')', '{', '}', '$(', '`', '"', "'", '$\'', '\\', '\n', '$x', '${x', '}', '${x:-', '$((',
-  '))', '[[', ']]', '<<', 'EOF', '<(', '>(', '>', '<', '2>&1', '#', '!', 'if', 'then', 'fi', 'for', 'in', 'do', 'done',
-  'case', 'esac', 'function', 'f()', 'alias', 'shopt', '-s', 'expand_aliases', 'hash', '-p', 'trap', '=', 'x=', '*', '?',
-  '[a]', '~', '..', '{a,b}', '{1..3}', 'coproc', 'select', 'time', 'while', 'until',
+  'rm',
+  '-rf',
+  '/',
+  'git',
+  'push',
+  '-f',
+  'bash',
+  '-c',
+  'eval',
+  'env',
+  'sudo',
+  'xargs',
+  'find',
+  '-exec',
+  '{}',
+  ';',
+  '+',
+  '&&',
+  '||',
+  '|',
+  '&',
+  ';;',
+  '(',
+  ')',
+  '{',
+  '}',
+  '$(',
+  '`',
+  '"',
+  "'",
+  "$'",
+  '\\',
+  '\n',
+  '$x',
+  '${x',
+  '}',
+  '${x:-',
+  '$((',
+  '))',
+  '[[',
+  ']]',
+  '<<',
+  'EOF',
+  '<(',
+  '>(',
+  '>',
+  '<',
+  '2>&1',
+  '#',
+  '!',
+  'if',
+  'then',
+  'fi',
+  'for',
+  'in',
+  'do',
+  'done',
+  'case',
+  'esac',
+  'function',
+  'f()',
+  'alias',
+  'shopt',
+  '-s',
+  'expand_aliases',
+  'hash',
+  '-p',
+  'trap',
+  '=',
+  'x=',
+  '*',
+  '?',
+  '[a]',
+  '~',
+  '..',
+  '{a,b}',
+  '{1..3}',
+  'coproc',
+  'select',
+  'time',
+  'while',
+  'until',
 ];
 const soup = fc
   .tuple(fc.array(fc.oneof(fc.constantFrom(...tokens), fc.string({ maxLength: 4 })), { maxLength: 24 }), fc.constantFrom(' ', '', '\t'))
@@ -178,7 +287,8 @@ describe('S5: fail closed', () => {
     fc.assert(
       fc.property(soup, (source) => {
         const { findings } = analyze(source);
-        if (findings.some((f) => f.kind === 'parse-error')) expect(check(source, { rules: [{ decision: 'allow' }], default: 'allow' }).decision).not.toBe('allow');
+        if (findings.some((f) => f.kind === 'parse-error'))
+          expect(check(source, { rules: [{ decision: 'allow' }], default: 'allow' }).decision).not.toBe('allow');
       }),
       { numRuns: runs },
     );

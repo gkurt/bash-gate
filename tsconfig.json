@@ -10,6 +10,9 @@
     "verbatimModuleSyntax": true,
     "erasableSyntaxOnly": true,
     "noEmit": true,
+    // tsc never emits (noEmit), but tsdown reads `declarationMap` for .d.ts source maps; it requires `declaration`.
+    "declaration": true,
+    "declarationMap": true,
 
     "strict": true,
     "skipLibCheck": true,

@@ -1,0 +1,79 @@
+{
+  "tool": "github",
+  "name": "GitHub (github.com)",
+  "reviewed": "2026-10-26",
+  "changelogs": ["https://github.blog/changelog/"],
+  "entries": [
+    {
+      "id": "github/ai-scan",
+      "date": "2026-10-15",
+      "feature": "AI Scan for pull requests (GA)",
+      "summary": "Advisory security findings for languages CodeQL does not cover (e.g. PHP, Terraform).",
+      "docs": "https://github.blog/changelog/2026-10-15-ai-scan-for-pull-requests-generally-available/"
+    },
+    {
+      "id": "github/draft-pr-limits",
+      "date": "2026-10-08",
+      "feature": "Draft PRs count toward PR limits",
+      "summary": "Pull request limits can be set to include drafts.",
+      "docs": "https://github.blog/changelog/2026-10-08-draft-pull-requests-count-toward-pull-request-limits/"
+    },
+    {
+      "id": "github/triage-archive",
+      "date": "2026-10-08",
+      "feature": "Triage role can archive PRs",
+      "summary": "Triage role or higher can archive and unarchive PRs; archived PRs are hidden from the public and block new activity.",
+      "docs": "https://github.blog/changelog/2026-10-08-triage-role-users-or-higher-can-now-archive-pull-requests/"
+    },
+    {
+      "id": "github/stacked-prs-ga",
+      "date": "2026-10-06",
+      "feature": "Stacked pull requests (GA)",
+      "summary": "A stack merges through the merge queue as one group; \"Rebase stack\" keeps approvals. Use the gh stack extension and its skill.",
+      "docs": "https://docs.github.com/en/pull-requests/get-started/about-stacked-prs",
+      "skill": "gh skill install github/gh-stack"
+    },
+    {
+      "id": "github/async-merge-api",
+      "date": "2026-10-01",
+      "feature": "Async merge API (GA)",
+      "summary": "Asynchronous merges through the API.",
+      "docs": "https://github.blog/changelog/2026-10-01-github-async-merge-api-generally-available/"
+    },
+    {
+      "id": "github/repo-prs-page",
+      "date": "2026-09-21",
+      "feature": "Refreshed repository pull requests page (GA)",
+      "summary": "New pull request list for repositories.",
+      "docs": "https://github.blog/changelog/2026-09-21-refreshed-repository-pull-requests-page-generally-available/"
+    },
+    {
+      "id": "github/stacked-prs-preview",
+      "date": "2026-07-30",
+      "feature": "Stacked pull requests (public preview)",
+      "summary": "Chains of PRs that build on each other.",
+      "docs": "https://github.blog/changelog/2026-07-30-stacked-pull-requests-are-now-in-public-preview/"
+    },
+    {
+      "id": "github/archive-prs",
+      "date": "2026-07-16",
+      "feature": "Archive pull requests",
+      "summary": "Admins can archive PRs (extended to the triage role on 2026-10-08).",
+      "docs": "https://github.blog/changelog/2026-07-16-repository-admins-can-archive-pull-requests/"
+    },
+    {
+      "id": "github/prs-dashboard",
+      "date": "2026-07-09",
+      "feature": "Pull requests dashboard (GA)",
+      "summary": "New cross-repository pull requests dashboard.",
+      "docs": "https://github.blog/changelog/2026-07-09-new-pull-requests-dashboard-is-now-generally-available/"
+    },
+    {
+      "id": "github/pr-limits-no-write",
+      "date": "2026-06-17",
+      "feature": "Limit open PRs from users without write access",
+      "summary": "Repositories can cap how many PRs such users may have open.",
+      "docs": "https://github.blog/changelog/2026-06-17-limit-open-pull-requests-for-users-without-write-access/"
+    }
+  ]
+}

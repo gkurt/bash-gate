@@ -24,7 +24,9 @@ const special = /^(?:[0-9]+|[@*#?$!_-])$/;
  * unquoted expansions. A word with any dynamic part is one dynamic argument; a static word may be none or several.
  */
 export function resolveWord(word: Word, lookup: Lookup): Arg[] {
-  const alternatives = word.parts ? resolveParts(word.parts, lookup, false) : [[{ kind: 'text', value: word.value, split: false } as Segment]];
+  const alternatives = word.parts
+    ? resolveParts(word.parts, lookup, false)
+    : [[{ kind: 'text', value: word.value, split: false } as Segment]];
   if (!alternatives) return [dynamicArg(word.text, 'variable', true, '')];
   return alternatives.flatMap((alternative) => toArgs(alternative, word.text));
 }
@@ -54,7 +56,8 @@ export function resolveValue(word: Word, lookup: Lookup): Value {
 export function resolveWords(text: string, lookup: Lookup): Arg[] | undefined {
   const script = parse(`: ${text}`);
   const command = script.commands[0]?.command;
-  if (script.errors?.length || script.commands.length !== 1 || command?.type !== 'Command' || command.redirects.length) return undefined;
+  if ((script.errors?.length ?? 0) > 0 || script.commands.length !== 1 || command?.type !== 'Command' || command.redirects.length > 0)
+    return undefined;
   return command.suffix.flatMap((item) => {
     if (item.type === 'Word') return resolveWord(item, lookup);
     return item.type === 'Assignment' ? [dynamicArg(item.text, 'variable', false, '')] : [];
@@ -158,7 +161,9 @@ function expandBraces(text: string, lookup: Lookup): Alternative[] | undefined {
     }
     const word = parseWord(item);
     if (!word) return undefined;
-    const alternatives = word.parts ? resolveParts(word.parts, lookup, false) : [[{ kind: 'text', value: word.value, split: false } as Segment]];
+    const alternatives = word.parts
+      ? resolveParts(word.parts, lookup, false)
+      : [[{ kind: 'text', value: word.value, split: false } as Segment]];
     if (!alternatives) return undefined;
     result.push(...alternatives);
     if (result.length > maxAlternatives) return undefined;
@@ -169,7 +174,8 @@ function expandBraces(text: string, lookup: Lookup): Alternative[] | undefined {
 function parseWord(text: string): Word | undefined {
   const script = parse(`: ${text}`);
   const command = script.commands[0]?.command;
-  if (script.errors?.length || script.commands.length !== 1 || command?.type !== 'Command' || command.suffix.length !== 1) return undefined;
+  if ((script.errors?.length ?? 0) > 0 || script.commands.length !== 1 || command?.type !== 'Command' || command.suffix.length !== 1)
+    return undefined;
   const word = command.suffix[0];
   return word?.type === 'Word' ? word : undefined;
 }
@@ -190,10 +196,13 @@ function splitTopLevel(text: string): string[] {
       if (c === quote) quote = undefined;
       continue;
     }
-    if (c === "'" || c === '"') quote = c;
-    else if (c === '{') depth++;
-    else if (c === '}') depth--;
-    else if (c === ',' && depth === 0) {
+    if (c === "'" || c === '"') {
+      quote = c;
+    } else if (c === '{') {
+      depth++;
+    } else if (c === '}') {
+      depth--;
+    } else if (c === ',' && depth === 0) {
       items.push(text.slice(start, i));
       start = i + 1;
     }
@@ -210,26 +219,34 @@ function expandSequence(text: string): string[] | undefined {
   if (!match) return undefined;
   const from = numeric ? Number(match[1]) : match[1]!.charCodeAt(0);
   const to = numeric ? Number(match[2]) : match[2]!.charCodeAt(0);
-  const step = Math.abs(Number(match[3] ?? 1)) || 1;
+  const size = Math.abs(Number(match[3] ?? 1));
+  const step = size > 0 ? size : 1;
   if (Math.abs(to - from) / step >= maxAlternatives) return undefined;
   const values: string[] = [];
-  for (let n = from; from <= to ? n <= to : n >= to; n += from <= to ? step : -step) {
+  for (let n = from; from <= to ? n <= to : n >= to; n += from <= to ? step : -step)
     values.push(numeric ? String(n) : String.fromCharCode(n));
-  }
+
   return values;
 }
 
 /** Field splitting on default `IFS`: unquoted expansions split, quoted text joins its neighbours. */
 function toArgs(alternative: Alternative, text: string): Arg[] {
   const dynamic = alternative.filter((segment) => segment.kind === 'dynamic');
-  if (dynamic.length) {
+  if (dynamic.length > 0) {
     let prefix = '';
     for (const segment of alternative) {
       if (segment.kind === 'dynamic' || segment.split) break;
       prefix += segment.value;
     }
     const reason = dynamic.find((segment) => segment.reason !== 'variable')?.reason ?? dynamic[0]!.reason;
-    return [dynamicArg(text, reason, dynamic.some((segment) => segment.split), prefix)];
+    return [
+      dynamicArg(
+        text,
+        reason,
+        dynamic.some((segment) => segment.split),
+        prefix,
+      ),
+    ];
   }
   const fields: string[] = [];
   let current = '';

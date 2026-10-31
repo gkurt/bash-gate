@@ -8,7 +8,9 @@ export type DynamicReason = 'variable' | 'positional' | 'substitution' | 'arithm
  * run will know. `split` marks an unquoted dynamic word, which may become no words or many (and so may be options);
  * `prefix` is the static text before the first dynamic part (`--out=` in `--out=$f`).
  */
-export type Arg = { kind: 'static'; value: string } | { kind: 'dynamic'; text: string; reason: DynamicReason; split: boolean; prefix: string };
+export type Arg =
+  | { kind: 'static'; value: string }
+  | { kind: 'dynamic'; text: string; reason: DynamicReason; split: boolean; prefix: string };
 
 /**
  * What running an invocation can do, beyond printing:

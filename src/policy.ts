@@ -92,13 +92,22 @@ const severity: Record<Decision, number> = { allow: 0, ask: 1, deny: 2 };
 
 export function evaluate(analysis: Analysis, policy: Policy, options: EvaluateOptions = {}): Verdict {
   const reasons: Reason[] = [];
-  for (const invocation of analysis.invocations) {
+  for (const invocation of analysis.invocations)
     if (invocation.kind !== 'function') reasons.push(decide(invocation, policy, options.realpath));
-  }
+
   for (const finding of analysis.findings) {
-    reasons.push({ decision: policy.findings?.[finding.kind] ?? 'ask', message: finding.message, span: finding.span, certain: true, finding });
+    reasons.push({
+      decision: policy.findings?.[finding.kind] ?? 'ask',
+      message: finding.message,
+      span: finding.span,
+      certain: true,
+      finding,
+    });
   }
-  const decision = reasons.reduce<Decision>((worst, reason) => (severity[reason.decision] > severity[worst] ? reason.decision : worst), 'allow');
+  const decision = reasons.reduce<Decision>(
+    (worst, reason) => (severity[reason.decision] > severity[worst] ? reason.decision : worst),
+    'allow',
+  );
   return {
     decision,
     reasons: reasons.filter((reason) => reason.decision !== 'allow').sort((a, b) => severity[b.decision] - severity[a.decision]),
@@ -128,7 +137,13 @@ function decide(invocation: Invocation, policy: Policy, realpath?: EvaluateOptio
     const message = `May match ${describe(maybeDenied)}${maybeDenied.reason ? ` (${maybeDenied.reason})` : ''}: arguments are only known at run time`;
     floor = { ...base, decision: policy.strict ? 'deny' : 'ask', certain: false, rule: maybeDenied, message };
   } else if (asked) {
-    floor = { ...base, decision: 'ask', certain: matchRule(asked, invocation) === 2, rule: asked, message: asked.reason ?? `Asks: ${describe(asked)}` };
+    floor = {
+      ...base,
+      decision: 'ask',
+      certain: matchRule(asked, invocation) === 2,
+      rule: asked,
+      message: asked.reason ?? `Asks: ${describe(asked)}`,
+    };
   }
   return floor && severity[floor.decision] >= severity[above.decision] ? floor : above;
 }
@@ -141,16 +156,19 @@ export function matchRule(rule: Rule, invocation: Invocation, realpath?: Evaluat
     if (tri < result) result = tri;
   };
   if (rule.command !== undefined) and(matchCommand(rule.command, invocation));
-  if (rule.options && result) and(matchOptions(rule.options, invocation, all));
-  if (rule.args && result) and(matchPaths(rule.args, invocation.positionals, invocation, all, realpath));
-  if (rule.writes && result) and(matchPaths(rule.writes, invocation.writes, invocation, all, realpath));
-  if (rule.effects && result) and(matchEffects(rule.effects, invocation, all));
+  if (rule.options && result > 0) and(matchOptions(rule.options, invocation, all));
+  if (rule.args && result > 0) and(matchPaths(rule.args, invocation.positionals, invocation, all, realpath));
+  if (rule.writes && result > 0) and(matchPaths(rule.writes, invocation.writes, invocation, all, realpath));
+  if (rule.effects && result > 0) and(matchEffects(rule.effects, invocation, all));
   return result;
 }
 
 function matchCommand(pattern: string, invocation: Invocation): Tri {
   if (invocation.program === null) return 1;
-  const [program = '*', ...subcommands] = pattern.trim().split(/\s+/).map((token) => token.split('|'));
+  const [program = '*', ...subcommands] = pattern
+    .trim()
+    .split(/\s+/)
+    .map((token) => token.split('|'));
   if (!program.includes('*') && !program.includes(invocation.program)) return 0;
   let result: Tri = 2;
   for (const [k, alternatives] of subcommands.entries()) {
@@ -188,7 +206,9 @@ function matchOptions(names: string[], invocation: Invocation, all: boolean): Tr
 /** It has any of `effects` (`all`: it has no others). A dynamic option may be one with effects of its own. */
 function matchEffects(effects: Effect[], invocation: Invocation, all: boolean): Tri {
   const root = invocation.program === null ? undefined : specFor(invocation.program);
-  const possible = invocation.maybeOptions ? [root, specAt(root, invocation.subcommands)].flatMap((spec) => spec?.options?.flatMap((option) => option.effects ?? []) ?? []) : [];
+  const possible = invocation.maybeOptions
+    ? [root, specAt(root, invocation.subcommands)].flatMap((spec) => spec?.options?.flatMap((option) => option.effects ?? []) ?? [])
+    : [];
   if (all) {
     if (invocation.effects.some((effect) => !effects.includes(effect))) return 0;
     return invocation.program === null || possible.some((effect) => !effects.includes(effect)) ? 1 : 2;
@@ -213,7 +233,9 @@ function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: b
     const resolved = resolvePath(invocation.cwd, arg.value, invocation.home);
     const physical =
       realpath && invocation.cwd?.startsWith('/') && resolved?.startsWith('/') ? physicalPath(resolved, realpath) : undefined;
-    const forms = [arg.value, resolved, resolved === undefined ? undefined : tildePath(resolved, invocation.home), physical].filter((form) => form !== undefined);
+    const forms = [arg.value, resolved, resolved === undefined ? undefined : tildePath(resolved, invocation.home), physical].filter(
+      (form) => form !== undefined,
+    );
     const matches = patterns.some((pattern) => forms.some((form) => pattern.test(form)));
     const realMatches = physical !== undefined && patterns.some((pattern) => pattern.test(physical));
     if (all && (!matches || (realpath !== undefined && !realMatches))) return 0;
@@ -249,9 +271,13 @@ function globToRegExp(glob: string): RegExp {
     if (c === '*' && glob[i + 1] === '*') {
       source += '.*';
       i++;
-    } else if (c === '*') source += '[^/]*';
-    else if (c === '?') source += '[^/]';
-    else source += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    } else if (c === '*') {
+      source += '[^/]*';
+    } else if (c === '?') {
+      source += '[^/]';
+    } else {
+      source += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    }
   }
   return new RegExp(`^${source}$`);
 }

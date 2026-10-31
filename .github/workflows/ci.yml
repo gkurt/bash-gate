@@ -15,10 +15,11 @@ jobs:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
       - run: bun i --frozen-lockfile
-      - run: bun run typecheck
+      - run: bun check
       - run: bun run test
         env:
           PROPERTY_RUNS: 5000
+      - run: bun typecheck
       - run: bun run build
       # The built package, as Node loads it.
       - run: node --input-type=module -e "import { check, recommended } from './dist/index.js'; if (check('rm -rf /', recommended).decision !== 'deny') process.exit(1);"

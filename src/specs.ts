@@ -1,5 +1,5 @@
-import type { Arg, Effect } from './types.ts';
 import type { CommandSpec, OptionSpec, Parsed } from './argv.ts';
+import type { Arg, Effect } from './types.ts';
 
 /**
  * An option from its spellings, space-separated: a trailing `=` takes a value (`-n= --lines=`), `=?` an attached one
@@ -16,7 +16,12 @@ function o(spellings: string, extra: Omit<OptionSpec, 'names' | 'value' | 'value
     return name.slice(0, -suffix.length);
   });
   names.sort((a, b) => Number(b.startsWith('--')) - Number(a.startsWith('--')));
-  return { names, ...(value ? { value } : {}), ...(value && valued.length < names.length ? { valued } : {}), ...extra };
+  return {
+    names,
+    ...(value !== undefined ? { value } : {}),
+    ...(value !== undefined && valued.length < names.length ? { valued } : {}),
+    ...extra,
+  };
 }
 
 /** Options from spellings, or from specs when they need more than spellings. */
@@ -76,7 +81,7 @@ function interpreter(options: OptionSpec[]): CommandSpec {
     options: [...options, ...opts(...quiet)],
     finish(parsed) {
       if (Object.keys(parsed.options).some((name) => quiet.includes(name))) return;
-      if (options.some((option) => option.effects?.length && parsed.options[option.names[0]!])) return;
+      if (options.some((option) => (option.effects?.length ?? 0) > 0 && parsed.options[option.names[0]!] !== undefined)) return;
       const [first] = parsed.positionals;
       if (first) {
         parsed.effects.add('exec:file');
@@ -145,7 +150,7 @@ function finishConfig(parsed: Parsed): void {
   parsed.effects.add('fs:write');
   if (!parsed.options['--global'] && !parsed.options['--system'] && !parsed.options['--worktree']) {
     const file = parsed.options['--file']?.[0];
-    parsed.writes.push(file && file !== true ? file : { kind: 'static', value: '.git/config' });
+    parsed.writes.push(file !== undefined && file !== true ? file : { kind: 'static', value: '.git/config' });
   }
   const k = staticValue(key);
   const v = staticValue(value);
@@ -174,17 +179,45 @@ const git: CommandSpec = {
     '--help',
   ),
   subcommands: {
-    status: { abbreviations: true, options: opts('-s --short', '-b --branch', '--porcelain=?', '-u --untracked-files=?', '--ignored=?', '-z') },
-    log: { abbreviations: true, options: opts('-n= --max-count=', '--format=?', '--pretty=?', '--author=', '--grep=', '--since=', '--until=', '--oneline', o('--output=', { role: 'write' })) },
+    status: {
+      abbreviations: true,
+      options: opts('-s --short', '-b --branch', '--porcelain=?', '-u --untracked-files=?', '--ignored=?', '-z'),
+    },
+    log: {
+      abbreviations: true,
+      options: opts(
+        '-n= --max-count=',
+        '--format=?',
+        '--pretty=?',
+        '--author=',
+        '--grep=',
+        '--since=',
+        '--until=',
+        '--oneline',
+        o('--output=', { role: 'write' }),
+      ),
+    },
     show: { abbreviations: true, options: opts('--format=?', '--pretty=?', '--stat=?', '--name-only', o('--output=', { role: 'write' })) },
     diff: {
       abbreviations: true,
-      options: opts('--cached --staged', '--stat=?', '--name-only', '--name-status', '--no-ext-diff', o('--ext-diff', { effects: ['exec:project'] }), o('--output=', { role: 'write' })),
+      options: opts(
+        '--cached --staged',
+        '--stat=?',
+        '--name-only',
+        '--name-status',
+        '--no-ext-diff',
+        o('--ext-diff', { effects: ['exec:project'] }),
+        o('--output=', { role: 'write' }),
+      ),
     },
     'blame|annotate|shortlog|reflog|describe|rev-parse|rev-list|ls-files|ls-tree|ls-remote|show-ref|cat-file|whatchanged|merge-base|name-rev|count-objects|var|check-ignore|check-attr|for-each-ref|help|version':
       { abbreviations: true },
     grep: { abbreviations: true, options: opts('-e=', '-f=', o('-O --open-files-in-pager=?', { effects: ['exec:arbitrary'] })) },
-    'add|stage': { abbreviations: true, effects: ['fs:write'], options: opts('-A --all', '-u --update', '-f --force', '-p --patch', '-n --dry-run', '-N --intent-to-add', '-v --verbose') },
+    'add|stage': {
+      abbreviations: true,
+      effects: ['fs:write'],
+      options: opts('-A --all', '-u --update', '-f --force', '-p --patch', '-n --dry-run', '-N --intent-to-add', '-v --verbose'),
+    },
     commit: {
       abbreviations: true,
       effects: hooks,
@@ -242,7 +275,17 @@ const git: CommandSpec = {
     pull: {
       abbreviations: true,
       effects: ['network', ...hooks],
-      options: opts('-r --rebase=?', '--no-rebase', '--ff-only', '--no-ff', '-f --force', '--no-verify', '-s= --strategy=', '-X= --strategy-option=', o('--upload-pack=', { effects: ['exec:arbitrary'] })),
+      options: opts(
+        '-r --rebase=?',
+        '--no-rebase',
+        '--ff-only',
+        '--no-ff',
+        '-f --force',
+        '--no-verify',
+        '-s= --strategy=',
+        '-X= --strategy-option=',
+        o('--upload-pack=', { effects: ['exec:arbitrary'] }),
+      ),
     },
     fetch: {
       abbreviations: true,
@@ -270,12 +313,36 @@ const git: CommandSpec = {
     checkout: {
       abbreviations: true,
       effects: hooks,
-      options: opts('-b=', '-B=', '-f --force', '--orphan=', '-t --track=?', '--detach', '-p --patch', '--ours', '--theirs', '-m --merge', '-q --quiet'),
+      options: opts(
+        '-b=',
+        '-B=',
+        '-f --force',
+        '--orphan=',
+        '-t --track=?',
+        '--detach',
+        '-p --patch',
+        '--ours',
+        '--theirs',
+        '-m --merge',
+        '-q --quiet',
+      ),
     },
-    switch: { abbreviations: true, effects: hooks, options: opts('-c= --create=', '-C= --force-create=', '-f --force --discard-changes', '-d --detach', '--orphan=', '-t --track=?') },
+    switch: {
+      abbreviations: true,
+      effects: hooks,
+      options: opts('-c= --create=', '-C= --force-create=', '-f --force --discard-changes', '-d --detach', '--orphan=', '-t --track=?'),
+    },
     restore: { abbreviations: true, effects: ['fs:write'], options: opts('-s= --source=', '-S --staged', '-W --worktree', '-p --patch') },
-    reset: { abbreviations: true, effects: ['fs:write'], options: opts('--hard', '--soft', '--mixed', '--keep', '--merge', '-p --patch', '-q --quiet') },
-    clean: { abbreviations: true, effects: ['fs:delete'], options: opts('-f --force', '-d', '-x', '-X', '-n --dry-run', '-i --interactive', '-e= --exclude=', '-q --quiet') },
+    reset: {
+      abbreviations: true,
+      effects: ['fs:write'],
+      options: opts('--hard', '--soft', '--mixed', '--keep', '--merge', '-p --patch', '-q --quiet'),
+    },
+    clean: {
+      abbreviations: true,
+      effects: ['fs:delete'],
+      options: opts('-f --force', '-d', '-x', '-X', '-n --dry-run', '-i --interactive', '-e= --exclude=', '-q --quiet'),
+    },
     branch: {
       abbreviations: true,
       options: opts(
@@ -305,30 +372,80 @@ const git: CommandSpec = {
         (parsed.options['--force'] ??= []).push(true);
       },
     },
-    tag: { abbreviations: true, options: opts('-d --delete', '-f --force', '-a --annotate', '-m= --message=', o('-F= --file=', { role: 'read' }), '-s --sign', '-l --list') },
+    tag: {
+      abbreviations: true,
+      options: opts(
+        '-d --delete',
+        '-f --force',
+        '-a --annotate',
+        '-m= --message=',
+        o('-F= --file=', { role: 'read' }),
+        '-s --sign',
+        '-l --list',
+      ),
+    },
     merge: {
       abbreviations: true,
       effects: hooks,
-      options: opts('--no-ff', '--ff-only', '--squash', '--abort', '--continue', '-m=', '-s= --strategy=', '-X= --strategy-option=', '--no-verify', '--allow-unrelated-histories'),
+      options: opts(
+        '--no-ff',
+        '--ff-only',
+        '--squash',
+        '--abort',
+        '--continue',
+        '-m=',
+        '-s= --strategy=',
+        '-X= --strategy-option=',
+        '--no-verify',
+        '--allow-unrelated-histories',
+      ),
     },
     rebase: {
       abbreviations: true,
       effects: hooks,
-      options: opts('-i --interactive', o('-x= --exec=', { role: 'script' }), '--onto=', '--abort', '--continue', '--skip', '--autosquash', '--root', '-s= --strategy=', '-X= --strategy-option=', '--no-verify', '--update-refs'),
+      options: opts(
+        '-i --interactive',
+        o('-x= --exec=', { role: 'script' }),
+        '--onto=',
+        '--abort',
+        '--continue',
+        '--skip',
+        '--autosquash',
+        '--root',
+        '-s= --strategy=',
+        '-X= --strategy-option=',
+        '--no-verify',
+        '--update-refs',
+      ),
     },
-    'cherry-pick|revert': { abbreviations: true, effects: hooks, options: opts('-n --no-commit', '-e --edit', '-m= --mainline=', '--continue', '--abort', '-x') },
+    'cherry-pick|revert': {
+      abbreviations: true,
+      effects: hooks,
+      options: opts('-n --no-commit', '-e --edit', '-m= --mainline=', '--continue', '--abort', '-x'),
+    },
     stash: {
       abbreviations: true,
       effects: ['fs:write'],
       subcommands: {
-        'push|save': { abbreviations: true, effects: ['fs:write'], options: opts('-m= --message=', '-u --include-untracked', '-a --all', '-k --keep-index', '-p --patch') },
+        'push|save': {
+          abbreviations: true,
+          effects: ['fs:write'],
+          options: opts('-m= --message=', '-u --include-untracked', '-a --all', '-k --keep-index', '-p --patch'),
+        },
         'pop|apply': { effects: ['fs:write'] },
         'drop|clear': { effects: ['fs:delete'] },
         'list|show': {},
         branch: { effects: ['fs:write'] },
       },
     },
-    remote: { options: opts('-v --verbose'), subcommands: { 'add|remove|rm|rename|set-url|set-head|set-branches': { effects: ['fs:write'] }, 'get-url': {}, 'show|prune|update': { effects: ['network'] } } },
+    remote: {
+      options: opts('-v --verbose'),
+      subcommands: {
+        'add|remove|rm|rename|set-url|set-head|set-branches': { effects: ['fs:write'] },
+        'get-url': {},
+        'show|prune|update': { effects: ['network'] },
+      },
+    },
     config: {
       abbreviations: true,
       options: opts(
@@ -353,25 +470,55 @@ const git: CommandSpec = {
       ),
       finish: finishConfig,
     },
-    rm: { abbreviations: true, effects: ['fs:delete'], positionals: 'delete', options: opts('-r', '-f --force', '--cached', '-n --dry-run', '-q --quiet') },
+    rm: {
+      abbreviations: true,
+      effects: ['fs:delete'],
+      positionals: 'delete',
+      options: opts('-r', '-f --force', '--cached', '-n --dry-run', '-q --quiet'),
+    },
     mv: { abbreviations: true, effects: ['fs:write'], options: opts('-f --force', '-k', '-n --dry-run', '-v --verbose') },
     'apply|am': { abbreviations: true, effects: hooks },
     submodule: { effects: ['network', ...hooks] },
     worktree: { effects: ['fs:write'] },
-    init: { abbreviations: true, effects: ['fs:write'], options: opts('--bare', '-b= --initial-branch=', o('--template=', { effects: ['exec:project'] })) },
+    init: {
+      abbreviations: true,
+      effects: ['fs:write'],
+      options: opts('--bare', '-b= --initial-branch=', o('--template=', { effects: ['exec:project'] })),
+    },
     bisect: {
       effects: ['fs:write'],
       subcommands: { run: { command: {} }, 'start|bad|good|new|old|skip|reset|log|replay|visualize|view|terms': { effects: ['fs:write'] } },
     },
-    'difftool|mergetool': { abbreviations: true, effects: ['exec:project'], options: opts(o('-x= --extcmd=', { role: 'script' }), '-t= --tool=', '-y --no-prompt', '-g --gui') },
+    'difftool|mergetool': {
+      abbreviations: true,
+      effects: ['exec:project'],
+      options: opts(o('-x= --extcmd=', { role: 'script' }), '-t= --tool=', '-y --no-prompt', '-g --gui'),
+    },
     'filter-branch': {
       effects: ['fs:write'],
       options: [
-        ...['--env-filter=', '--tree-filter=', '--index-filter=', '--parent-filter=', '--msg-filter=', '--commit-filter=', '--tag-name-filter='].map((name) => o(name, { role: 'script' })),
+        ...[
+          '--env-filter=',
+          '--tree-filter=',
+          '--index-filter=',
+          '--parent-filter=',
+          '--msg-filter=',
+          '--commit-filter=',
+          '--tag-name-filter=',
+        ].map((name) => o(name, { role: 'script' })),
         ...opts('--subdirectory-filter=', '-f --force'),
       ],
     },
-    archive: { abbreviations: true, options: opts(o('-o= --output=', { role: 'write' }), o('--remote=', { effects: ['network'] }), o('--exec=', { effects: ['exec:arbitrary'] }), '--format=', '--prefix=') },
+    archive: {
+      abbreviations: true,
+      options: opts(
+        o('-o= --output=', { role: 'write' }),
+        o('--remote=', { effects: ['network'] }),
+        o('--exec=', { effects: ['exec:arbitrary'] }),
+        '--format=',
+        '--prefix=',
+      ),
+    },
     'format-patch': { abbreviations: true, effects: ['fs:write'], options: opts(o('-o= --output-directory=', { role: 'write' })) },
     'gc|prune|repack|fsck|maintenance|notes|update-ref|update-index|symbolic-ref|replace|sparse-checkout|lfs': { effects: ['fs:write'] },
   },
@@ -387,7 +534,11 @@ const findTakesOne = new Set(
 
 const find: CommandSpec = {
   effects: ['fs:read'],
-  options: opts(o('-delete', { effects: ['fs:delete'] }), ...[...findActions].map((name) => o(name, { effects: ['exec:arbitrary'] })), o('-fprint -fprint0 -fls -fprintf', { effects: ['fs:write'] })),
+  options: opts(
+    o('-delete', { effects: ['fs:delete'] }),
+    ...[...findActions].map((name) => o(name, { effects: ['exec:arbitrary'] })),
+    o('-fprint -fprint0 -fls -fprintf', { effects: ['fs:write'] }),
+  ),
   parse(args, parsed) {
     let i = 0;
     for (; i < args.length; i++) {
@@ -403,7 +554,7 @@ const find: CommandSpec = {
       if (value === undefined) parsed.maybeOptions = true;
       starts.push(arg);
     }
-    if (!starts.length) starts.push({ kind: 'static', value: '.' });
+    if (starts.length === 0) starts.push({ kind: 'static', value: '.' });
     parsed.positionals.push(...starts);
     parsed.reads.push(...starts);
     for (; i < args.length; i++) {
@@ -417,14 +568,20 @@ const find: CommandSpec = {
       const add = (name: string, optionValue: Arg | true = true) => (parsed.options[name] ??= []).push(optionValue);
       if (findActions.has(value)) {
         let end = i + 1;
-        while (end < args.length && !(staticValue(args[end]) === ';' || (staticValue(args[end]) === '+' && staticValue(args[end - 1]) === '{}'))) end++;
+        while (
+          end < args.length &&
+          !(staticValue(args[end]) === ';' || (staticValue(args[end]) === '+' && staticValue(args[end - 1]) === '{}'))
+        )
+          end++;
         const argv = args.slice(i + 1, end).map((word): Arg => {
           const text = staticValue(word);
-          return text?.includes('{}') ? { kind: 'dynamic', text, reason: 'placeholder', split: false, prefix: text.slice(0, text.indexOf('{}')) } : word;
+          return text?.includes('{}')
+            ? { kind: 'dynamic', text, reason: 'placeholder', split: false, prefix: text.slice(0, text.indexOf('{}')) }
+            : word;
         });
         // The command it runs is an invocation of its own, judged on its own; `exec:arbitrary` on the options is
         // only for a dynamic word that may be one of them.
-        if (argv.length) parsed.nested.push({ argv, open: false });
+        if (argv.length > 0) parsed.nested.push({ argv, open: false });
         add(value);
         i = end;
       } else if (value === '-delete') {
@@ -451,7 +608,23 @@ const find: CommandSpec = {
 const copy = (all: boolean): CommandSpec => ({
   abbreviations: true,
   effects: ['fs:write'],
-  options: opts(o('-t= --target-directory=', { role: 'write' }), '-r -R --recursive', '-f --force', '-i --interactive', '-n --no-clobber', '-b --backup=?', '-S= --suffix=', '-T --no-target-directory', '-u --update=?', '-v --verbose', '-a --archive', '-p', '--preserve=?', '-l --link', '-s --symbolic-link'),
+  options: opts(
+    o('-t= --target-directory=', { role: 'write' }),
+    '-r -R --recursive',
+    '-f --force',
+    '-i --interactive',
+    '-n --no-clobber',
+    '-b --backup=?',
+    '-S= --suffix=',
+    '-T --no-target-directory',
+    '-u --update=?',
+    '-v --verbose',
+    '-a --archive',
+    '-p',
+    '--preserve=?',
+    '-l --link',
+    '-s --symbolic-link',
+  ),
   finish(parsed) {
     const targets = parsed.options['--target-directory'] ? [] : parsed.positionals.slice(-1);
     const sources = parsed.options['--target-directory'] ? parsed.positionals : parsed.positionals.slice(0, -1);
@@ -476,7 +649,17 @@ const programs: Record<string, CommandSpec> = {
   // Shells whose code isn't Bash (zsh's glob qualifiers run code, fish and PowerShell are other languages): their code
   // is code the analysis can't see into, never parsed as Bash.
   'zsh|csh|tcsh': interpreter(opts(inline('-c'), '-i', '-l --login', '-f --no-rcs', '-e', '-x', '-v', '-n', '-o=')),
-  fish: interpreter(opts(inline('-c= --command='), inline('-C= --init-command='), '-i --interactive', '-l --login', '-n --no-execute', '-N --no-config', '-P --private')),
+  fish: interpreter(
+    opts(
+      inline('-c= --command='),
+      inline('-C= --init-command='),
+      '-i --interactive',
+      '-l --login',
+      '-n --no-execute',
+      '-N --no-config',
+      '-P --private',
+    ),
+  ),
   'pwsh|powershell|pwsh.exe|powershell.exe|cmd|cmd.exe|nu|xonsh|elvish': { effects: ['exec:arbitrary'] },
   sudo: {
     posix: true,
@@ -507,7 +690,10 @@ const programs: Record<string, CommandSpec> = {
     ),
   },
   doas: { posix: true, effects: ['privilege'], command: {}, options: opts('-u=', '-s', '-n', o('-C=', { role: 'read' })) },
-  su: { effects: ['privilege'], options: opts(o('-c= --command=', { role: 'script' }), '-l --login', '-s= --shell=', '-m -p --preserve-environment', '-g= --group=') },
+  su: {
+    effects: ['privilege'],
+    options: opts(o('-c= --command=', { role: 'script' }), '-l --login', '-s= --shell=', '-m -p --preserve-environment', '-g= --group='),
+  },
   env: {
     posix: true,
     command: { assignments: true },
@@ -525,9 +711,17 @@ const programs: Record<string, CommandSpec> = {
   },
   nice: { posix: true, command: {}, options: opts('-n= --adjustment=') },
   nohup: { posix: true, command: {} },
-  timeout: { posix: true, command: { skip: 1 }, options: opts('-s= --signal=', '-k= --kill-after=', '--preserve-status', '--foreground', '-v --verbose') },
+  timeout: {
+    posix: true,
+    command: { skip: 1 },
+    options: opts('-s= --signal=', '-k= --kill-after=', '--preserve-status', '--foreground', '-v --verbose'),
+  },
   stdbuf: { posix: true, command: {}, options: opts('-i= --input=', '-o= --output=', '-e= --error=') },
-  time: { posix: true, command: {}, options: opts(o('-o= --output=', { role: 'write' }), '-f= --format=', '-a --append', '-p --portability', '-v --verbose', '-q --quiet') },
+  time: {
+    posix: true,
+    command: {},
+    options: opts(o('-o= --output=', { role: 'write' }), '-f= --format=', '-a --append', '-p --portability', '-v --verbose', '-q --quiet'),
+  },
   chroot: { posix: true, effects: ['privilege'], command: { skip: 1 }, options: opts('--userspec=', '--groups=', '--skip-chdir') },
   xargs: {
     posix: true,
@@ -555,9 +749,21 @@ const programs: Record<string, CommandSpec> = {
   },
   watch: {
     posix: true,
-    options: opts('-n= --interval=', '-d --differences=?', '-t --no-title', '-b --beep', '-e --errexit', '-g --chgexit', '-c --color', '-x --exec', '-p --precise', '-w --no-wrap', '-q= --equexit='),
+    options: opts(
+      '-n= --interval=',
+      '-d --differences=?',
+      '-t --no-title',
+      '-b --beep',
+      '-e --errexit',
+      '-g --chgexit',
+      '-c --color',
+      '-x --exec',
+      '-p --precise',
+      '-w --no-wrap',
+      '-q= --equexit=',
+    ),
     finish(parsed) {
-      if (!parsed.positionals.length) return;
+      if (parsed.positionals.length === 0) return;
       if (parsed.options['--exec']) {
         parsed.nested.push({ argv: parsed.positionals, open: false });
         return;
@@ -585,7 +791,7 @@ const programs: Record<string, CommandSpec> = {
         if (match) parsed.effects.add('exec:arbitrary');
       }
       const command = parsed.positionals.slice(1);
-      if (!command.length) return;
+      if (command.length === 0) return;
       parsed.effects.add('exec:remote');
       const dynamic = command.find((arg) => arg.kind === 'dynamic');
       parsed.scripts.push(dynamic ?? { kind: 'static', value: command.map((arg) => staticValue(arg)).join(' ') });
@@ -643,12 +849,41 @@ const programs: Record<string, CommandSpec> = {
   },
   ionice: { posix: true, command: {}, options: opts('-c= --class=', '-n= --classdata=', '-p= --pid=', '-P= --pgid=', '-u= --uid=') },
   // `chrt -p` and `taskset -p` change a running process: there's no command. `taskset -c` reads the mask as a list; it's still a positional.
-  chrt: { posix: true, command: { skip: 1 }, options: opts('-f --fifo', '-r --rr', '-o --other', '-b --batch', '-i --idle', '-d --deadline', '-p --pid', '-R --reset-on-fork', '-m --max', '-a --all-tasks', '-v --verbose'), finish: noCommandWithPid },
+  chrt: {
+    posix: true,
+    command: { skip: 1 },
+    options: opts(
+      '-f --fifo',
+      '-r --rr',
+      '-o --other',
+      '-b --batch',
+      '-i --idle',
+      '-d --deadline',
+      '-p --pid',
+      '-R --reset-on-fork',
+      '-m --max',
+      '-a --all-tasks',
+      '-v --verbose',
+    ),
+    finish: noCommandWithPid,
+  },
   taskset: { posix: true, command: { skip: 1 }, options: opts('-c --cpu-list', '-p --pid', '-a --all-tasks'), finish: noCommandWithPid },
   flock: {
     posix: true,
     command: { skip: 1 },
-    options: opts('-n --nb --nonblock', '-s --shared', '-x -e --exclusive', '-u --unlock', '-o --close', '-F --no-fork', '--verbose', '--fcntl', '-w= --wait= --timeout=', '-E= --conflict-exit-code=', o('-c= --command=', { role: 'script' })),
+    options: opts(
+      '-n --nb --nonblock',
+      '-s --shared',
+      '-x -e --exclusive',
+      '-u --unlock',
+      '-o --close',
+      '-F --no-fork',
+      '--verbose',
+      '--fcntl',
+      '-w= --wait= --timeout=',
+      '-E= --conflict-exit-code=',
+      o('-c= --command=', { role: 'script' }),
+    ),
     finish(parsed) {
       // `flock FILE -c CODE`: -c after the lock file gives shell code, not a program.
       const [nested] = parsed.nested;
@@ -679,18 +914,49 @@ const programs: Record<string, CommandSpec> = {
       if (!parsed.options['--command']) parsed.effects.add('exec:arbitrary');
       const log = parsed.positionals[0];
       if (log && staticValue(log) !== '/dev/null') parsed.writes.push(log);
-      if (parsed.writes.length) parsed.effects.add('fs:write');
+      if (parsed.writes.length > 0) parsed.effects.add('fs:write');
     },
   },
   busybox: {
     posix: true,
     command: {},
   },
-  'python|python3|python2': interpreter(opts(inline('-c='), o('-m=', { effects: ['exec:project'] }), '-B', '-E', '-I', '-O', '-q', '-s', '-S', '-u', '-v', '-x', '-W=', '-X=')),
-  'node|nodejs': interpreter(
-    opts(inline('-e= --eval='), inline('-p= --print='), o('-r= --require=', { effects: ['exec:file'] }), o('--import=', { effects: ['exec:file'] }), '-c --check', '-i --interactive', '--test', '--watch', '--input-type='),
+  'python|python3|python2': interpreter(
+    opts(inline('-c='), o('-m=', { effects: ['exec:project'] }), '-B', '-E', '-I', '-O', '-q', '-s', '-S', '-u', '-v', '-x', '-W=', '-X='),
   ),
-  perl: interpreter(opts(inline('-e='), inline('-E='), '-n', '-p', o('-i=?', { effects: ['fs:write'] }), '-l=?', '-a', '-F=?', '-M=?', '-m=?', '-I=?', '-w', '-W', '-s', '-x=?', '-0=?')),
+  'node|nodejs': interpreter(
+    opts(
+      inline('-e= --eval='),
+      inline('-p= --print='),
+      o('-r= --require=', { effects: ['exec:file'] }),
+      o('--import=', { effects: ['exec:file'] }),
+      '-c --check',
+      '-i --interactive',
+      '--test',
+      '--watch',
+      '--input-type=',
+    ),
+  ),
+  perl: interpreter(
+    opts(
+      inline('-e='),
+      inline('-E='),
+      '-n',
+      '-p',
+      o('-i=?', { effects: ['fs:write'] }),
+      '-l=?',
+      '-a',
+      '-F=?',
+      '-M=?',
+      '-m=?',
+      '-I=?',
+      '-w',
+      '-W',
+      '-s',
+      '-x=?',
+      '-0=?',
+    ),
+  ),
   ruby: interpreter(opts(inline('-e='), '-n', '-p', o('-i=?', { effects: ['fs:write'] }), '-r=', '-I=', '-w', '-W=?')),
   npm: {
     options: opts(o('--prefix= -C', { role: 'cwd' }), '-w= --workspace=', '-g --global', '-s --silent', '-y --yes'),
@@ -705,10 +971,23 @@ const programs: Record<string, CommandSpec> = {
       'ls|list|la|ll|config|get|set|pkg|prefix|root|bin|help|version|explain|why|doctor': {},
     },
   },
-  npx: { posix: true, effects: ['network', 'exec:arbitrary'], options: opts('-p= --package=', o('-c= --call=', { role: 'script' }), '-y --yes', '--no') },
+  npx: {
+    posix: true,
+    effects: ['network', 'exec:arbitrary'],
+    options: opts('-p= --package=', o('-c= --call=', { role: 'script' }), '-y --yes', '--no'),
+  },
   make: {
     effects: ['exec:project'],
-    options: opts(o('-C= --directory=', { role: 'cwd' }), o('-f= --file= --makefile=', { role: 'read' }), '-j --jobs=?', '-k --keep-going', '-n --just-print --dry-run', '-s --silent', '-B --always-make', '-e'),
+    options: opts(
+      o('-C= --directory=', { role: 'cwd' }),
+      o('-f= --file= --makefile=', { role: 'read' }),
+      '-j --jobs=?',
+      '-k --keep-going',
+      '-n --just-print --dry-run',
+      '-s --silent',
+      '-B --always-make',
+      '-e',
+    ),
   },
   tar: {
     effects: ['fs:read'],
@@ -723,7 +1002,9 @@ const programs: Record<string, CommandSpec> = {
       o('--transform=', { effects: ['exec:arbitrary'] }),
       o('--exclude-from=', { role: 'read' }),
       o('-T= --files-from=', { role: 'read' }),
-      ...'-x --extract --get -c --create -t --list -v --verbose -z --gzip -j --bzip2 -J --xz -p --preserve-permissions -P --absolute-names -k --keep-old-files -O --to-stdout'.split(' ').map((name) => o(name)),
+      ...'-x --extract --get -c --create -t --list -v --verbose -z --gzip -j --bzip2 -J --xz -p --preserve-permissions -P --absolute-names -k --keep-old-files -O --to-stdout'
+        .split(' ')
+        .map((name) => o(name)),
     ),
     finish(parsed) {
       const oldMode = parsed.positionals[0]?.kind === 'static' ? parsed.positionals[0].value : '';
@@ -731,11 +1012,13 @@ const programs: Record<string, CommandSpec> = {
       const extracting = /(?:\bx\b|^[a-zA-Z]*x[a-zA-Z]*$)|--extract|--get/.test(mode);
       const creating = /(?:\bc\b|^[a-zA-Z]*c[a-zA-Z]*$)|--create/.test(mode);
       const archive = parsed.options['--file']?.[0] ?? (oldMode ? parsed.positionals[1] : undefined);
-      if (archive && archive !== true) {
+      if (archive !== undefined && archive !== true) {
         if (creating) {
           parsed.writes.push(archive);
           parsed.effects.add('fs:write');
-        } else parsed.reads.push(archive);
+        } else {
+          parsed.reads.push(archive);
+        }
       }
       if (extracting) {
         parsed.effects.add('fs:write');
@@ -754,7 +1037,9 @@ const programs: Record<string, CommandSpec> = {
       o('--include-from=', { role: 'read' }),
       o('--backup-dir=', { role: 'write' }),
       o('--log-file=', { role: 'write' }),
-      ...'-a --archive -r --recursive -v --verbose -n --dry-run -d --dirs -l --links -t --times -p --perms -g --group -o --owner -D --devices -z --compress -e --rsh -P --partial'.split(' ').map((name) => o(name)),
+      ...'-a --archive -r --recursive -v --verbose -n --dry-run -d --dirs -l --links -t --times -p --perms -g --group -o --owner -D --devices -z --compress -e --rsh -P --partial'
+        .split(' ')
+        .map((name) => o(name)),
     ),
     finish(parsed) {
       parsed.writes.push({ kind: 'dynamic', text: 'rsync destination', reason: 'placeholder', split: false, prefix: '' });
@@ -770,7 +1055,8 @@ const programs: Record<string, CommandSpec> = {
       '-U=',
     ),
     finish(parsed) {
-      if (parsed.positionals.some((arg) => arg.kind === 'dynamic' || arg.kind === 'static' && arg.value.startsWith('+'))) parsed.effects.add('exec:arbitrary');
+      if (parsed.positionals.some((arg) => arg.kind === 'dynamic' || (arg.kind === 'static' && arg.value.startsWith('+'))))
+        parsed.effects.add('exec:arbitrary');
     },
   },
   zip: {
@@ -812,29 +1098,60 @@ const programs: Record<string, CommandSpec> = {
         parsed.writes.push(...inputs);
         parsed.effects.add('fs:write');
       }
-      if (!parsed.options['--expression'] && !parsed.options['--file'] && parsed.positionals.length) {
+      if (!parsed.options['--expression'] && !parsed.options['--file'] && parsed.positionals.length > 0)
         parsed.reads = parsed.reads.filter((arg) => arg !== parsed.positionals[0]);
-      }
     },
   },
   awk: {
     effects: ['fs:read'],
-    options: opts(o('-f=', { role: 'read', effects: ['exec:project'] }), o('-e=', { effects: ['exec:arbitrary'] }), o('-F=', {}), o('-v=', {}), o('-l=', { effects: ['exec:project'] }), '--posix', '--sandbox', '-safe'),
+    options: opts(
+      o('-f=', { role: 'read', effects: ['exec:project'] }),
+      o('-e=', { effects: ['exec:arbitrary'] }),
+      o('-F=', {}),
+      o('-v=', {}),
+      o('-l=', { effects: ['exec:project'] }),
+      '--posix',
+      '--sandbox',
+      '-safe',
+    ),
     finish(parsed) {
-      const code = [...(parsed.options['-e'] ?? []), ...parsed.positionals].map((arg) => (arg === true ? '' : staticValue(arg) ?? '')).join('\n');
+      const code = [...(parsed.options['-e'] ?? []), ...parsed.positionals]
+        .map((arg) => (arg === true ? '' : (staticValue(arg) ?? '')))
+        .join('\n');
       if (/\bsystem\s*\(|\|(?:\s*getline|[^;]*$)|(?:print|printf)[^;\n]*>>?\s*[^=]/.test(code)) parsed.effects.add('exec:arbitrary');
       if (code.includes('@load')) parsed.effects.add('exec:project');
       for (const match of code.matchAll(/(?:print|printf)\b[^;\n]*?(?:>>|>)\s*(?:"([^"]+)"|'([^']+)'|([^\s;]+))/g)) {
         const target = match[1] ?? match[2];
-        parsed.writes.push(target ? { kind: 'static', value: target } : { kind: 'dynamic', text: `awk output ${match[3] ?? ''}`, reason: 'variable', split: false, prefix: '' });
+        parsed.writes.push(
+          target
+            ? { kind: 'static', value: target }
+            : { kind: 'dynamic', text: `awk output ${match[3] ?? ''}`, reason: 'variable', split: false, prefix: '' },
+        );
         parsed.effects.add('fs:write');
       }
-      if ([...(parsed.options['-f'] ?? []), ...(parsed.options['-l'] ?? [])].some((arg) => arg !== true && arg.kind === 'dynamic')) parsed.maybeOptions = true;
+      if ([...(parsed.options['-f'] ?? []), ...(parsed.options['-l'] ?? [])].some((arg) => arg !== true && arg.kind === 'dynamic'))
+        parsed.maybeOptions = true;
     },
   },
   uniq: {
-    ...reader('-c --count', '-d --repeated', '-u --unique', '-i --ignore-case', '-f= --skip-fields=', '-s= --skip-chars=', '-w= --check-chars='),
-    options: opts('-c --count', '-d --repeated', '-u --unique', '-i --ignore-case', '-f= --skip-fields=', '-s= --skip-chars=', '-w= --check-chars='),
+    ...reader(
+      '-c --count',
+      '-d --repeated',
+      '-u --unique',
+      '-i --ignore-case',
+      '-f= --skip-fields=',
+      '-s= --skip-chars=',
+      '-w= --check-chars=',
+    ),
+    options: opts(
+      '-c --count',
+      '-d --repeated',
+      '-u --unique',
+      '-i --ignore-case',
+      '-f= --skip-fields=',
+      '-s= --skip-chars=',
+      '-w= --check-chars=',
+    ),
     finish(parsed) {
       const output = parsed.positionals[1];
       if (output) {
@@ -845,8 +1162,28 @@ const programs: Record<string, CommandSpec> = {
     },
   },
   xxd: {
-    ...reader('-a --autoskip', '-b --bits', '-c= --cols=', '-g= --groupsize=', '-l= --len=', '-s= --seek=', '-u --uppercase', '-p --postscript', '-r --revert'),
-    options: opts('-a --autoskip', '-b --bits', '-c= --cols=', '-g= --groupsize=', '-l= --len=', '-s= --seek=', '-u --uppercase', '-p --postscript', '-r --revert'),
+    ...reader(
+      '-a --autoskip',
+      '-b --bits',
+      '-c= --cols=',
+      '-g= --groupsize=',
+      '-l= --len=',
+      '-s= --seek=',
+      '-u --uppercase',
+      '-p --postscript',
+      '-r --revert',
+    ),
+    options: opts(
+      '-a --autoskip',
+      '-b --bits',
+      '-c= --cols=',
+      '-g= --groupsize=',
+      '-l= --len=',
+      '-s= --seek=',
+      '-u --uppercase',
+      '-p --postscript',
+      '-r --revert',
+    ),
     finish(parsed) {
       const output = parsed.positionals[1];
       if (output) {
@@ -857,14 +1194,86 @@ const programs: Record<string, CommandSpec> = {
     },
   },
   tree: {
-    ...reader('-d --dirs-only', '-L= --level=', '-a --all', '-f --full-path', '-h --human-readable', '-i --no-indent', '-p --permissions', '-u --owner', '-g --group', '-s --size', '-D --date'),
-    options: opts('-d --dirs-only', '-L= --level=', '-a --all', '-f --full-path', '-h --human-readable', '-i --no-indent', '-p --permissions', '-u --owner', '-g --group', '-s --size', '-D --date', o('-o= --output=', { role: 'write', effects: ['fs:write'] })),
+    ...reader(
+      '-d --dirs-only',
+      '-L= --level=',
+      '-a --all',
+      '-f --full-path',
+      '-h --human-readable',
+      '-i --no-indent',
+      '-p --permissions',
+      '-u --owner',
+      '-g --group',
+      '-s --size',
+      '-D --date',
+    ),
+    options: opts(
+      '-d --dirs-only',
+      '-L= --level=',
+      '-a --all',
+      '-f --full-path',
+      '-h --human-readable',
+      '-i --no-indent',
+      '-p --permissions',
+      '-u --owner',
+      '-g --group',
+      '-s --size',
+      '-D --date',
+      o('-o= --output=', { role: 'write', effects: ['fs:write'] }),
+    ),
   },
-  date: { options: opts(o('-f= --file=', { role: 'read' }), o('-s= --set=', { effects: ['privilege'] }), '-u --utc', '-R --rfc-email', '-I=? --iso-8601=?', '--debug', '--date=', '--reference=') },
-  hostname: { options: opts('-f --fqdn', '-s --short', '-d --domain', '-y --yp', '-i --ip-address', '-I --all-ip-addresses', '-A --all-fqdns'), finish(parsed) { if (parsed.positionals.length) parsed.effects.add('privilege'); } },
-  rm: writer('fs:delete', '-f --force', '-i', '-I', '--interactive=?', '-r -R --recursive', '-d --dir', '-v --verbose', '--one-file-system', '--no-preserve-root', '--preserve-root=?'),
-  'rmdir|unlink|shred': writer('fs:delete', '-p --parents', '-v --verbose', '-u --remove=?', '-z --zero', '-n= --iterations=', '-f --force'),
-  'mkdir|touch|truncate': writer('fs:write', '-p --parents', '-m= --mode=', '-v --verbose', '-s= --size=', '-r= --reference=', '-d= --date=', '-t=', '-a', '-c --no-create'),
+  date: {
+    options: opts(
+      o('-f= --file=', { role: 'read' }),
+      o('-s= --set=', { effects: ['privilege'] }),
+      '-u --utc',
+      '-R --rfc-email',
+      '-I=? --iso-8601=?',
+      '--debug',
+      '--date=',
+      '--reference=',
+    ),
+  },
+  hostname: {
+    options: opts('-f --fqdn', '-s --short', '-d --domain', '-y --yp', '-i --ip-address', '-I --all-ip-addresses', '-A --all-fqdns'),
+    finish(parsed) {
+      if (parsed.positionals.length > 0) parsed.effects.add('privilege');
+    },
+  },
+  rm: writer(
+    'fs:delete',
+    '-f --force',
+    '-i',
+    '-I',
+    '--interactive=?',
+    '-r -R --recursive',
+    '-d --dir',
+    '-v --verbose',
+    '--one-file-system',
+    '--no-preserve-root',
+    '--preserve-root=?',
+  ),
+  'rmdir|unlink|shred': writer(
+    'fs:delete',
+    '-p --parents',
+    '-v --verbose',
+    '-u --remove=?',
+    '-z --zero',
+    '-n= --iterations=',
+    '-f --force',
+  ),
+  'mkdir|touch|truncate': writer(
+    'fs:write',
+    '-p --parents',
+    '-m= --mode=',
+    '-v --verbose',
+    '-s= --size=',
+    '-r= --reference=',
+    '-d= --date=',
+    '-t=',
+    '-a',
+    '-c --no-create',
+  ),
   tee: writer('fs:write', '-a --append', '-i --ignore-interrupts', '-p', '--output-error=?'),
   cp: copy(false),
   mv: copy(true),
@@ -903,7 +1312,9 @@ const programs: Record<string, CommandSpec> = {
       ...'-d= --data= --data-binary= --data-raw= --data-urlencode= --json= -F= --form= -H= --header= -X= --request= -u= --user= -A= --user-agent= -e= --referer= -b= --cookie= -x= --proxy= -m= --max-time= --connect-timeout= -w= --write-out= -r= --range= -C= --continue-at= --retry= -z= --time-cond= --url='
         .split(' ')
         .map((name) => o(name)),
-      ...'-L --location -s --silent -S --show-error -f --fail -k --insecure -I --head -i --include -v --verbose -g --globoff -N --no-buffer -G --get --compressed'.split(' ').map((name) => o(name)),
+      ...'-L --location -s --silent -S --show-error -f --fail -k --insecure -I --head -i --include -v --verbose -g --globoff -N --no-buffer -G --get --compressed'
+        .split(' ')
+        .map((name) => o(name)),
     ),
   },
   wget: {
@@ -926,7 +1337,18 @@ const programs: Record<string, CommandSpec> = {
       '-T= --timeout=',
     ),
   },
-  'cat|less|more|wc|stat|file|nl|od|strings|md5sum|sha1sum|sha256sum|sha512sum|cmp|tac|rev|base64': reader('-n', '-c', '-l', '-w', '-b', '-s', '-v', '-A', '-E', '-T'),
+  'cat|less|more|wc|stat|file|nl|od|strings|md5sum|sha1sum|sha256sum|sha512sum|cmp|tac|rev|base64': reader(
+    '-n',
+    '-c',
+    '-l',
+    '-w',
+    '-b',
+    '-s',
+    '-v',
+    '-A',
+    '-E',
+    '-T',
+  ),
   'head|tail': reader('-n= --lines=', '-c= --bytes=', '-f --follow=?', '-F', '-q --quiet', '-v --verbose', '-z --zero-terminated'),
   'grep|egrep|fgrep': reader(
     '-e= --regexp=',
@@ -1019,7 +1441,25 @@ const programs: Record<string, CommandSpec> = {
     '-c --count',
     '-L= --level=',
   ),
-  ls: reader('-I= --ignore=', '-w= --width=', '--color=?', '--sort=', '--time-style=', '--format=', '-a --all', '-A --almost-all', '-l', '-h --human-readable', '-R --recursive', '-1', '-t', '-r --reverse', '-S', '-d --directory', '-F --classify'),
+  ls: reader(
+    '-I= --ignore=',
+    '-w= --width=',
+    '--color=?',
+    '--sort=',
+    '--time-style=',
+    '--format=',
+    '-a --all',
+    '-A --almost-all',
+    '-l',
+    '-h --human-readable',
+    '-R --recursive',
+    '-1',
+    '-t',
+    '-r --reverse',
+    '-S',
+    '-d --directory',
+    '-F --classify',
+  ),
   'echo|printf|true|false|pwd|whoami|id|uname|which|seq|sleep|yes|nproc|uptime|tput|clear': {},
 };
 

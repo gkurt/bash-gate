@@ -1,6 +1,6 @@
 {
   "name": "bash-gate",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "description": "Static analysis of Bash commands: what they run, with which options and effects, and whether a policy allows it.",
   "keywords": [
     "agent",
@@ -16,11 +16,19 @@
     "shell",
     "static-analysis"
   ],
+  "homepage": "https://github.com/gkurt/bash-gate",
+  "bugs": {
+    "url": "https://github.com/gkurt/bash-gate/issues"
+  },
   "license": "MIT",
   "author": {
     "name": "Gokhan Kurt",
     "email": "krtgkn@gmail.com",
     "url": "https://gkurt.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gkurt/bash-gate.git"
   },
   "files": [
     "dist",
@@ -29,6 +37,9 @@
   ],
   "type": "module",
   "sideEffects": false,
+  "imports": {
+    "#*": "./*"
+  },
   "exports": {
     ".": {
       "import": {
@@ -38,23 +49,41 @@
       "source": "./src/index.ts"
     }
   },
-  "engines": {
-    "node": ">=20"
-  },
   "scripts": {
     "build": "tsdown",
-    "test": "bun test",
     "typecheck": "tsc",
-    "checks": "tsc && bun test",
+    "lint": "oxlint",
+    "format": "oxfmt",
+    "check": "oxlint && oxfmt --check",
+    "fix": "oxlint --fix && oxfmt",
+    "test": "bun test",
+    "checks": "bun check && bun typecheck && bun run test",
+    "prepare": "husky",
+    "tegami": "bun scripts/tegami.mts",
     "prepublishOnly": "bun run checks && bun run build"
   },
   "dependencies": {
     "unbash": "6.0.1"
   },
   "devDependencies": {
-    "@types/bun": "^1.4.3",
+    "@types/bun": "^1.4.4",
     "fast-check": "^4.10.2",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.6.0",
+    "oxfmt": "^0.75.0",
+    "oxlint": "^1.90.0",
+    "oxlint-tsgolint": "^7.0.2005",
+    "tegami": "^1.5.0",
     "tsdown": "^0.23.1",
     "typescript": "^7.0.2"
+  },
+  "lint-staged": {
+    "*": [
+      "oxlint --fix --no-error-on-unmatched-pattern",
+      "oxfmt --no-error-on-unmatched-pattern"
+    ]
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

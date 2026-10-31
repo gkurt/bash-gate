@@ -1,0 +1,126 @@
+{
+  "tool": "gh",
+  "name": "GitHub CLI",
+  "reviewed": "2026-10-26",
+  "version": {
+    "command": ["gh", "--version"],
+    "pattern": "gh version (\\d+\\.\\d+\\.\\d+)"
+  },
+  "changelogs": ["https://github.com/cli/cli/releases"],
+  "entries": [
+    {
+      "id": "gh/auth-expiring",
+      "date": "2026-10-21",
+      "version": "2.103.0",
+      "feature": "gh auth login --expiring: auto-refreshing tokens",
+      "summary": "Short-lived OAuth tokens that refresh automatically (preview). Read `gh auth token` fresh each time; do not cache it.",
+      "check": "gh auth login --help",
+      "docs": "https://github.com/cli/cli/releases/tag/v2.103.0"
+    },
+    {
+      "id": "gh/issue-artifact",
+      "date": "2026-10-21",
+      "version": "2.103.0",
+      "feature": "gh issue artifact: documents attached to issues",
+      "summary": "list/view/create/edit/download/delete documents attached to issues (private preview).",
+      "check": "gh issue artifact --help",
+      "docs": "https://github.com/cli/cli/releases/tag/v2.103.0"
+    },
+    {
+      "id": "gh/auth-clipboard",
+      "date": "2026-09-15",
+      "version": "2.101.0",
+      "feature": "gh auth login copies the device code",
+      "summary": "Copied to the clipboard by default; `gh config set clipboard disabled` turns it off.",
+      "check": "gh config --help",
+      "docs": "https://github.com/cli/cli/releases/tag/v2.101.0"
+    },
+    {
+      "id": "gh/api-host",
+      "date": "2026-09-03",
+      "version": "2.100.0",
+      "feature": "api_host: route API calls through a gateway",
+      "summary": "Per-host setting that sends API traffic through a gateway (experimental).",
+      "check": "gh config --help",
+      "docs": "https://github.com/cli/cli/releases/tag/v2.100.0"
+    },
+    {
+      "id": "gh/agent-help",
+      "date": "2026-09-03",
+      "version": "2.100.0",
+      "feature": "Full command help on misuse when run by an agent",
+      "summary": "When a coding agent runs gh, misuse prints the full command help.",
+      "docs": "https://github.com/cli/cli/releases/tag/v2.100.0"
+    },
+    {
+      "id": "gh/attach",
+      "date": "2026-09-01",
+      "version": "2.99.0",
+      "feature": "--attach: images and video in issues, PRs and comments",
+      "summary": "On issue/pr create/edit/comment: uploads images or video (video takes no alt text), up to 50 per command.",
+      "check": "gh pr create --help",
+      "docs": "https://github.blog/changelog/2026-09-01-github-cli-media-in-issues-pull-requests-and-comments/"
+    },
+    {
+      "id": "gh/issue-develop-worktree",
+      "date": "2026-09-01",
+      "version": "2.99.0",
+      "feature": "gh issue develop --checkout --worktree <path>",
+      "summary": "Checks the issue's branch out into a new worktree.",
+      "check": "gh issue develop --help",
+      "docs": "https://github.com/cli/cli/releases/tag/v2.99.0"
+    },
+    {
+      "id": "gh/pr-checkout-worktree",
+      "date": "2026-08-20",
+      "version": "2.98.0",
+      "feature": "gh pr checkout --worktree <path>",
+      "summary": "Checks the PR out into a new worktree.",
+      "check": "gh pr checkout --help",
+      "docs": "https://github.com/cli/cli/releases/tag/v2.98.0"
+    },
+    {
+      "id": "gh/search-semantic",
+      "date": "2026-08-20",
+      "version": "2.98.0",
+      "feature": "gh search issues --search-type lexical|semantic|hybrid",
+      "summary": "Semantic and hybrid issue search.",
+      "check": "gh search issues --help",
+      "docs": "https://github.com/cli/cli/releases/tag/v2.98.0"
+    },
+    {
+      "id": "gh/project-field-names",
+      "date": "2026-07-31",
+      "version": "2.97.0",
+      "feature": "gh project item-edit / item-list by field name",
+      "summary": "Project fields are referred to by name instead of ID; item-list takes --field <name> columns too.",
+      "check": "gh project item-edit --help",
+      "docs": "https://github.com/cli/cli/releases/tag/v2.97.0"
+    },
+    {
+      "id": "gh/repo-read",
+      "date": "2026-06-17",
+      "feature": "gh repo read-file / read-dir: read without cloning",
+      "summary": "Read a repository without cloning it (preview).",
+      "check": "gh repo read-file --help",
+      "docs": "https://github.blog/changelog/2026-06-17-read-remote-repository-content-with-github-cli/"
+    },
+    {
+      "id": "gh/skill",
+      "date": "2026-04-16",
+      "feature": "gh skill: install and publish agent skills",
+      "summary": "search/preview/install/update/list/publish agent skills hosted in GitHub repos (preview).",
+      "check": "gh skill --help",
+      "docs": "https://github.blog/changelog/2026-04-16-manage-agent-skills-with-github-cli/"
+    },
+    {
+      "id": "gh/stack",
+      "date": "2026-04",
+      "feature": "gh stack: stacked pull requests (extension github/gh-stack)",
+      "summary": "Stacked pull requests. Install with `gh extension install github/gh-stack`.",
+      "check": "gh stack --help",
+      "docs": "https://github.com/github/gh-stack",
+      "skill": "gh skill install github/gh-stack"
+    }
+  ]
+}

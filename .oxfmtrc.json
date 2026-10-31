@@ -1,0 +1,11 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 140,
+  "singleQuote": true,
+  // Sort within blank-line-separated chunks; never insert blank lines between groups.
+  "sortImports": {
+    "newlinesBetween": false,
+    "partitionByNewline": true
+  },
+  "ignorePatterns": ["**/.claude", "**/build", "**/*.gen.ts"]
+}

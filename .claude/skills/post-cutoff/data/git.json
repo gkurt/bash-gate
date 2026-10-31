@@ -1,0 +1,218 @@
+{
+  "tool": "git",
+  "name": "Git",
+  "reviewed": "2026-10-26",
+  "version": {
+    "command": ["git", "--version"],
+    "pattern": "git version (\\d+\\.\\d+(?:\\.\\d+)?)"
+  },
+  "changelogs": ["https://github.com/git/git/tree/master/Documentation/RelNotes", "https://github.blog/open-source/git/"],
+  "entries": [
+    {
+      "id": "git/add-resolved",
+      "date": "2026-09",
+      "version": "2.56.0",
+      "feature": "git add --resolved",
+      "summary": "Stages only the paths that had conflicts; aborts if conflict markers are left.",
+      "check": "git add -h",
+      "docs": "https://github.com/git/git/blob/master/Documentation/RelNotes/2.56.0.adoc"
+    },
+    {
+      "id": "git/history-drop",
+      "date": "2026-09",
+      "version": "2.56.0",
+      "feature": "git history drop <commit>",
+      "summary": "Removes a commit and replays its descendants (experimental command).",
+      "check": "git history -h",
+      "docs": "https://github.com/git/git/blob/master/Documentation/RelNotes/2.56.0.adoc"
+    },
+    {
+      "id": "git/branch-delete-merged",
+      "date": "2026-09",
+      "version": "2.56.0",
+      "feature": "git branch --delete-merged",
+      "summary": "Deletes local branches already merged into their upstream.",
+      "check": "git branch -h",
+      "docs": "https://github.com/git/git/blob/master/Documentation/RelNotes/2.56.0.adoc"
+    },
+    {
+      "id": "git/bisect-reset-when-found",
+      "date": "2026-09",
+      "version": "2.56.0",
+      "feature": "git bisect --reset-when-found[=<where>]",
+      "summary": "Runs `git bisect reset` automatically once the culprit is found.",
+      "check": "git bisect -h",
+      "docs": "https://github.com/git/git/blob/master/Documentation/RelNotes/2.56.0.adoc"
+    },
+    {
+      "id": "git/refs-subcommands",
+      "date": "2026-09",
+      "version": "2.56.0",
+      "feature": "git refs create/delete/update/rename",
+      "summary": "Reference management subcommands.",
+      "check": "git refs -h",
+      "docs": "https://github.com/git/git/blob/master/Documentation/RelNotes/2.56.0.adoc"
+    },
+    {
+      "id": "git/replay-linearize",
+      "date": "2026-09",
+      "version": "2.56.0",
+      "feature": "git replay --linearize",
+      "summary": "Drops merge commits, like `rebase --no-rebase-merges` (experimental command).",
+      "check": "git replay -h",
+      "docs": "https://github.com/git/git/blob/master/Documentation/RelNotes/2.56.0.adoc"
+    },
+    {
+      "id": "git/includeif-worktree",
+      "date": "2026-09",
+      "version": "2.56.0",
+      "feature": "[includeIf] can match the worktree location",
+      "summary": "Config includes can match the worktree location.",
+      "check": "git help config",
+      "docs": "https://github.com/git/git/blob/master/Documentation/RelNotes/2.56.0.adoc"
+    },
+    {
+      "id": "git/follow-remote-head",
+      "date": "2026-09",
+      "version": "2.56.0",
+      "feature": "fetch.followRemoteHEAD: default for every remote",
+      "summary": "Default for the per-remote `remote.<name>.followRemoteHEAD`.",
+      "check": "git help config",
+      "docs": "https://github.com/git/git/blob/master/Documentation/RelNotes/2.56.0.adoc"
+    },
+    {
+      "id": "git/history-fixup",
+      "date": "2026-06",
+      "version": "2.55.0",
+      "feature": "git history fixup",
+      "summary": "Folds staged changes into an earlier commit (experimental command).",
+      "check": "git history -h",
+      "docs": "https://github.com/git/git/blob/master/Documentation/RelNotes/2.55.0.adoc"
+    },
+    {
+      "id": "git/parallel-hooks",
+      "date": "2026-06",
+      "version": "2.55.0",
+      "feature": "Parallel config hooks",
+      "summary": "Hooks defined in config can run in parallel.",
+      "check": "git help hooks",
+      "docs": "https://github.com/git/git/blob/master/Documentation/RelNotes/2.55.0.adoc"
+    },
+    {
+      "id": "git/push-remote-group",
+      "date": "2026-06",
+      "version": "2.55.0",
+      "feature": "git push <remote-group>",
+      "summary": "Pushes to several remotes, like `git fetch` does.",
+      "check": "git help push",
+      "docs": "https://github.com/git/git/blob/master/Documentation/RelNotes/2.55.0.adoc"
+    },
+    {
+      "id": "git/checkout-m-stash",
+      "date": "2026-06",
+      "version": "2.55.0",
+      "feature": "git checkout -m <branch> stashes local changes",
+      "summary": "A failed conflict resolution can be retried.",
+      "check": "git help checkout",
+      "docs": "https://github.com/git/git/blob/master/Documentation/RelNotes/2.55.0.adoc"
+    },
+    {
+      "id": "git/format-rev",
+      "date": "2026-06",
+      "version": "2.55.0",
+      "feature": "git format-rev",
+      "summary": "Pretty-prints revisions, or object names found in text.",
+      "check": "git format-rev -h",
+      "docs": "https://github.com/git/git/blob/master/Documentation/RelNotes/2.55.0.adoc"
+    },
+    {
+      "id": "git/max-count-oldest",
+      "date": "2026-06",
+      "version": "2.55.0",
+      "feature": "git log --max-count-oldest and --graph lane limit",
+      "summary": "Picks the oldest N commits; `--graph` output can also be limited to a number of lanes.",
+      "check": "git help log",
+      "docs": "https://github.com/git/git/blob/master/Documentation/RelNotes/2.55.0.adoc"
+    },
+    {
+      "id": "git/fsmonitor-linux",
+      "date": "2026-06",
+      "version": "2.55.0",
+      "feature": "fsmonitor daemon on Linux",
+      "summary": "The built-in filesystem monitor now works on Linux.",
+      "check": "git help fsmonitor--daemon",
+      "docs": "https://github.com/git/git/blob/master/Documentation/RelNotes/2.55.0.adoc"
+    },
+    {
+      "id": "git/sideband-sanitized",
+      "date": "2026-06",
+      "version": "2.55.0",
+      "feature": "Sideband control sequences blocked",
+      "summary": "Terminal control sequences sent by remotes are blocked by default (colours still allowed).",
+      "docs": "https://github.com/git/git/blob/master/Documentation/RelNotes/2.55.0.adoc"
+    },
+    {
+      "id": "git/history-reword-split",
+      "date": "2026-04",
+      "version": "2.54.0",
+      "feature": "git history reword|split (experimental)",
+      "summary": "New experimental history-rewriting command; --update-refs also moves dependent branches.",
+      "check": "git history -h",
+      "docs": "https://github.com/git/git/blob/master/Documentation/RelNotes/2.54.0.adoc"
+    },
+    {
+      "id": "git/config-hooks",
+      "date": "2026-04",
+      "version": "2.54.0",
+      "feature": "Hooks defined in config",
+      "summary": "Several commands per hook event, configurable centrally.",
+      "check": "git help hooks",
+      "docs": "https://github.com/git/git/blob/master/Documentation/RelNotes/2.54.0.adoc"
+    },
+    {
+      "id": "git/status-compare-branches",
+      "date": "2026-04",
+      "version": "2.54.0",
+      "feature": "git status compares with status.compareBranches",
+      "summary": "`git status` compares the current branch with the listed branches.",
+      "check": "git help config",
+      "docs": "https://github.com/git/git/blob/master/Documentation/RelNotes/2.54.0.adoc"
+    },
+    {
+      "id": "git/rebase-trailer",
+      "date": "2026-04",
+      "version": "2.54.0",
+      "feature": "git rebase --trailer",
+      "summary": "Adds trailers to rebased commits.",
+      "check": "git rebase -h",
+      "docs": "https://github.com/git/git/blob/master/Documentation/RelNotes/2.54.0.adoc"
+    },
+    {
+      "id": "git/add-p-revisit",
+      "date": "2026-04",
+      "version": "2.54.0",
+      "feature": "git add -p can revisit a file",
+      "summary": "Can return to a file already handled.",
+      "check": "git help add",
+      "docs": "https://github.com/git/git/blob/master/Documentation/RelNotes/2.54.0.adoc"
+    },
+    {
+      "id": "git/replay-empty-revert",
+      "date": "2026-04",
+      "version": "2.54.0",
+      "feature": "git replay: drops empty commits, revert mode",
+      "summary": "Drops commits that become empty, adds a `revert` mode, can replay down to the root (experimental command).",
+      "check": "git replay -h",
+      "docs": "https://github.com/git/git/blob/master/Documentation/RelNotes/2.54.0.adoc"
+    },
+    {
+      "id": "git/backfill-args",
+      "date": "2026-04",
+      "version": "2.54.0",
+      "feature": "git backfill <revs> -- <pathspec>",
+      "summary": "Backfill accepts revisions and pathspecs.",
+      "check": "git backfill -h",
+      "docs": "https://github.com/git/git/blob/master/Documentation/RelNotes/2.54.0.adoc"
+    }
+  ]
+}

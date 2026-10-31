@@ -36,7 +36,7 @@ Out of scope:
 ## What is promised
 
 **S1. The analysis over-approximates execution.** For every command line `c`, and every run of `c` in a clean Bash,
-every process the shell starts, with its program and argv, is *covered* by an invocation in `analyze(c)`. Covered
+every process the shell starts, with its program and argv, is _covered_ by an invocation in `analyze(c)`. Covered
 means the same program, with each static argument equal and each dynamic argument standing for any words. Code the
 shell runs from strings (`eval`, `trap`, `bash -c`, aliases, git config) counts. A construct the analysis can't follow
 must become a finding, or a dynamic argument, command, option or `open` invocation. It must never disappear.
@@ -45,8 +45,8 @@ must become a finding, or a dynamic argument, command, option or `open` invocati
 under `strict: true`. That means adding an option, positional, write or effect, making a static argument dynamic,
 making the program dynamic, setting `maybeOptions` or `open`, or giving the program a non-system path. Without
 `strict`, it may lower `deny` to `ask` (a rule that only may match asks), but never to `allow`. Conditions on allow
-rules hold for *all* of an invocation's paths and effects (including the real path when provided); on deny and ask
-rules, for *any* path form.
+rules hold for _all_ of an invocation's paths and effects (including the real path when provided); on deny and ask
+rules, for _any_ path form.
 
 **S3. Allow is earned.** A command line is allowed only when every finding is one the policy allows (none by
 default), and every invocation is allowed with no deny or ask rule even possibly matching it. An invocation is allowed
@@ -74,16 +74,16 @@ The parser version is pinned. Errors thrown by caller-supplied filesystem callba
 
 ## How each promise is checked
 
-| Promise | Check | Where |
-| --- | --- | --- |
-| S1 | Scripts run in real Bash with logging stubs: everything that ran must be covered | `test/bash.test.ts` |
-| S1 | Known escapes, one per construct | `test/escapes.test.ts` |
-| S2 | Property tests over generated invocations and policies | `test/properties.test.ts` |
-| S3 | Property tests: generated commands with findings or maybe-matches are never allowed | `test/properties.test.ts` |
-| S4 | Metamorphic tests: chains of generated rewrites of denied and asked commands | `test/metamorphic.test.ts` |
-| S5 | Property tests: arbitrary token soup never throws | `test/properties.test.ts` |
-| S5 | Deeply nested loops stay cheap and below the budget | `test/analyze.test.ts` |
-| S5 | Exhaustive `switch`es with a fail-closed `default` | `src/analyze.ts` |
+| Promise | Check                                                                               | Where                      |
+| ------- | ----------------------------------------------------------------------------------- | -------------------------- |
+| S1      | Scripts run in real Bash with logging stubs: everything that ran must be covered    | `test/bash.test.ts`        |
+| S1      | Known escapes, one per construct                                                    | `test/escapes.test.ts`     |
+| S2      | Property tests over generated invocations and policies                              | `test/properties.test.ts`  |
+| S3      | Property tests: generated commands with findings or maybe-matches are never allowed | `test/properties.test.ts`  |
+| S4      | Metamorphic tests: chains of generated rewrites of denied and asked commands        | `test/metamorphic.test.ts` |
+| S5      | Property tests: arbitrary token soup never throws                                   | `test/properties.test.ts`  |
+| S5      | Deeply nested loops stay cheap and below the budget                                 | `test/analyze.test.ts`     |
+| S5      | Exhaustive `switch`es with a fail-closed `default`                                  | `src/analyze.ts`           |
 
 Still to come: differential fuzzing in a Linux container with `strace` as the oracle, an LLM red team judged by that
 oracle, and enforcement at exec time so that a gap in S1 is a refused command rather than an escape.

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { allow, analyze, check, deny, recommended, type Arg } from '../src/index.ts';
+import { allow, analyze, check, deny, recommended, type Arg } from '#src/index.ts';
 
 const values = (args: Arg[]) => args.map((arg) => (arg.kind === 'static' ? arg.value : `<${arg.reason}>`));
 const only = (source: string) => {
@@ -32,7 +32,10 @@ describe('words', () => {
 describe('options', () => {
   test('values attached, separate, after = and in clusters', () => {
     const { options } = only('tail -n5 --bytes 10 -fn 3 file');
-    expect(options['--lines']).toEqual([{ kind: 'static', value: '5' }, { kind: 'static', value: '3' }]);
+    expect(options['--lines']).toEqual([
+      { kind: 'static', value: '5' },
+      { kind: 'static', value: '3' },
+    ]);
     expect(options['--bytes']).toEqual([{ kind: 'static', value: '10' }]);
     expect(options['--follow']).toEqual([true]);
   });
@@ -111,7 +114,8 @@ describe('invocations', () => {
 
   test('deeply nested loops cost little more than shallow ones', () => {
     const plain = 'for a in 1 2; do '.repeat(40) + 'ls $a; ' + 'done; '.repeat(40);
-    const reassigning = Array.from({ length: 40 }, (_, i) => `y${i}=ls; for a in 1; do $y${i}; y${i}=rm; cd d${i}; `).join('') + 'done; '.repeat(40);
+    const reassigning =
+      Array.from({ length: 40 }, (_, i) => `y${i}=ls; for a in 1; do $y${i}; y${i}=rm; cd d${i}; `).join('') + 'done; '.repeat(40);
     for (const source of [plain, reassigning]) {
       const start = performance.now();
       const analysis = analyze(source);
@@ -182,9 +186,8 @@ describe('arithmetic', () => {
   }
 
   test('follows static values recursively and keeps arithmetic results numeric', () => {
-    for (const source of ['x=1+2; ((x))', 'x=foo; foo=1+2; ((x))', 'n=$((1+2)); ((n))', 'i=0; while ((i<2)); do ((i++)); done']) {
+    for (const source of ['x=1+2; ((x))', 'x=foo; foo=1+2; ((x))', 'n=$((1+2)); ((n))', 'i=0; while ((i<2)); do ((i++)); done'])
       expect(analyze(source).findings.some((finding) => finding.kind === 'dynamic-arithmetic')).toBe(false);
-    }
   });
 });
 
@@ -210,10 +213,16 @@ describe('policy', () => {
   });
 
   test('real paths participate in deny and ask matching, and are required for an allow match', () => {
-    const realpath = (path: string) => path === '/repo/link' ? '/outside/secret' : undefined;
-    expect(check('cat link', { rules: [deny({ args: ['/outside/**'] })], default: 'allow' }, { cwd: '/repo', realpath }).decision).toBe('deny');
-    expect(check('cat link', { rules: [allow({ args: ['/repo/link'] })], default: 'deny' }, { cwd: '/repo', realpath }).decision).toBe('deny');
-    expect(check('cat link', { rules: [allow({ args: ['/outside/**'] })], default: 'deny' }, { cwd: '/repo', realpath }).decision).toBe('allow');
+    const realpath = (path: string) => (path === '/repo/link' ? '/outside/secret' : undefined);
+    expect(check('cat link', { rules: [deny({ args: ['/outside/**'] })], default: 'allow' }, { cwd: '/repo', realpath }).decision).toBe(
+      'deny',
+    );
+    expect(check('cat link', { rules: [allow({ args: ['/repo/link'] })], default: 'deny' }, { cwd: '/repo', realpath }).decision).toBe(
+      'deny',
+    );
+    expect(check('cat link', { rules: [allow({ args: ['/outside/**'] })], default: 'deny' }, { cwd: '/repo', realpath }).decision).toBe(
+      'allow',
+    );
   });
 
   test('a path that does not exist yet is real under its deepest existing ancestor', () => {

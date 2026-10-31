@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import fc from 'fast-check';
-import { ask, check, deny, recommended, type Decision, type Policy } from '../src/index.ts';
+import * as fc from 'fast-check';
+import { ask, check, deny, recommended, type Decision, type Policy } from '#src/index.ts';
 
 /** S4: equivalent rewrites must not make a denied or asked command easier to run. */
 const runs = Number(process.env.METAMORPHIC_RUNS ?? process.env.PROPERTY_RUNS ?? 200);
@@ -48,12 +48,18 @@ function spell(words: string[], choices: Spelling[]): string {
   const assignments: string[] = [];
   const rendered = words.map((word, i) => {
     switch (choices[i % choices.length]!) {
-      case 'plain': return word;
-      case 'single': return quote(word);
-      case 'double': return `"${word}"`;
-      case 'escaped': return `\\${word[0]}${word.slice(1)}`;
-      case 'concatenated': return `${word[0]}""${word.slice(1)}`;
-      case 'ansi': return `$'${word}'`;
+      case 'plain':
+        return word;
+      case 'single':
+        return quote(word);
+      case 'double':
+        return `"${word}"`;
+      case 'escaped':
+        return `\\${word[0]}${word.slice(1)}`;
+      case 'concatenated':
+        return `${word[0]}""${word.slice(1)}`;
+      case 'ansi':
+        return `$'${word}'`;
       case 'variable':
         assignments.push(`s4word${i}=${quote(word)}`);
         return `"$s4word${i}"`;
@@ -65,9 +71,9 @@ function spell(words: string[], choices: Spelling[]): string {
 function assertFloor(source: string, before: Decision, policy: Policy, context: string, hide = false): Decision {
   const verdict = check(source, policy);
   const floor = hide ? Math.min(severity[before], severity.ask) : severity[before];
-  if (severity[verdict.decision] < floor) {
+  if (severity[verdict.decision] < floor)
     throw new Error(`${context}: ${before} -> ${verdict.decision}\n${source}\n${JSON.stringify(verdict.reasons)}`);
-  }
+
   return verdict.decision;
 }
 

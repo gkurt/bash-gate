@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { analyze, type Invocation } from '../src/index.ts';
+import { analyze, type Invocation } from '#src/index.ts';
 
 /**
  * The analysis against real Bash: each script runs with a `PATH` of stubs that only log their arguments, and every
@@ -57,7 +57,7 @@ const scripts = [
   'shopt -s expand_aliases\nalias s="sudo "\nalias l="ls -la"\ns l x',
   'shopt -s expand_aliases\nalias s="sudo "\nalias q="; cat q"\ns q',
   "shopt -s expand_aliases\neval $'alias ls=cat\\nls a'; eval 'alias rm=cat; rm b'",
-  "shopt -s expand_aliases\nif [ -n \"$x\" ]; then alias rm=cat; fi\nrm a",
+  'shopt -s expand_aliases\nif [ -n "$x" ]; then alias rm=cat; fi\nrm a',
   "/bin/sh -c 'alias ls=cat\nls a'",
   "/bin/bash --posix -c 'alias ls=cat\nls a'; /bin/bash -O expand_aliases -c 'alias rm=cat\nrm b'",
   'set -o posix\nalias ls=cat\nls a',
@@ -66,7 +66,7 @@ const scripts = [
 
 const stubs = ['rm', 'ls', 'cat', 'sort', 'git', 'grep', 'echo', 'env', 'sudo', 'xargs'];
 const bash = Bun.which('bash');
-const compatibleBash = bash && !(process.platform === 'win32' && /\\Windows\\System32\\bash\.exe$/i.test(bash));
+const compatibleBash = bash !== null && !(process.platform === 'win32' && /\\Windows\\System32\\bash\.exe$/i.test(bash));
 
 /** Whether the invocation predicts this run: the program, and every static argument where it stands. */
 function covers(invocation: Invocation, argv: string[]): boolean {
@@ -101,7 +101,9 @@ describe.skipIf(!compatibleBash)('against bash', () => {
       Bun.spawnSync([bash!, '--noprofile', '--norc', 'script.sh'], { cwd: dir, env: { PATH: bin, BASH_GATE_LOGS: logs } });
       const ran = readdirSync(logs).map((file) => readFileSync(join(logs, file), 'utf8').split('\x1f'));
       expect(ran.length).toBeGreaterThan(0);
-      const predicted = analyze(script).invocations.filter((invocation) => invocation.kind === 'external' && invocation.via.every((program) => program === 'bash' || program === 'sh'));
+      const predicted = analyze(script).invocations.filter(
+        (invocation) => invocation.kind === 'external' && invocation.via.every((program) => program === 'bash' || program === 'sh'),
+      );
       const missed = ran.filter((argv) => !predicted.some((invocation) => covers(invocation, argv)));
       expect(missed.map((argv) => argv.join(' '))).toEqual([]);
     });

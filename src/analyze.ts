@@ -195,7 +195,8 @@ class Walker {
     let unit = first ? { aliases: first, expanding: ctx.expanding } : undefined;
     let previous: number | undefined;
     for (const statement of script.commands) {
-      if (!unit || (previous !== undefined && ctx.source.slice(previous, statement.pos).includes('\n'))) unit = { aliases: snapshot(state), expanding: [] };
+      if (!unit || (previous !== undefined && ctx.source.slice(previous, statement.pos).includes('\n')))
+        unit = { aliases: snapshot(state), expanding: [] };
       this.node(statement.command, statement.background ? clone(state) : state, { ...ctx, ...unit });
       previous = statement.end;
     }
@@ -232,7 +233,8 @@ class Walker {
       case 'If': {
         this.list(node.clause.commands, state, ctx);
         const outcomes = [this.branch(state, ctx, (s, c) => this.list(node.then.commands, s, c))];
-        for (const elif of node.elif) outcomes.push(this.branch(state, ctx, (s, c) => this.list([...elif.clause.commands, ...elif.then.commands], s, c)));
+        for (const elif of node.elif)
+          outcomes.push(this.branch(state, ctx, (s, c) => this.list([...elif.clause.commands, ...elif.then.commands], s, c)));
         outcomes.push(node.else ? this.branch(state, ctx, (s, c) => this.list(node.else!.commands, s, c)) : clone(state));
         return settle(state, outcomes);
       }
@@ -301,8 +303,9 @@ class Walker {
     this.settled.set(node, memo);
     const key = this.key(state, ctx);
     const known = memo.get(key);
-    if (known) Object.assign(state, clone(known));
-    else {
+    if (known) {
+      Object.assign(state, clone(known));
+    } else {
       for (let i = 0; ; i++) {
         const next = clone(state);
         join(next, this.branch(state, { ...ctx, silent: true }, walk));
@@ -326,7 +329,7 @@ class Walker {
     return JSON.stringify([
       sorted(state.vars),
       [...state.exported].sort(),
-      sorted(state.functions).map(([name, fn]) => [name, fn.maybeUndefined, fn.bodies.map((body) => this.id(body)).sort()]),
+      sorted(state.functions).map(([name, fn]) => [name, fn.maybeUndefined, fn.bodies.map((body) => this.id(body)).sort((a, b) => a - b)]),
       [...state.exportedFunctions].sort(),
       aliases(state.aliases),
       state.aliasesUnknown,
@@ -353,12 +356,21 @@ class Walker {
 
   /** A finding recorded even in a silent walk, for when the analysis stops short and a later walk won't see why. */
   alarm(message: string, span: [number, number]): void {
-    if (!this.analysis.findings.some((finding) => finding.message === message)) this.analysis.findings.push({ kind: 'too-deep', message, span });
+    if (!this.analysis.findings.some((finding) => finding.message === message))
+      this.analysis.findings.push({ kind: 'too-deep', message, span });
   }
 
   /** A call for something that isn't a simple command (a `for` loop, arithmetic), for where findings point. */
   at(ctx: Context, state: State, node: { pos: number; end: number }): Call {
-    return { span: this.span(ctx, node.pos, node.end), writes: [], reads: [], noFunctions: false, open: false, cwd: state.cwd, home: homeOf(state) };
+    return {
+      span: this.span(ctx, node.pos, node.end),
+      writes: [],
+      reads: [],
+      noFunctions: false,
+      open: false,
+      cwd: state.cwd,
+      home: homeOf(state),
+    };
   }
 
   /** The definition of `node` parsed with `aliases`: the same object each time, so that states compare equal. */
@@ -413,7 +425,8 @@ class Walker {
     const item = operand(word.value, word.parts, lookupIn(state));
     if (item.kind === 'name') this.arithmeticText(word.value, state, ctx, word.text, span);
     else if (item.kind === 'text') this.arithmeticText(item.text, state, ctx, word.text, span);
-    else if (item.kind === 'dynamic') this.finding(ctx, 'dynamic-arithmetic', `Arithmetic operand is only known at run time: ${word.text}`, span);
+    else if (item.kind === 'dynamic')
+      this.finding(ctx, 'dynamic-arithmetic', `Arithmetic operand is only known at run time: ${word.text}`, span);
   }
 
   /**
@@ -428,7 +441,7 @@ class Walker {
     }
     const script = parse(`(( ${text} ))`);
     const command = script.commands[0]?.command;
-    if (script.errors?.length || script.commands.length !== 1 || command?.type !== 'ArithmeticCommand' || !command.expression) {
+    if ((script.errors?.length ?? 0) > 0 || script.commands.length !== 1 || command?.type !== 'ArithmeticCommand' || !command.expression) {
       this.finding(ctx, 'dynamic-arithmetic', `Arithmetic expression is only known at run time: ${label}`, span);
       return false;
     }
@@ -465,7 +478,8 @@ class Walker {
         const text = /^[A-Za-z_]\w*\[/.test(target.value) ? target.value : expanded(target.value, target.parts, lookup);
         const variable = text === undefined ? undefined : /^([A-Za-z_]\w*)(?:\[[\s\S]*\])?$/.exec(text)?.[1];
         if (variable) writes.push({ variable, numeric: this.numericExpression(expression, state, new Set(seen)) });
-        else this.finding(ctx, 'sensitive-variable', `Arithmetic assigns a variable named only at run time: ${target.value}`, where(target));
+        else
+          this.finding(ctx, 'sensitive-variable', `Arithmetic assigns a variable named only at run time: ${target.value}`, where(target));
       }
       if (node.type === 'ArithmeticWord') return this.operand(node, reads.get(node) ?? true, state, ctx, seen, where(node));
       forEachChild(node, visit);
@@ -478,21 +492,32 @@ class Walker {
   }
 
   /** An operand: its subscript is evaluated, and so is the value it reads (`reads`: not the target of a plain `=`). */
-  operand(word: { value: string; parts?: Word['parts'] }, reads: boolean, state: State, ctx: Context, seen: Set<string>, span: [number, number]): void {
+  operand(
+    word: { value: string; parts?: Word['parts'] },
+    reads: boolean,
+    state: State,
+    ctx: Context,
+    seen: Set<string>,
+    span: [number, number],
+  ): void {
     const subscript = /^[^[]*?\[([\s\S]*)\]\}?$/.exec(word.value)?.[1];
-    if (subscript !== undefined && subscript !== '@' && subscript !== '*') this.arithmeticText(subscript, state, ctx, word.value, span, seen);
+    if (subscript !== undefined && subscript !== '@' && subscript !== '*')
+      this.arithmeticText(subscript, state, ctx, word.value, span, seen);
     if (!reads) return;
     const item = operand(word.value, word.parts, lookupIn(state));
     if (item.kind === 'name') this.arithmeticVariable(item.name, state, ctx, span, seen);
-    else if (item.kind === 'text' && item.text !== word.value) this.arithmeticText(item.text, state, ctx, word.value, span, new Set([...seen, `\0${seen.size}`]));
-    else if (item.kind !== 'number') this.finding(ctx, 'dynamic-arithmetic', `Arithmetic operand is only known at run time: ${word.value}`, span);
+    else if (item.kind === 'text' && item.text !== word.value)
+      this.arithmeticText(item.text, state, ctx, word.value, span, new Set([...seen, `\0${seen.size}`]));
+    else if (item.kind !== 'number')
+      this.finding(ctx, 'dynamic-arithmetic', `Arithmetic operand is only known at run time: ${word.value}`, span);
   }
 
   /** A variable read in arithmetic: Bash evaluates its value as an expression, recursively. */
   arithmeticVariable(variable: string, state: State, ctx: Context, span: [number, number], seen: Set<string>): void {
     const value = state.vars.get(variable);
     if (!value || numericValue(value)) return;
-    if (value.kind === 'dynamic') return this.finding(ctx, 'dynamic-arithmetic', `Arithmetic value of \`${variable}\` is only known at run time`, span);
+    if (value.kind === 'dynamic')
+      return this.finding(ctx, 'dynamic-arithmetic', `Arithmetic value of \`${variable}\` is only known at run time`, span);
     if (seen.has(variable)) return this.finding(ctx, 'dynamic-arithmetic', `Arithmetic variable \`${variable}\` refers to itself`, span);
     this.arithmeticText(value.value, state, ctx, variable, span, new Set([...seen, variable]));
   }
@@ -504,7 +529,12 @@ class Walker {
       if (next.size > 32) return false;
       const script = parse(`(( ${text} ))`);
       const command = script.commands[0]?.command;
-      return !script.errors?.length && command?.type === 'ArithmeticCommand' && !!command.expression && this.numericExpression(command.expression, state, next);
+      return (
+        (script.errors?.length ?? 0) === 0 &&
+        command?.type === 'ArithmeticCommand' &&
+        !!command.expression &&
+        this.numericExpression(command.expression, state, next)
+      );
     };
     const value = (name: string): boolean => {
       const current = state.vars.get(name);
@@ -554,11 +584,12 @@ class Walker {
     };
     for (const assignment of assignments) {
       const value = assignmentValue(assignment, lookup);
-      const stored = this.assigned(assignment.name, value, state, ctx, call, !argv.length);
-      if (!argv.length) state.vars.set(assignment.name, stored);
+      const stored = this.assigned(assignment.name, value, state, ctx, call, argv.length === 0);
+      if (argv.length === 0) state.vars.set(assignment.name, stored);
     }
-    if (argv.length) return this.dispatch(argv, state, ctx, call);
-    if (files.writes.length || files.reads.length) this.emit(ctx, call, ':', 'builtin', [{ kind: 'static', value: ':' }], emptyParsed());
+    if (argv.length > 0) return this.dispatch(argv, state, ctx, call);
+    if (files.writes.length > 0 || files.reads.length > 0)
+      this.emit(ctx, call, ':', 'builtin', [{ kind: 'static', value: ':' }], emptyParsed());
   }
 
   /** Runs `argv` as the shell would: an alias, a function, a builtin, or a program. */
@@ -609,8 +640,14 @@ class Walker {
       return false;
     }
     const expanded = (s: State, c: Context) => this.expandAlias(name, value, call.command!, s, c, call);
-    if (expand && !maybe) expanded(state, ctx);
-    else settle(state, [this.branch(state, ctx, expanded), this.branch(state, ctx, (s, c) => this.dispatch(argv, s, c, { ...call, command: undefined }))]);
+    if (expand && !maybe) {
+      expanded(state, ctx);
+    } else {
+      settle(state, [
+        this.branch(state, ctx, expanded),
+        this.branch(state, ctx, (s, c) => this.dispatch(argv, s, c, { ...call, command: undefined })),
+      ]);
+    }
     return true;
   }
 
@@ -619,7 +656,8 @@ class Walker {
    * blank, the next word is expanded too if it's an alias.
    */
   expandAlias(name: string, value: string, command: Command, state: State, ctx: Context, call: Call): void {
-    if (ctx.depth >= this.maxDepth) return this.finding(ctx, 'too-deep', `Aliases nest deeper than the analysis follows (${name})`, call.span);
+    if (ctx.depth >= this.maxDepth)
+      return this.finding(ctx, 'too-deep', `Aliases nest deeper than the analysis follows (${name})`, call.span);
     const { table, unknown } = ctx.aliases;
     let text = ctx.source.slice(command.pos, command.name!.pos) + value;
     let rest = command.name!.end;
@@ -640,7 +678,14 @@ class Walker {
       last = next;
     }
     text += ctx.source.slice(rest, command.end);
-    const inner = { ...ctx, source: text, outer: call.span, nesting: [...ctx.nesting, `alias ${name}`], depth: ctx.depth + 1, expanding: [...ctx.expanding, name] };
+    const inner = {
+      ...ctx,
+      source: text,
+      outer: call.span,
+      nesting: [...ctx.nesting, `alias ${name}`],
+      depth: ctx.depth + 1,
+      expanding: [...ctx.expanding, name],
+    };
     this.script(parse(text), state, inner, ctx.aliases);
   }
 
@@ -659,7 +704,8 @@ class Walker {
           }
           if (/[vV]/.test(values[i]!)) lookupOnly = true;
         }
-        if (!lookupOnly && i < args.length) return this.dispatch(args.slice(i), state, ctx, { ...call, command: undefined, noFunctions: true });
+        if (!lookupOnly && i < args.length)
+          return this.dispatch(args.slice(i), state, ctx, { ...call, command: undefined, noFunctions: true });
         break;
       }
       case 'builtin': {
@@ -700,8 +746,9 @@ class Walker {
       case 'alias':
         effects.push('shell-state');
         for (const arg of args) {
-          if (arg.kind === 'dynamic') state.aliasesUnknown = true;
-          else if (arg.value.includes('=') && !arg.value.startsWith('-')) {
+          if (arg.kind === 'dynamic') {
+            state.aliasesUnknown = true;
+          } else if (arg.value.includes('=') && !arg.value.startsWith('-')) {
             const equals = arg.value.indexOf('=');
             state.aliases.set(arg.value.slice(0, equals), { value: arg.value.slice(equals + 1), maybe: false });
           }
@@ -714,8 +761,9 @@ class Walker {
         break;
       case 'shopt': {
         const names = values.filter((value) => value !== undefined && !value.startsWith('-'));
-        if (args.some((arg) => arg.kind === 'dynamic')) state.expandAliases = state.expandAliases === true ? true : undefined;
-        else if (names.includes('expand_aliases')) {
+        if (args.some((arg) => arg.kind === 'dynamic')) {
+          state.expandAliases = state.expandAliases === true ? true : undefined;
+        } else if (names.includes('expand_aliases')) {
           if (values.includes('-s')) state.expandAliases = true;
           if (values.includes('-u')) state.expandAliases = false;
         }
@@ -725,17 +773,21 @@ class Walker {
         // POSIX mode turns expand_aliases on; leaving it puts back what was there before.
         for (let i = 0; i < args.length && values[i] !== '--' && values[i] !== '-'; i++) {
           const option = values[i] === '-o' || values[i] === '+o' ? args[i + 1] : undefined;
-          if (args[i]!.kind === 'dynamic' || option?.kind === 'dynamic') state.expandAliases = state.expandAliases === true ? true : undefined;
-          else if (option?.kind === 'static' && option.value === 'posix') state.expandAliases = values[i] === '-o' ? true : state.expandAliases === false ? false : undefined;
+          if (args[i]!.kind === 'dynamic' || option?.kind === 'dynamic')
+            state.expandAliases = state.expandAliases === true ? true : undefined;
+          else if (option?.kind === 'static' && option.value === 'posix')
+            state.expandAliases = values[i] === '-o' ? true : state.expandAliases === false ? false : undefined;
           if (option) i++;
         }
         break;
       case 'hash':
         effects.push('shell-state');
         for (let i = 0; i < args.length; i++) {
-          if (values[i] === '-r') state.hashed.clear();
-          else if (values[i] === '-d') state.hashed.delete(values[++i] ?? '');
-          else if (values[i] === '-p') {
+          if (values[i] === '-r') {
+            state.hashed.clear();
+          } else if (values[i] === '-d') {
+            state.hashed.delete(values[++i] ?? '');
+          } else if (values[i] === '-p') {
             const path = values[i + 1];
             const target = values[i + 2];
             if (target !== undefined) state.hashed.set(target, path);
@@ -762,7 +814,7 @@ class Walker {
       case 'pushd': {
         const target = values.find((value) => value === undefined || !value.startsWith('-'));
         const arg = args[values.indexOf(target)];
-        if (!args.length) state.cwd = homeOf(state) ?? '~';
+        if (args.length === 0) state.cwd = homeOf(state) ?? '~';
         else if (arg?.kind === 'static' && arg.value !== '-') state.cwd = resolvePath(state.cwd, arg.value, homeOf(state));
         else state.cwd = undefined;
         break;
@@ -788,7 +840,10 @@ class Walker {
           }
           if (name === 'export' || flags.includes('x')) state.exported.add(variable);
           if (flags.includes('i')) state.integers.add(variable);
-          const value: Value = flags.includes('n') || match[2] === '+=' || arg.kind === 'dynamic' ? { kind: 'dynamic' } : { kind: 'static', value: text.slice(match[0].length) };
+          const value: Value =
+            flags.includes('n') || match[2] === '+=' || arg.kind === 'dynamic'
+              ? { kind: 'dynamic' }
+              : { kind: 'static', value: text.slice(match[0].length) };
           const stored = match[2] ? this.assigned(variable, value, state, ctx, call, true) : value;
           if (match[2] || value.kind === 'dynamic') state.vars.set(variable, stored);
         }
@@ -866,7 +921,7 @@ class Walker {
       positionals.push(named(i));
     }
     if (name === 'getopts') set(positionals[1]);
-    else if (name === 'read') (positionals.length ? positionals : ['REPLY']).forEach(set);
+    else if (name === 'read') (positionals.length > 0 ? positionals : ['REPLY']).forEach(set);
     else set(positionals[0] === undefined ? 'MAPFILE' : positionals[0]);
   }
 
@@ -895,19 +950,29 @@ class Walker {
       this.npmScripts(cwd, argv, parsed, state, ctx, call);
     } else if (program === 'ssh') {
       for (const value of parsed.options['-o'] ?? []) {
-        if (value === true || value.kind === 'dynamic') this.finding(ctx, 'dynamic-script', 'ssh -o contains a local command only known at run time', call.span);
-        else {
+        if (value === true || value.kind === 'dynamic') {
+          this.finding(ctx, 'dynamic-script', 'ssh -o contains a local command only known at run time', call.span);
+        } else {
           const match = /^(?:ProxyCommand|LocalCommand|KnownHostsCommand)(?:\s+|=\s*)(.+)$/i.exec(value.value);
           if (match) this.code(match[1]!, childState(state, cwd), ctx, call, `ssh ${value.value.split(/\s/, 1)[0]}`);
         }
       }
       for (const file of parsed.options['-F'] ?? []) {
-        if (file === true || file.kind === 'dynamic') this.finding(ctx, 'exec-config', 'ssh config file is only known at run time', call.span);
+        if (file === true || file.kind === 'dynamic')
+          this.finding(ctx, 'exec-config', 'ssh config file is only known at run time', call.span);
         else this.sshConfig(resolvePath(cwd, file.value) ?? file.value, cwd, state, ctx, call, new Set(), 0);
       }
     }
     const inner: Context = { ...ctx, via: [...ctx.via, program], externalOnly: true };
-    const innerCall = (open: boolean): Call => ({ ...call, writes: [], reads: [], command: undefined, noFunctions: true, open: open || call.open, cwd });
+    const innerCall = (open: boolean): Call => ({
+      ...call,
+      writes: [],
+      reads: [],
+      command: undefined,
+      noFunctions: true,
+      open: open || call.open,
+      cwd,
+    });
     for (const nested of parsed.nested) this.dispatch(nested.argv, clone(state), inner, innerCall(nested.open));
     for (const text of parsed.argvStrings) {
       const words = text.kind === 'static' ? resolveWords(text.value, lookupIn(state)) : undefined;
@@ -922,7 +987,13 @@ class Walker {
       const remote = parsed.effects.has('exec:remote');
       const shell = remote ? freshState(undefined) : childState(state, cwd);
       if (!remote && specFor(program) === specFor('bash')) shell.expandAliases = childAliases(program, parsed, shell);
-      this.code(script.value, shell, { ...ctx, via: [...ctx.via, program], externalOnly: false, calls: [] }, call, remote ? `${program} (remote)` : `${program} -c`);
+      this.code(
+        script.value,
+        shell,
+        { ...ctx, via: [...ctx.via, program], externalOnly: false, calls: [] },
+        call,
+        remote ? `${program} (remote)` : `${program} -c`,
+      );
     }
   }
 
@@ -935,7 +1006,16 @@ class Walker {
     const risk = gitConfig(key, value);
     if (!risk) return;
     this.finding(ctx, 'exec-config', `git config \`${key}\` changes what git runs`, call.span);
-    if (risk.script !== undefined) this.code(risk.script, childState(state, state.cwd), { ...ctx, via: [...ctx.via, 'git'], externalOnly: false, calls: [] }, call, `git ${key}`, true);
+    if (risk.script !== undefined) {
+      this.code(
+        risk.script,
+        childState(state, state.cwd),
+        { ...ctx, via: [...ctx.via, 'git'], externalOnly: false, calls: [] },
+        call,
+        `git ${key}`,
+        true,
+      );
+    }
   }
 
   gitProject(cwd: string | undefined, parsed: Parsed, state: State, ctx: Context, call: Call): void {
@@ -961,7 +1041,7 @@ class Walker {
       if (pointer) {
         gitDir = resolvePath(repoRoot, pointer) ?? pointer;
         const commonPointer = readFile(`${gitDir}/commondir`)?.trim();
-        commonDir = commonPointer ? resolvePath(gitDir, commonPointer) ?? commonPointer : gitDir;
+        commonDir = commonPointer ? (resolvePath(gitDir, commonPointer) ?? commonPointer) : gitDir;
         configPath = `${commonDir}/config`;
         direct = readFile(configPath);
         break;
@@ -984,7 +1064,7 @@ class Walker {
       if (text === undefined) return;
       const parsedEntries = parseGitConfig(text);
       for (const entry of parsedEntries) {
-        if (entry.key === 'include.path' || entry.key.startsWith('includeif.') && entry.key.endsWith('.path')) {
+        if (entry.key === 'include.path' || (entry.key.startsWith('includeif.') && entry.key.endsWith('.path'))) {
           if (/[${}]/.test(entry.value)) {
             this.finding(ctx, 'exec-config', `Git config include path is dynamic: ${entry.value}`, call.span);
             continue;
@@ -1019,7 +1099,7 @@ class Walker {
     };
     const names = hooks[subcommand] ?? (subcommand === 'apply' || subcommand === 'am' ? hooks['apply|am'] : undefined);
     if (!names) return;
-    const directory = hooksPath ? resolvePath(repoRoot, hooksPath) ?? hooksPath : `${commonDir ?? gitDir}/hooks`;
+    const directory = hooksPath ? (resolvePath(repoRoot, hooksPath) ?? hooksPath) : `${commonDir ?? gitDir}/hooks`;
     for (const name of names) {
       if (parsed.options['--no-verify'] && ['pre-commit', 'commit-msg', 'pre-push'].includes(name)) continue;
       const path = `${directory}/${name}`;
@@ -1040,9 +1120,15 @@ class Walker {
       return this.finding(ctx, 'exec-config', 'package.json is invalid JSON; npm scripts cannot be inspected', call.span);
     }
 
-    if (typeof packageJson !== 'object' || packageJson === null || !('scripts' in packageJson) || typeof packageJson.scripts !== 'object' || packageJson.scripts === null) {
+    if (
+      typeof packageJson !== 'object' ||
+      packageJson === null ||
+      !('scripts' in packageJson) ||
+      typeof packageJson.scripts !== 'object' ||
+      packageJson.scripts === null
+    )
       return this.finding(ctx, 'exec-config', 'package.json scripts are not a readable object', call.span);
-    }
+
     if (parsed.subcommands[0] !== 'run') return;
     const verbs = new Set(['run', 'run-script', 'test', 't', 'start', 'stop', 'restart']);
     let verb: string | undefined;
@@ -1057,9 +1143,14 @@ class Walker {
       if (verbs.has(arg.value)) verb = arg.value;
       break;
     }
-    const name = verb === 'run' || verb === 'run-script'
-      ? parsed.positionals[0]?.kind === 'static' ? parsed.positionals[0].value : undefined
-      : verb === 't' ? 'test' : verb;
+    const name =
+      verb === 'run' || verb === 'run-script'
+        ? parsed.positionals[0]?.kind === 'static'
+          ? parsed.positionals[0].value
+          : undefined
+        : verb === 't'
+          ? 'test'
+          : verb;
     if (!name) return;
     const scripts = packageJson.scripts as Record<string, unknown>;
     for (const scriptName of [`pre${name}`, name, `post${name}`]) {
@@ -1088,16 +1179,37 @@ class Walker {
       } else if (/^Match$/i.test(directive!) && /^exec\s+/i.test(value)) {
         this.code(value.replace(/^exec\s+/i, '').replace(/^(['"])(.*)\1$/, '$2'), childState(state, cwd), ctx, call, 'ssh Match exec');
       } else if (/^Include$/i.test(directive!)) {
-        if (/[*?[]/.test(value)) this.finding(ctx, 'exec-config', `SSH config include has a glob: ${value}`, call.span);
-        else this.sshConfig(resolvePath(path.slice(0, Math.max(0, path.lastIndexOf('/'))), value) ?? value, cwd, state, ctx, call, visited, depth + 1);
+        if (/[*?[]/.test(value)) {
+          this.finding(ctx, 'exec-config', `SSH config include has a glob: ${value}`, call.span);
+        } else {
+          this.sshConfig(
+            resolvePath(path.slice(0, Math.max(0, path.lastIndexOf('/'))), value) ?? value,
+            cwd,
+            state,
+            ctx,
+            call,
+            visited,
+            depth + 1,
+          );
+        }
       }
     }
   }
 
   /** Code in a string (`bash -c`, `eval`, `trap`, an alias): parsed and walked in `state`. */
   code(text: string, state: State, ctx: Context, call: Call, label: string, open = false): void {
-    if (ctx.depth >= this.maxDepth) return this.finding(ctx, 'too-deep', `Code nests deeper than the analysis follows (${label})`, call.span);
-    this.script(parse(text), state, { ...ctx, source: text, outer: call.span, nesting: [...ctx.nesting, label], depth: ctx.depth + 1, writes: [], reads: [], open: ctx.open || open });
+    if (ctx.depth >= this.maxDepth)
+      return this.finding(ctx, 'too-deep', `Code nests deeper than the analysis follows (${label})`, call.span);
+    this.script(parse(text), state, {
+      ...ctx,
+      source: text,
+      outer: call.span,
+      nesting: [...ctx.nesting, label],
+      depth: ctx.depth + 1,
+      writes: [],
+      reads: [],
+      open: ctx.open || open,
+    });
   }
 
   /**
@@ -1117,17 +1229,23 @@ class Walker {
     }
     if (!bash || !state.integers.has(variable)) return value;
     // An integer variable evaluates what it's assigned as arithmetic, so that's what it holds.
-    if (value.kind === 'static') {
+    if (value.kind === 'static')
       return { kind: 'dynamic', ...(this.arithmeticText(value.value, state, ctx, value.value, call.span) ? { numeric: true } : {}) };
-    }
+
     if (value.numeric) return value;
-    this.finding(ctx, 'dynamic-arithmetic', `${variable} is an integer variable, and is assigned a value only known at run time`, call.span);
+    this.finding(
+      ctx,
+      'dynamic-arithmetic',
+      `${variable} is an integer variable, and is assigned a value only known at run time`,
+      call.span,
+    );
     return { kind: 'dynamic' };
   }
 
   /** Text expanded like a here-document's body (a prompt string): the substitutions in it run. */
   expansions(text: string, state: State, ctx: Context, call: Call, label: string): void {
-    if (ctx.depth >= this.maxDepth) return this.finding(ctx, 'too-deep', `Code nests deeper than the analysis follows (${label})`, call.span);
+    if (ctx.depth >= this.maxDepth)
+      return this.finding(ctx, 'too-deep', `Code nests deeper than the analysis follows (${label})`, call.span);
     let delimiter = 'BASH_GATE_EOF';
     while (text.split('\n').includes(delimiter)) delimiter += '_';
     const source = `: <<${delimiter}\n${text}\n${delimiter}\n`;
@@ -1141,8 +1259,8 @@ class Walker {
     if (ctx.silent) return;
     const writes = [...parsed.writes, ...call.writes, ...ctx.writes];
     const reads = [...parsed.reads, ...call.reads, ...ctx.reads];
-    if (call.writes.length || ctx.writes.length) parsed.effects.add('fs:write');
-    if (call.reads.length || ctx.reads.length) parsed.effects.add('fs:read');
+    if (call.writes.length > 0 || ctx.writes.length > 0) parsed.effects.add('fs:write');
+    if (call.reads.length > 0 || ctx.reads.length > 0) parsed.effects.add('fs:read');
     const open = call.open || ctx.open;
     const invocation: Invocation = {
       program,
@@ -1209,7 +1327,11 @@ function parseGitConfig(text: string): { key: string; value: string }[] {
     }
     const setting = /^([A-Za-z][A-Za-z0-9.-]*)\s*(?:=\s*(.*))?$/.exec(line);
     if (!setting || !section) continue;
-    const value = (setting[2] ?? 'true').replace(/^\s*"(.*)"\s*$/, '$1').replace(/^\s*'(.*)'\s*$/, '$1').replace(/\\(.)/g, '$1').trim();
+    const value = (setting[2] ?? 'true')
+      .replace(/^\s*"(.*)"\s*$/, '$1')
+      .replace(/^\s*'(.*)'\s*$/, '$1')
+      .replace(/\\(.)/g, '$1')
+      .trim();
     const key = subsection ? `${section}.${subsection}.${setting[1]!.toLowerCase()}` : `${section}.${setting[1]!.toLowerCase()}`;
     entries.push({ key, value });
   }
@@ -1226,7 +1348,7 @@ function argument(item: Command['suffix'][number], lookup: Lookup): Arg[] {
 
 function assignmentValue(assignment: Assignment, lookup: Lookup): Value {
   if (assignment.value.type === 'ArrayValue' || assignment.append || assignment.index) return { kind: 'dynamic' };
-  return resolveValue(assignment.value as Word, lookup);
+  return resolveValue(assignment.value, lookup);
 }
 
 /** The files redirections read and write, devices left out. A redirection to an fd (`2>&1`) names no file. */
@@ -1237,7 +1359,8 @@ function redirections(list: readonly Redirection[], lookup: Lookup): { reads: Ar
     if (redirection.type !== 'Redirect' || !redirection.target) continue;
     const targets = resolveWord(redirection.target, lookup).filter((arg) => arg.kind === 'dynamic' || !devices.test(arg.value));
     const operator = redirection.operator;
-    if ((operator === '>&' || operator === '<&') && targets.every((arg) => arg.kind === 'static' && /^(\d+-?|-)$/.test(arg.value))) continue;
+    if ((operator === '>&' || operator === '<&') && targets.every((arg) => arg.kind === 'static' && /^(\d+-?|-)$/.test(arg.value)))
+      continue;
     if (operator === '<' || operator === '<&' || operator === '<>') reads.push(...targets);
     if (operator !== '<' && operator !== '<&') writes.push(...targets);
   }
@@ -1364,9 +1487,8 @@ function join(state: State, other: State): void {
   for (const name of new Set([...state.vars.keys(), ...other.vars.keys()])) {
     const a = state.vars.get(name);
     const b = other.vars.get(name);
-    if (!a || !b || a.kind === 'dynamic' || b.kind === 'dynamic' || a.value !== b.value) {
+    if (!a || !b || a.kind === 'dynamic' || b.kind === 'dynamic' || a.value !== b.value)
       state.vars.set(name, { kind: 'dynamic', ...(a && b && numericValue(a) && numericValue(b) ? { numeric: true } : {}) });
-    }
   }
   for (const name of other.exported) state.exported.add(name);
   for (const name of other.integers) state.integers.add(name);
@@ -1385,9 +1507,9 @@ function join(state: State, other: State): void {
   }
   state.aliasesUnknown ||= other.aliasesUnknown;
   if (state.expandAliases !== other.expandAliases) state.expandAliases = undefined;
-  for (const name of new Set([...state.hashed.keys(), ...other.hashed.keys()])) {
+  for (const name of new Set([...state.hashed.keys(), ...other.hashed.keys()]))
     if (state.hashed.get(name) !== other.hashed.get(name)) state.hashed.set(name, undefined);
-  }
+
   for (const name of other.disabled) state.disabled.add(name);
   if (state.cwd !== other.cwd) state.cwd = undefined;
 }
@@ -1420,7 +1542,7 @@ function expanded(value: string, parts: Word['parts'], lookup: Lookup): string |
     return current?.kind === 'static' ? current.value : undefined;
   }
   if (!parts) return value.includes('$') ? undefined : value;
-  const resolved = resolveWord({ type: 'Word', pos: 0, end: value.length, text: value, value, parts } as Word, lookup);
+  const resolved = resolveWord({ type: 'Word', pos: 0, end: value.length, text: value, value, parts }, lookup);
   return resolved.length === 1 && resolved[0]!.kind === 'static' ? resolved[0]!.value : undefined;
 }
 
