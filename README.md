@@ -176,8 +176,6 @@ bun run checks   # tsc, then bun test
 
 ## Known gaps
 
-- **Bash only.** zsh, fish, PowerShell and cmd.exe need adapters that produce the same invocations. Until then, their
-  code run from Bash (`zsh -c`, `pwsh -Command`) counts as `exec:arbitrary`.
 - **Program specs are intentionally conservative.** The listed `sed`, `awk`, `tar`, `rsync`, `vim`, `zip`, `ssh`,
   output-file and command-wrapper forms are flagged or followed where their arguments identify code or paths. Some
   language-specific snippets are effect findings rather than fully interpreted programs, and other programs remain
