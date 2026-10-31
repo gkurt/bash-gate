@@ -237,7 +237,7 @@ function matchEffects(effects: Effect[], invocation: Invocation, all: boolean): 
 /**
  * Whether any of `args` matches any of `globs` (`all`: every one does), as written, as a path resolved against where
  * the invocation runs, and as its real path when the analysis had a filesystem. Relative globs match paths from where
- * the script starts. A path that can't be resolved, or whose real path isn't known, may be anywhere; one whose place
+ * the script starts. An allow rule doesn't match as written: after a `cd`, `src/a` is somewhere else. A path that can't be resolved, or whose real path isn't known, may be anywhere; one whose place
  * against the start isn't known may match any relative glob.
  */
 function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: boolean, start: Start): Tri {
@@ -257,9 +257,13 @@ function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: b
     const local = resolved?.startsWith('/') && start.cwd !== undefined ? relativePath(resolved, start.cwd) : undefined;
     const realLocal = typeof physical === 'string' && typeof start.realcwd === 'string' ? relativePath(physical, start.realcwd) : undefined;
     const real = [physical, realLocal].filter((form) => typeof form === 'string');
-    const forms = [arg.value, resolved, resolved === undefined ? undefined : tildePath(resolved, invocation.home), local, ...real].filter(
-      (form) => typeof form === 'string',
-    );
+    const forms = [
+      all ? undefined : arg.value,
+      resolved,
+      resolved === undefined ? undefined : tildePath(resolved, invocation.home),
+      local,
+      ...real,
+    ].filter((form) => typeof form === 'string');
     const matches = patterns.some((pattern) => forms.some((form) => pattern.test(form)));
     const realMatches = patterns.some((pattern) => real.some((form) => pattern.test(form)));
     if (all && (!matches || (realpaths !== undefined && !realMatches))) return 0;

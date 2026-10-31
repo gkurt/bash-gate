@@ -248,6 +248,17 @@ describe('policy', () => {
     expect(check('echo hi > out', inside, { cwd: '/repo', fs: { readFile: () => null, realpath: () => undefined } }).decision).toBe('ask');
   });
 
+  test('an allow rule matches where a path is, not how it is written', () => {
+    const policy = { rules: [allow({ writes: ['src/**'] })], default: 'ask' as const };
+    for (const environment of [{}, { cwd: '/repo' }]) {
+      expect(check('echo x > src/a', policy, environment).decision).toBe('allow');
+      expect(check('cd src && echo x > a', policy, environment).decision).toBe('allow');
+      expect(check('cd /tmp && echo x > src/a', policy, environment).decision).toBe('ask');
+      expect(check('cd .. && echo x > src/a', policy, environment).decision).toBe('ask');
+      expect(check('cd $d && echo x > src/a', policy, environment).decision).toBe('ask');
+    }
+  });
+
   test('reasons point at the source', () => {
     const verdict = check('ls && rm -rf /', { rules: [deny('rm')], default: 'allow' });
     expect(verdict.reasons).toHaveLength(1);

@@ -72,7 +72,9 @@ const policy: Policy = {
 - `args` and `writes`: globs matched against paths as written, as resolved against the tracked working directory, and
   as their real path when the analysis had a filesystem (see below). Deny and ask rules match any path form, and may
   match a path whose real path isn't known. Allow rules must match a known path form and, with a filesystem, the real
-  path, so they never match a path whose real path can't be known. When `$HOME` is known (set in the script, or given
+  path, so they never match a path whose real path can't be known. They don't match a path as written, since after a
+  `cd` it names another place (`cd /tmp && echo x > src/a`); a non-path positional fails them once the script leaves
+  where it started. When `$HOME` is known (set in the script, or given
   in `env`), `~` globs match absolute paths under it, and the other way round. Another user's home (`~root`) may be
   anywhere. Relative globs (`src/**`, `../**`) also match paths from where the script starts, when `cwd` was given as
   an absolute path (and from its real path, with a filesystem). Without it, an absolute path may be anywhere against
