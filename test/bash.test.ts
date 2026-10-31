@@ -42,6 +42,12 @@ const scripts = [
   "x=ls; trap 'f; $x y' EXIT; f() { cat late; }; x=sort",
   "( trap 'f; x=$(echo e)' EXIT; enable -n echo; f() { cat sub; } ); ls after",
   "for i in 1 2; do ( trap 'f' EXIT; f() { cat loop; } ); done",
+  "trap -- 'cat dashes' EXIT; ls",
+  'f() { :; }; trap f ERR; f() { cat middle; }; false; f() { :; }',
+  "x=ls; trap 'x=cat' ERR; false; $x y",
+  "trap 'f() { cat trapped; }' ERR; f() { ls a; }; false; f",
+  "x=ls; trap 'x=cat' DEBUG; $x y",
+  "trap 'cat reset' EXIT INT; trap - exit; trap '' 2; ls",
   'cat $(ls x) <(sort y)',
   'for f in a b; do cat "$f"; done',
   'if true; then cat a; else ls b; fi',
@@ -222,9 +228,9 @@ const { script: generatedScript } = fc.letrec<{ word: string; command: string; b
       // Literal words only: Bash expands an alias again in each substitution it contains, without end.
       fc.tuple(fc.constantFrom(...aliases), fc.oneof(literalCommand, fc.constant('sudo '))).map(([a, code]) => `alias ${a}=${quote(code)}`),
       fc.tuple(fc.constantFrom(...functions), block).map(([f, body]) => `${f}() {\n${body}\n}`),
-      fc
-        .tuple(fc.constantFrom('eval', '/bin/bash -c', 'trap'), block)
-        .map(([how, code]) => `${how} ${quote(code)}${how === 'trap' ? ' EXIT' : ''}`),
+      fc.tuple(fc.constantFrom('eval', '/bin/bash -c'), block).map(([how, code]) => `${how} ${quote(code)}`),
+      fc.tuple(block, fc.constantFrom('EXIT', 'ERR', 'DEBUG')).map(([code, signal]) => `trap ${quote(code)} ${signal}`),
+      fc.constantFrom('trap - EXIT', 'trap - ERR', "trap '' DEBUG"),
       fc.tuple(command, fc.constantFrom('&&', '||', '|'), command).map((parts) => parts.join(' ')),
       command.map((code) => `! ${code}`),
       block.map((body) => `(\n${body}\n)`),

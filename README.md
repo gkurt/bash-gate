@@ -41,8 +41,10 @@ analyze('sudo -u root rm -rf "$dir"').invocations.map((i) => [i.shape, i.via, i.
    function body as they were when it was defined. Subshells, pipelines and substitutions get copies of the state.
 4. **Dispatch** as Bash does: alias, then function, then builtin, then program. `command`, `builtin` and `exec` change
    that order. `eval`, `trap`, `mapfile -C`, `compgen -C`, `bash -c`, `ssh host cmd`, `watch`, git aliases, git config
-   commands, prompt strings (`PS4`) and `PROMPT_COMMAND` parse their strings and walk them as code. Code for other
-   shells (`zsh -c`, `fish -c`, `pwsh`) is never parsed as Bash: it's code the analysis can't see into.
+   commands, prompt strings (`PS4`) and `PROMPT_COMMAND` parse their strings and walk them as code. Once set, a trap
+   action or prompt string may run between any two commands (a signal, a failing command, `set -x`), so it's walked
+   at each of those points with the state there, until `trap -` resets it, and what it changes carries on. Code for
+   other shells (`zsh -c`, `fish -c`, `pwsh`) is never parsed as Bash: it's code the analysis can't see into.
 5. **Read argv with a spec** (`src/specs.ts`, `src/argv.ts`): options under canonical names (`-f`, `--forc`, `-fu` →
    `--force`), clusters, attached values, `--`, POSIX vs GNU ordering, subcommands, paths read and written, and the
    command lines that wrappers run (`sudo`, `env`, `timeout`, `xargs`, `find -exec`, `git bisect run`…).
@@ -186,10 +188,6 @@ bun run checks   # tsc, then bun test
 - **What a program writes is what its spec says.** With `fs`, a file is unknown once a redirection or a spec's write
   may have reached it. A program that writes files no spec describes (a build script, `git checkout`) can still change
   a hook or put a symlink in place before a later command reads it.
-- **Code that runs later is walked twice.** Trap actions, prompt strings and `PROMPT_COMMAND` are walked with the
-  variables, functions and aliases of the moment they're set, and again with those at the end of the script and of
-  the shell that set them (a subshell, `bash -c`). A definition that's replaced before the end, while the code may run
-  in between (an `ERR` trap), is only seen if it was there when the code was set.
 - Dynamic arithmetic values are findings unless the analyzer can establish they are numeric. Static values are
   recursively followed in arithmetic commands, expansions, loops, `let`, integer tests, array indices, substring
   offsets and integer declarations.

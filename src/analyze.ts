@@ -60,6 +60,17 @@ interface State {
   /** Variables with the integer attribute (`declare -i`): what they're assigned is evaluated as arithmetic. */
   integers: Set<string>;
   cwd: string | undefined;
+  /**
+   * Code that may run between any two commands from now on (a trap action, a prompt string), by where it's set (a
+   * signal, a variable). Each slot may hold several: what was set on different ways through the script.
+   */
+  later: Map<string, Later[]>;
+}
+
+/** Code that runs later: `walk` walks it in a state, silently or not. `key` says where it was set and what it is. */
+interface Later {
+  key: string;
+  walk: (state: State, silent: boolean) => void;
 }
 
 /**
@@ -157,6 +168,7 @@ export function analyze(source: string, environment: Environment = {}): Analysis
       disabled: new Set(),
       integers: new Set(),
       cwd: environment.cwd ?? '.',
+      later: new Map(),
     };
     const context: Context = {
       source,
@@ -175,7 +187,6 @@ export function analyze(source: string, environment: Environment = {}): Analysis
     };
     const walker = new Walker({ source, invocations: [], findings: [], needs: [] }, environment.maxDepth ?? 12, files, everything);
     walker.script(script, state, context);
-    walker.finish(state);
     return walker;
   };
   // Code that runs alongside the rest may read what the script writes after it: a silent first walk finds all of that.
@@ -219,16 +230,22 @@ class Walker {
   /** Where each loop settles, by what held when it began (see `loop`). */
   settled = new Map<object, Map<string, State>>();
   ids = new Map<object, number>();
-  /** Code that runs later, by where it was set (see `later`). */
-  pending = new Map<string, { walk: (state: State) => void; shells: Set<State> }>();
-  /** While `finish` walks it again, what was already emitted. */
-  emitted: Set<string> | undefined;
+  /** What code that runs later left, by the code, whether it was walked silently, and the state it ran in. */
+  ran = new Map<string, State>();
+  /** Code that runs later being walked, which doesn't run again inside itself. */
+  running = new Set<string>();
+  /** What code that runs later emitted, which walking it in another state doesn't emit again. */
+  emitted = new Set<string>();
   files: Probe | undefined;
   /**
    * What the script may have written so far, in the order of the walk. The filesystem is shared by every shell the
    * script starts, so this isn't part of a shell's state, and it only grows: a branch's writes count after it.
    */
   written: Written = { contents: new Changes(), links: new Changes() };
+  /** How many times `written` grew, so code walked before a write is walked again after it. */
+  writes = 0;
+  /** Code in strings by its text: walked again, it defines the same functions, so what it does settles. */
+  scripts = new Map<string, ParsedScript>();
   /** What the whole script may write, for code that runs alongside the rest. */
   everything: Written | undefined;
 
@@ -241,7 +258,8 @@ class Walker {
 
   /** `writes` happen: `kind` is what they change for a later read (see `writeKind`). */
   wrote(writes: Arg[], call: Call, kind: 'none' | 'contents' | 'links'): void {
-    if (!this.files || kind === 'none') return;
+    if (!this.files || kind === 'none' || writes.length === 0) return;
+    this.writes++;
     const sets = kind === 'links' ? [this.written.contents, this.written.links] : [this.written.contents];
     for (const arg of writes) {
       const path = arg.kind === 'static' ? resolvePath(call.cwd, arg.value, call.home) : undefined;
@@ -298,15 +316,21 @@ class Walker {
     for (const statement of script.commands) {
       if (!unit || (previous !== undefined && ctx.source.slice(previous, statement.pos).includes('\n')))
         unit = { aliases: snapshot(state), expanding: [] };
-      const background = statement.background ? { concurrent: true } : {};
-      this.node(statement.command, statement.background ? clone(state) : state, { ...ctx, ...unit, ...background });
+      this.between(state, ctx);
+      const shell = statement.background ? clone(state) : state;
+      this.node(statement.command, shell, { ...ctx, ...unit, ...(statement.background ? { concurrent: true } : {}) });
+      this.between(shell, ctx);
       previous = statement.end;
     }
   }
 
   list(statements: readonly Statement[], state: State, ctx: Context): void {
-    for (const statement of statements)
-      this.node(statement.command, statement.background ? clone(state) : state, statement.background ? { ...ctx, concurrent: true } : ctx);
+    for (const statement of statements) {
+      this.between(state, ctx);
+      const shell = statement.background ? clone(state) : state;
+      this.node(statement.command, shell, statement.background ? { ...ctx, concurrent: true } : ctx);
+      this.between(shell, ctx);
+    }
   }
 
   node(node: PipelineNode | AndOr | CommandNode | CompoundList, state: State, ctx: Context): void {
@@ -322,6 +346,7 @@ class Walker {
         const [first, ...rest] = node.commands;
         if (first) this.node(first, state, ctx);
         for (const command of rest) {
+          this.between(state, ctx);
           const branch = clone(state);
           this.node(command, branch, ctx);
           join(state, branch);
@@ -330,8 +355,11 @@ class Walker {
       }
       case 'Pipeline': {
         const together = node.commands.length > 1;
-        for (const command of node.commands)
-          this.node(command, together ? clone(state) : state, together ? { ...ctx, concurrent: true } : ctx);
+        for (const command of node.commands) {
+          const shell = together ? clone(state) : state;
+          this.node(command, shell, together ? { ...ctx, concurrent: true } : ctx);
+          if (together) this.between(shell, ctx);
+        }
         return;
       }
       case 'Command':
@@ -432,27 +460,32 @@ class Walker {
 
   /** What a silent walk's outcome depends on: the state, and the parts of the context that change what it does. */
   key(state: State, ctx: Context): string {
-    const sorted = <V>(map: Map<string, V>) => [...map].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    const aliases = (table: Map<string, Alias>) => sorted(table).map(([name, alias]) => [name, alias.value ?? null, alias.maybe]);
+    return JSON.stringify([
+      this.stateKey(state),
+      ctx.depth,
+      ctx.externalOnly,
+      ctx.calls.map((node) => this.id(node)),
+      aliasesKey(ctx.aliases.table),
+      ctx.aliases.unknown,
+      ctx.aliases.expand ?? null,
+      ctx.expanding,
+    ]);
+  }
+
+  stateKey(state: State): string {
     return JSON.stringify([
       sorted(state.vars),
       [...state.exported].sort(),
       sorted(state.functions).map(([name, fn]) => [name, fn.maybeUndefined, fn.bodies.map((body) => this.id(body)).sort((a, b) => a - b)]),
       [...state.exportedFunctions].sort(),
-      aliases(state.aliases),
+      aliasesKey(state.aliases),
       state.aliasesUnknown,
       state.expandAliases ?? null,
       sorted(state.hashed).map(([name, path]) => [name, path ?? null]),
       [...state.disabled].sort(),
       [...state.integers].sort(),
       state.cwd ?? null,
-      ctx.depth,
-      ctx.externalOnly,
-      ctx.calls.map((node) => this.id(node)),
-      aliases(ctx.aliases.table),
-      ctx.aliases.unknown,
-      ctx.aliases.expand ?? null,
-      ctx.expanding,
+      sorted(state.later).map(([slot, code]) => [slot, code.map((later) => later.key).sort()]),
     ]);
   }
 
@@ -805,7 +838,7 @@ class Walker {
       depth: ctx.depth + 1,
       expanding: [...ctx.expanding, name],
     };
-    this.script(parse(text), state, inner, ctx.aliases);
+    this.script(this.parse(text), state, inner, ctx.aliases);
   }
 
   builtin(name: string, argv: Arg[], state: State, ctx: Context, call: Call): void {
@@ -856,13 +889,22 @@ class Walker {
         effects.push('exec:file');
         break;
       case 'trap': {
-        if (args.length < 2 || values[0]?.startsWith('-')) break;
-        const action = args[0]!;
+        // `-l`, `-p` and `-P` print; `-` (an action) resets.
+        if (values[0] !== '-' && values[0] !== '--' && values[0]?.startsWith('-')) break;
+        const [action, ...signals] = values[0] === '--' ? args.slice(1) : args;
+        // One argument resets that signal.
+        if (!action || signals.length === 0) break;
+        // A signal only known at run time is a slot nothing else resets.
+        const slots = signals.map(
+          (signal, i) => `trap:${signal.kind === 'static' ? signalName(signal.value) : `${call.span.join()}:${i}`}`,
+        );
         if (action.kind === 'dynamic') {
           this.finding(ctx, 'dynamic-script', 'trap runs a string only known at run time', call.span);
-        } else if (action.value !== '' && action.value !== '-') {
+        } else if (action.value === '' || action.value === '-') {
+          for (const slot of slots) state.later.delete(slot);
+        } else {
           const text = action.value;
-          this.later(state, ctx, 'trap', text, call, (s) => this.code(text, s, ctx, call, 'trap'));
+          this.later(state, slots, 'trap', text, call, (s, silent) => this.code(text, s, { ...ctx, silent }, call, 'trap'));
         }
         break;
       }
@@ -1325,39 +1367,55 @@ class Walker {
     }
   }
 
-  /**
-   * Code that runs later (a trap action, a prompt string): walked now, in a copy of the state, and again by `finish`
-   * with the state at the end of the script and at the end of the shell it was set in (a subshell, `bash -c`), so it
-   * sees what's defined after it was set. That shell's state object is changed in place as its walk goes on.
-   */
-  later(state: State, ctx: Context, label: string, text: string, call: Call, walk: (state: State) => void): void {
-    walk(clone(state));
-    const key = `${label}\0${call.span.join()}\0${text}`;
-    const entry = this.pending.get(key);
-    if (this.emitted && entry) return;
-    if (!entry) return void this.pending.set(key, { walk, shells: new Set([state]) });
-    entry.shells.add(state);
-    // A loop walks silently until it settles: keep a walk that reports.
-    if (!ctx.silent) entry.walk = walk;
+  /** Code that runs later (a trap action, a prompt string) is set in `slots`, in place of what they held. */
+  later(state: State, slots: string[], label: string, text: string, call: Call, walk: Later['walk']): void {
+    const later: Later = { key: `${label}\0${call.span.join()}\0${text}`, walk };
+    for (const slot of slots) state.later.set(slot, [later]);
   }
 
-  finish(state: State): void {
-    this.emitted = new Set(this.analysis.invocations.map((invocation) => JSON.stringify(invocation)));
-    const walked = new Set<string>();
-    for (;;) {
-      const next = [...this.pending].find(([key]) => !walked.has(key));
-      if (!next) return;
-      walked.add(next[0]);
-      const { walk, shells } = next[1];
-      for (const shell of new Set([state, ...shells])) walk(clone(shell));
+  /**
+   * A point between two commands, where code set to run later may run (a signal, a failing command, `set -x`): any
+   * number of times, each in the state it finds, leaving its changes behind. It's walked in every state it may find
+   * until what it leaves settles. A state it was already walked in isn't walked again.
+   */
+  between(state: State, ctx: Context): void {
+    if (state.later.size === 0) return;
+    for (let i = 0; ; i++) {
+      const before = clone(state);
+      for (const later of new Map([...state.later.values()].flat().map((later) => [later.key, later])).values()) {
+        if (this.running.has(later.key)) continue;
+        const key = `${later.key}\0${[...this.running].join('\0')}\0${this.writes}\0${this.stateKey(state)}`;
+        const ran = this.ran.get(`${key}\0loud`) ?? (ctx.silent ? this.ran.get(`${key}\0silent`) : undefined);
+        if (ran) {
+          join(state, ran);
+          continue;
+        }
+        const after = clone(state);
+        this.running.add(later.key);
+        later.walk(after, ctx.silent);
+        this.running.delete(later.key);
+        this.ran.set(`${key}\0${ctx.silent ? 'silent' : 'loud'}`, after);
+        join(state, after);
+      }
+      if (equal(before, state)) return;
+      if (i === maxIterations)
+        return this.alarm('Code that runs later changes more than the analysis follows', ctx.outer ?? [0, ctx.source.length]);
     }
+  }
+
+  parse(text: string): ParsedScript {
+    const known = this.scripts.get(text);
+    if (known) return known;
+    const script = parse(text);
+    this.scripts.set(text, script);
+    return script;
   }
 
   /** Code in a string (`bash -c`, `eval`, `trap`, an alias): parsed and walked in `state`. */
   code(text: string, state: State, ctx: Context, call: Call, label: string, open = false): void {
     if (ctx.depth >= this.maxDepth)
       return this.finding(ctx, 'too-deep', `Code nests deeper than the analysis follows (${label})`, call.span);
-    this.script(parse(text), state, {
+    this.script(this.parse(text), state, {
       ...ctx,
       source: text,
       outer: call.span,
@@ -1371,18 +1429,19 @@ class Walker {
 
   /**
    * `variable` set to `value`, in the shell itself (`shell`) or in the environment of what it runs. Some variables
-   * change what runs, a finding. Prompt strings and `PROMPT_COMMAND` hold code, which is walked when it's known: they
-   * run later, so it's walked as code that runs later (see `later`). An integer variable's value is evaluated first
-   * when Bash itself assigns it (`bash`); the result is what it holds.
+   * change what runs, a finding. Prompt strings and `PROMPT_COMMAND` hold code, which is walked when it's known: in
+   * the shell, as code that runs later (see `between`); for what it runs, now. An integer variable's value is
+   * evaluated first when Bash itself assigns it (`bash`); the result is what it holds.
    */
   assigned(variable: string, value: Value, state: State, ctx: Context, call: Call, shell: boolean, bash = true): Value {
     if (shell && variable === 'POSIXLY_CORRECT') state.expandAliases = true;
     const prompt = /^PS[0124]$/.test(variable);
     if ((prompt || variable === 'PROMPT_COMMAND') && value.kind === 'static') {
       const text = value.value;
-      this.later(state, ctx, variable, text, call, (s) =>
-        prompt ? this.expansions(text, s, ctx, call, variable) : this.code(text, s, ctx, call, variable),
-      );
+      const walk: Later['walk'] = (s, silent) =>
+        prompt ? this.expansions(text, s, { ...ctx, silent }, call, variable) : this.code(text, s, { ...ctx, silent }, call, variable);
+      if (shell) this.later(state, [variable], variable, text, call, walk);
+      else walk(clone(state), ctx.silent);
     } else if (prompt || variable === 'PROMPT_COMMAND' || sensitive.test(variable)) {
       this.finding(ctx, 'sensitive-variable', `Setting ${variable} changes what runs or how`, call.span);
     }
@@ -1408,7 +1467,7 @@ class Walker {
     let delimiter = 'BASH_GATE_EOF';
     while (text.split('\n').includes(delimiter)) delimiter += '_';
     const source = `: <<${delimiter}\n${text}\n${delimiter}\n`;
-    const script = parse(source);
+    const script = this.parse(source);
     const inner = { ...ctx, source, outer: call.span, nesting: [...ctx.nesting, label], depth: ctx.depth + 1, writes: [], reads: [] };
     for (const error of script.errors ?? []) this.finding(inner, 'parse-error', `Parse error: ${error.message}`, call.span);
     this.substitutions(script.commands, state, inner);
@@ -1447,7 +1506,7 @@ class Walker {
       text: this.analysis.source.slice(call.span[0], call.span[1]),
     };
     invocation.shape = shape(invocation);
-    if (this.emitted) {
+    if (this.running.size > 0) {
       const key = JSON.stringify(invocation);
       if (this.emitted.has(key)) return;
       this.emitted.add(key);
@@ -1645,6 +1704,14 @@ function snapshot(state: State): Aliases {
   return { table: new Map(state.aliases), unknown: state.aliasesUnknown, expand: state.expandAliases };
 }
 
+function sorted<V>(map: Map<string, V>): [string, V][] {
+  return [...map].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+function aliasesKey(table: Map<string, Alias>): unknown[] {
+  return sorted(table).map(([name, alias]) => [name, alias.value ?? null, alias.maybe]);
+}
+
 const sameAlias = (a: Alias, b: Alias) => a.value === b.value && a.maybe === b.maybe;
 
 function sameAliases(a: Aliases, b: Aliases): boolean {
@@ -1676,7 +1743,8 @@ function equal(a: State, b: State): boolean {
     sameMap(a.hashed, b.hashed) &&
     sameSet(a.disabled, b.disabled) &&
     sameSet(a.integers, b.integers) &&
-    a.cwd === b.cwd
+    a.cwd === b.cwd &&
+    sameMap(a.later, b.later, (x, y) => sameSet(new Set(x.map((later) => later.key)), new Set(y.map((later) => later.key))))
   );
 }
 
@@ -1693,6 +1761,7 @@ function clone(state: State): State {
     disabled: new Set(state.disabled),
     integers: new Set(state.integers),
     cwd: state.cwd,
+    later: new Map([...state.later].map(([slot, code]) => [slot, [...code]])),
   };
 }
 
@@ -1735,6 +1804,7 @@ function freshState(cwd: string | undefined): State {
     disabled: new Set(),
     integers: new Set(),
     cwd,
+    later: new Map(),
   };
 }
 
@@ -1779,6 +1849,21 @@ function join(state: State, other: State): void {
 
   for (const name of other.disabled) state.disabled.add(name);
   if (state.cwd !== other.cwd) state.cwd = undefined;
+  // Code set in a slot on either way may be what runs there.
+  for (const [slot, code] of other.later) {
+    const mine = state.later.get(slot) ?? [];
+    state.later.set(slot, [...mine, ...code.filter((later) => !mine.some((other) => other.key === later.key))]);
+  }
+}
+
+/**
+ * A trap's signal as Bash names it: any case, `SIG` optional (except before `EXIT`, `ERR`, `DEBUG` and `RETURN`), `0`
+ * for `EXIT`. Other numbers stay numbers, so a reset by number never removes an action set by name.
+ */
+function signalName(signal: string): string {
+  const name = signal.toUpperCase();
+  if (name === '0') return 'EXIT';
+  return /^SIG(?!(?:EXIT|ERR|DEBUG|RETURN)$)/.test(name) ? name.slice(3) : name;
 }
 
 /** What `~` stands for: `$HOME` when it's known and absolute. */

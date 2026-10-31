@@ -84,6 +84,11 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ["( trap 'f' EXIT; f() { rm -rf /; } )", 'deny', 'a trap in a subshell, run when the subshell exits'],
   ['bash -c "trap \'f\' EXIT; f() { rm -rf /; }"', 'deny', 'a trap in a child shell'],
   ["for i in 1; do trap 'f' EXIT; done; f() { rm -rf /; }", 'deny', 'a trap set in a loop'],
+  ["trap -- 'rm -rf /' EXIT", 'deny', 'a trap action after --'],
+  ["trap 'rm -rf /' exit; trap - SIGEXIT", 'deny', 'a trap reset with a signal name Bash rejects'],
+  ['f() { :; }; trap f ERR; f() { rm -rf /; }; false; f() { :; }', 'deny', 'an ERR trap calling a function only defined for a while'],
+  ["f() { :; }; trap 'f() { rm -rf /; }' ERR; false; f", 'deny', 'an ERR trap redefining a function'],
+  ['trap \'alias ls="rm -rf /"\' DEBUG; shopt -s expand_aliases\nls', 'deny', 'a DEBUG trap defining an alias'],
   ["mapfile -C 'rm -rf /' arr", 'deny', 'mapfile callbacks'],
   ["compgen -C 'rm -rf /' x", 'deny', 'compgen -C'],
 
