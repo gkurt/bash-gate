@@ -1,26 +1,30 @@
 core:changelogs:
-  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Traps and prompt strings see what's defined after them\n\nTrap actions, prompt strings and `PROMPT_COMMAND` are also walked with the state at the end of the script, so `trap 'f' EXIT; f() { rm -rf /; }` is denied.\n"
-    filename: later-code-final-state.md
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Allow rules no longer match a path as written\n\n`allow({ writes: ['src/**'] })` allowed `cd /tmp && echo x > src/a`: the path as written matched, though it's `/tmp/src/a`. Allow rules now match only forms that say where a path is: resolved, from where the script starts, and real.\n"
+    filename: allow-as-written.md
     v: 0.0.0
-  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A process substitution no longer splits the word it's in\n\n`v=<(f) rm -rf /` runs `rm` with `v` assigned, and `a<(f)` is one argument, as in Bash. The command was taken to be `<(f)`, so the deny rule for `rm` didn't apply and the gate asked instead of denying.\n"
-    filename: process-substitution-words.md
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Files the script changes before reading them are unknown\n\nGit config and hooks, npm scripts and SSH config the script may write first (`cp -r hooks .git/ && git commit`), or write while they're read (`&`, a pipeline), are an `unknown-file` finding rather than their old contents. So is the real path of anything under a symlink the script may create (`ln -s /etc e && rm e/passwd`).\n"
+    filename: stale-reads.md
     v: 0.0.0
-  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### `local` outside a function changes nothing\n\nAs in Bash, where it's an error. `x=-rf; local x=; rm $x /` is denied.\n"
-    filename: local-outside-function.md
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Relative globs match from the starting `cwd`, so `recommended` allows writes inside it\n\nWith `cwd: '/repo'`, `echo hi > out.txt` was asked about as a write outside the working directory. Relative globs now match paths from an absolute starting `cwd` (and its real path), and `recommended` asks about `..`, `../**` and `~/**` instead of `/**`. Without a starting `cwd`, an absolute path may match a deny or ask rule's relative glob.\n"
+    filename: relative-globs.md
     v: 0.0.0
-  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A command word that may expand to nothing also runs the next word\n\n`$x rm -rf /` is denied: with `$x` empty, Bash runs `rm`. It was only a command name known at run time, which asks.\n"
-    filename: empty-command-word.md
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Traps set in a subshell or a child shell see what's defined after them\n\nA trap runs when the shell that set it exits, so it's also walked with that shell's state at its end: `( trap 'f' EXIT; f() { rm -rf /; } )` is denied.\n"
+    filename: subshell-traps.md
     v: 0.0.0
-  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A name hashed in only some branches, to an unknown path, is a finding\n\nAfter `if …; then :; else hash -p /bin/cat h; for i in 1; do hash -p /bin/rm h; done; fi`, `h` was taken to be a program named `h`. It's now a `loads-code` finding, which asks.\n"
-    filename: hash-join.md
+  - content: "---\npackages:\n  bash-gate:\n    type: minor\n---\n\n### `analyze` and `check` take one `Environment`, with a `FileSystem` that may not know\n\nThe `readFile` and `realpath` options are replaced by `fs: { readFile, realpath }`, where `null` is absent and `undefined` is unknown; `evaluate` takes no options. What it didn't know is an `unknown-file` finding and an entry in `analysis.needs`. `snapshot()` builds a `FileSystem` from records, and `checkAsync()` fetches the needs from an `AsyncFileSystem` over a few rounds.\n"
+    filename: environment.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### `recommended` asks about writes to `.git` and `.git/hooks` as a whole\n"
+    filename: recommended-git-dirs.md
     v: 0.0.0
 core:packages:
   - changelogIds:
-      - later-code-final-state.md
-      - process-substitution-words.md
-      - local-outside-function.md
-      - empty-command-word.md
-      - hash-join.md
+      - allow-as-written.md
+      - stale-reads.md
+      - relative-globs.md
+      - subshell-traps.md
+      - environment.md
+      - recommended-git-dirs.md
     id: npm:bash-gate
     updated: true
 npm:packages:
