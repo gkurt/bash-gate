@@ -28,6 +28,8 @@ const scripts = [
   `f() { cat exported; }; export -f f; exec /bin/bash -c f`,
   "trap 'rm x' EXIT; ls",
   "x=ls; trap 'f; $x y' EXIT; f() { cat late; }; x=sort",
+  "( trap 'f; x=$(echo e)' EXIT; enable -n echo; f() { cat sub; } ); ls after",
+  "for i in 1 2; do ( trap 'f' EXIT; f() { cat loop; } ); done",
   'cat $(ls x) <(sort y)',
   'for f in a b; do cat "$f"; done',
   'if true; then cat a; else ls b; fi',

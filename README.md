@@ -124,9 +124,9 @@ bun run checks   # tsc, then bun test
   followed; commands remain `exec:project`, and the recommended policy asks about direct writes to `.git/config` and
   `.git/hooks/**`. `make` is `exec:project` and Makefiles aren't parsed.
 - **Code that runs later is walked twice.** Trap actions, prompt strings and `PROMPT_COMMAND` are walked with the
-  variables, functions and aliases of the moment they're set, and again with those at the end of the script. A
-  definition that's replaced before the end, while the code may run in between (an `ERR` trap), is only seen if it
-  was there when the code was set.
+  variables, functions and aliases of the moment they're set, and again with those at the end of the script and of
+  the shell that set them (a subshell, `bash -c`). A definition that's replaced before the end, while the code may run
+  in between (an `ERR` trap), is only seen if it was there when the code was set.
 - Dynamic arithmetic values are findings unless the analyzer can establish they are numeric. Static values are
   recursively followed in arithmetic commands, expansions, loops, `let`, integer tests, array indices, substring
   offsets and integer declarations.

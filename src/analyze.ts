@@ -182,7 +182,7 @@ class Walker {
   settled = new Map<object, Map<string, State>>();
   ids = new Map<object, number>();
   /** Code that runs later, by where it was set (see `later`). */
-  pending = new Map<string, (state: State) => void>();
+  pending = new Map<string, { walk: (state: State) => void; shells: Set<State> }>();
   /** While `finish` walks it again, what was already emitted. */
   emitted: Set<string> | undefined;
   readFile: AnalyzeOptions['readFile'];
@@ -759,7 +759,7 @@ class Walker {
           this.finding(ctx, 'dynamic-script', 'trap runs a string only known at run time', call.span);
         } else if (action.value !== '' && action.value !== '-') {
           const text = action.value;
-          this.later(state, 'trap', text, call, (s) => this.code(text, s, ctx, call, 'trap'));
+          this.later(state, ctx, 'trap', text, call, (s) => this.code(text, s, ctx, call, 'trap'));
         }
         break;
       }
@@ -1218,14 +1218,20 @@ class Walker {
     }
   }
 
-  /** Code in a string (`bash -c`, `eval`, `trap`, an alias): parsed and walked in `state`. */
   /**
    * Code that runs later (a trap action, a prompt string): walked now, in a copy of the state, and again by `finish`
-   * with the state at the end of the script, so it sees functions and aliases defined after it was set.
+   * with the state at the end of the script and at the end of the shell it was set in (a subshell, `bash -c`), so it
+   * sees what's defined after it was set. That shell's state object is changed in place as its walk goes on.
    */
-  later(state: State, label: string, text: string, call: Call, walk: (state: State) => void): void {
+  later(state: State, ctx: Context, label: string, text: string, call: Call, walk: (state: State) => void): void {
     walk(clone(state));
-    this.pending.set(`${label}\0${call.span.join()}\0${text}`, walk);
+    const key = `${label}\0${call.span.join()}\0${text}`;
+    const entry = this.pending.get(key);
+    if (this.emitted && entry) return;
+    if (!entry) return void this.pending.set(key, { walk, shells: new Set([state]) });
+    entry.shells.add(state);
+    // A loop walks silently until it settles: keep a walk that reports.
+    if (!ctx.silent) entry.walk = walk;
   }
 
   finish(state: State): void {
@@ -1235,10 +1241,12 @@ class Walker {
       const next = [...this.pending].find(([key]) => !walked.has(key));
       if (!next) return;
       walked.add(next[0]);
-      next[1](clone(state));
+      const { walk, shells } = next[1];
+      for (const shell of new Set([state, ...shells])) walk(clone(shell));
     }
   }
 
+  /** Code in a string (`bash -c`, `eval`, `trap`, an alias): parsed and walked in `state`. */
   code(text: string, state: State, ctx: Context, call: Call, label: string, open = false): void {
     if (ctx.depth >= this.maxDepth)
       return this.finding(ctx, 'too-deep', `Code nests deeper than the analysis follows (${label})`, call.span);
@@ -1265,7 +1273,7 @@ class Walker {
     const prompt = /^PS[0124]$/.test(variable);
     if ((prompt || variable === 'PROMPT_COMMAND') && value.kind === 'static') {
       const text = value.value;
-      this.later(state, variable, text, call, (s) =>
+      this.later(state, ctx, variable, text, call, (s) =>
         prompt ? this.expansions(text, s, ctx, call, variable) : this.code(text, s, ctx, call, variable),
       );
     } else if (prompt || variable === 'PROMPT_COMMAND' || sensitive.test(variable)) {

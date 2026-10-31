@@ -81,6 +81,9 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ["trap 'rm -rf /' EXIT", 'deny', 'a trap action'],
   ["trap 'f' EXIT; f() { rm -rf /; }", 'deny', 'a trap calling a function defined after it'],
   ["x=ls; trap '$x -rf /' EXIT; x=rm", 'deny', 'a trap expanding a variable set after it'],
+  ["( trap 'f' EXIT; f() { rm -rf /; } )", 'deny', 'a trap in a subshell, run when the subshell exits'],
+  ['bash -c "trap \'f\' EXIT; f() { rm -rf /; }"', 'deny', 'a trap in a child shell'],
+  ["for i in 1; do trap 'f' EXIT; done; f() { rm -rf /; }", 'deny', 'a trap set in a loop'],
   ["mapfile -C 'rm -rf /' arr", 'deny', 'mapfile callbacks'],
   ["compgen -C 'rm -rf /' x", 'deny', 'compgen -C'],
 
