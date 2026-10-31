@@ -1,6 +1,6 @@
 {
   "name": "bash-gate",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Static analysis of Bash commands: what they run, with which options and effects, and whether a policy allows it.",
   "keywords": [
     "agent",
