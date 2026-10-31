@@ -4,6 +4,8 @@ import { ask, check, deny, recommended, type Decision, type Policy } from '#src/
 
 /** S4: equivalent rewrites must not make a denied or asked command easier to run. */
 const runs = Number(process.env.METAMORPHIC_RUNS ?? process.env.PROPERTY_RUNS ?? 200);
+/** Generated chains take about a millisecond each on a CI runner; Bun's default 5 s is too short for CI's run count. */
+const timeout = Math.max(5_000, runs * 10);
 const severity: Record<Decision, number> = { allow: 0, ask: 1, deny: 2 };
 const permissive: Policy = {
   default: 'allow',
@@ -90,25 +92,29 @@ describe('S4: rewrite invariance', () => {
       }
     });
 
-    test(`${original}: chains of generated rewrites`, () => {
-      fc.assert(
-        fc.property(
-          fc.array(fc.constantFrom(...spellings), { minLength: 1, maxLength: words.length }),
-          fc.array(fc.constantFrom(...wrappers), { minLength: 1, maxLength: 3 }),
-          (choices, chain) => {
-            for (const policy of policies) {
-              let source = spell(words, choices);
-              let before = assertFloor(source, decision, policy, `spell ${choices.join(', ')}`);
-              for (const wrapper of chain) {
-                source = wrapper.apply(source);
-                before = assertFloor(source, before, policy, wrapper.name);
+    test(
+      `${original}: chains of generated rewrites`,
+      () => {
+        fc.assert(
+          fc.property(
+            fc.array(fc.constantFrom(...spellings), { minLength: 1, maxLength: words.length }),
+            fc.array(fc.constantFrom(...wrappers), { minLength: 1, maxLength: 3 }),
+            (choices, chain) => {
+              for (const policy of policies) {
+                let source = spell(words, choices);
+                let before = assertFloor(source, decision, policy, `spell ${choices.join(', ')}`);
+                for (const wrapper of chain) {
+                  source = wrapper.apply(source);
+                  before = assertFloor(source, before, policy, wrapper.name);
+                }
               }
-            }
-          },
-        ),
-        { numRuns: runs },
-      );
-    });
+            },
+          ),
+          { numRuns: runs },
+        );
+      },
+      { timeout },
+    );
   }
 
   test('hiding a word or code may lower deny to ask, but never to allow', () => {
@@ -128,35 +134,39 @@ describe('S4: rewrite invariance', () => {
     }
   });
 
-  test('generated chains remain at least ask after a value is hidden', () => {
-    fc.assert(
-      fc.property(
-        fc.constantFrom(...seeds),
-        fc.nat(),
-        fc.constantFrom('word', 'unset', 'eval', 'bash'),
-        fc.array(fc.constantFrom(...wrappers), { minLength: 1, maxLength: 3 }),
-        ({ words, decision }, index, method, chain) => {
-          const code = words.join(' ');
-          let hidden: string;
-          if (method === 'word' || method === 'unset') {
-            const parts = [...words];
-            const i = index % parts.length;
-            parts[i] = method === 'word' ? `"$(printf %s ${quote(parts[i]!)})"` : `"\${s4missing:-${parts[i]}}"`;
-            hidden = `${method === 'unset' ? 'unset s4missing; ' : ''}${parts.join(' ')}`;
-          } else {
-            hidden = `s4code=$(printf %s ${quote(code)}); ${method === 'eval' ? 'eval' : 'bash -c'} "$s4code"`;
-          }
-          for (const policy of policies) {
-            let source = hidden;
-            let before = assertFloor(source, decision, policy, method, true);
-            for (const wrapper of chain) {
-              source = wrapper.apply(source);
-              before = assertFloor(source, before, policy, wrapper.name);
+  test(
+    'generated chains remain at least ask after a value is hidden',
+    () => {
+      fc.assert(
+        fc.property(
+          fc.constantFrom(...seeds),
+          fc.nat(),
+          fc.constantFrom('word', 'unset', 'eval', 'bash'),
+          fc.array(fc.constantFrom(...wrappers), { minLength: 1, maxLength: 3 }),
+          ({ words, decision }, index, method, chain) => {
+            const code = words.join(' ');
+            let hidden: string;
+            if (method === 'word' || method === 'unset') {
+              const parts = [...words];
+              const i = index % parts.length;
+              parts[i] = method === 'word' ? `"$(printf %s ${quote(parts[i]!)})"` : `"\${s4missing:-${parts[i]}}"`;
+              hidden = `${method === 'unset' ? 'unset s4missing; ' : ''}${parts.join(' ')}`;
+            } else {
+              hidden = `s4code=$(printf %s ${quote(code)}); ${method === 'eval' ? 'eval' : 'bash -c'} "$s4code"`;
             }
-          }
-        },
-      ),
-      { numRuns: runs },
-    );
-  });
+            for (const policy of policies) {
+              let source = hidden;
+              let before = assertFloor(source, decision, policy, method, true);
+              for (const wrapper of chain) {
+                source = wrapper.apply(source);
+                before = assertFloor(source, before, policy, wrapper.name);
+              }
+            }
+          },
+        ),
+        { numRuns: runs },
+      );
+    },
+    { timeout },
+  );
 });
