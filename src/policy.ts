@@ -63,7 +63,11 @@ export interface Verdict {
 }
 
 export interface EvaluateOptions {
-  /** Resolves a path to its filesystem target. Called only when the invocation has an absolute working directory. */
+  /**
+   * Resolves an absolute path to its filesystem target, or `undefined` when nothing exists there; then its parent is
+   * tried. Anything else it can't resolve, such as a dangling symlink, must throw. Called only when the invocation has
+   * an absolute working directory.
+   */
   realpath?: (path: string) => string | undefined;
 }
 
@@ -208,7 +212,7 @@ function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: b
     }
     const resolved = resolvePath(invocation.cwd, arg.value, invocation.home);
     const physical =
-      realpath && invocation.cwd?.startsWith('/') && resolved?.startsWith('/') ? realpath(resolved) : undefined;
+      realpath && invocation.cwd?.startsWith('/') && resolved?.startsWith('/') ? physicalPath(resolved, realpath) : undefined;
     const forms = [arg.value, resolved, resolved === undefined ? undefined : tildePath(resolved, invocation.home), physical].filter((form) => form !== undefined);
     const matches = patterns.some((pattern) => forms.some((form) => pattern.test(form)));
     const realMatches = physical !== undefined && patterns.some((pattern) => pattern.test(physical));
@@ -218,6 +222,23 @@ function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: b
     if (!all && outside && absolute) result = 1;
   }
   return result;
+}
+
+/**
+ * Where the absolute `path` really is: the real path of its deepest ancestor that exists, then the rest, which doesn't
+ * exist yet and so holds no symlinks. `undefined` when not even `/` resolves.
+ */
+function physicalPath(path: string, realpath: NonNullable<EvaluateOptions['realpath']>): string | undefined {
+  let base = path;
+  let rest = '';
+  for (;;) {
+    const real = realpath(base);
+    if (real !== undefined) return rest === '' ? real : `${real.replace(/\/+$/, '')}/${rest}`;
+    if (base === '/') return undefined;
+    const slash = base.lastIndexOf('/');
+    rest = rest === '' ? base.slice(slash + 1) : `${base.slice(slash + 1)}/${rest}`;
+    base = base.slice(0, slash) || '/';
+  }
 }
 
 /** `**` crosses directories, `*` and `?` don't; everything else is literal. */

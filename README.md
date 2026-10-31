@@ -71,8 +71,10 @@ const policy: Policy = {
 - `options`: any of these options is given, spelled however the spec allows.
 - `args` and `writes`: globs matched against paths as written and as resolved against the tracked working directory.
   `check` and `evaluate` also accept an optional `realpath` callback; it is called only with an absolute path when the
-  invocation has an absolute `cwd`. Deny and ask rules match any path form. Allow rules must match a known path form
-  and the real path.
+  invocation has an absolute `cwd`. It returns `undefined` when nothing exists at the path, and the path's deepest
+  existing ancestor is resolved instead, so files that don't exist yet have a real path. Anything else it can't
+  resolve, such as a dangling symlink, must throw. Deny and ask rules match any path form. Allow rules must match a
+  known path form and the real path, so with `realpath` they never match a path whose real path can't be known.
   When `$HOME` is known (set in the script, or given in `env`), `~` globs match absolute paths under it, and the other
   way round. Another user's home (`~root`) may be anywhere.
 - `effects`: `fs:read`, `fs:write`, `fs:delete`, `network`, `privilege`, `exec:arbitrary`, `exec:project`, `exec:file`,

@@ -17,7 +17,8 @@ default shell options. Everything the shell knows comes from the command itself.
 guarantee this, the gate's answers are about some other shell.
 
 The integration may provide `readFile(path)` to inspect repository-controlled configuration and scripts (return
-`undefined` for missing or non-file paths), and `realpath(path)` to resolve paths. These are synchronous, use
+`undefined` for missing or non-file paths), and `realpath(path)` to resolve paths (return `undefined` only when
+nothing exists there, so its parent is tried; throw for a dangling symlink). These are synchronous, use
 `/`-separated paths, and callback errors propagate to the caller. Without these hooks, the limits below apply.
 
 Out of scope:

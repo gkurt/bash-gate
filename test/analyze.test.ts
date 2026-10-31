@@ -216,6 +216,19 @@ describe('policy', () => {
     expect(check('cat link', { rules: [allow({ args: ['/outside/**'] })], default: 'deny' }, { cwd: '/repo', realpath }).decision).toBe('allow');
   });
 
+  test('a path that does not exist yet is real under its deepest existing ancestor', () => {
+    const real: Record<string, string> = { '/': '/', '/repo': '/repo', '/repo/src': '/repo/src', '/repo/etc': '/etc', '/etc': '/etc' };
+    const realpath = (path: string) => real[path];
+    const options = { cwd: '/repo', realpath };
+    const inside = { rules: [allow({ writes: ['/repo/**'] })], default: 'ask' as const };
+    expect(check('touch new.txt', inside, options).decision).toBe('allow');
+    expect(check('mkdir -p src/a/b', inside, options).decision).toBe('allow');
+    expect(check('echo hi > src/new/out.txt', inside, options).decision).toBe('allow');
+    expect(check('echo hi > etc/new', inside, options).decision).toBe('ask');
+    expect(check('echo hi > etc/new', { rules: [deny({ writes: ['/etc/**'] })], default: 'allow' }, options).decision).toBe('deny');
+    expect(check('touch new.txt', inside, { cwd: '/repo', realpath: () => undefined }).decision).toBe('ask');
+  });
+
   test('reasons point at the source', () => {
     const verdict = check('ls && rm -rf /', { rules: [deny('rm')], default: 'allow' });
     expect(verdict.reasons).toHaveLength(1);
