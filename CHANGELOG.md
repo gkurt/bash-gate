@@ -1,3 +1,25 @@
+## bash-gate@0.1.1
+
+### Traps and prompt strings see what's defined after them
+
+Trap actions, prompt strings and `PROMPT_COMMAND` are also walked with the state at the end of the script, so `trap 'f' EXIT; f() { rm -rf /; }` is denied.
+
+### A process substitution no longer splits the word it's in
+
+`v=<(f) rm -rf /` runs `rm` with `v` assigned, and `a<(f)` is one argument, as in Bash. The command was taken to be `<(f)`, so the deny rule for `rm` didn't apply and the gate asked instead of denying.
+
+### `local` outside a function changes nothing
+
+As in Bash, where it's an error. `x=-rf; local x=; rm $x /` is denied.
+
+### A command word that may expand to nothing also runs the next word
+
+`$x rm -rf /` is denied: with `$x` empty, Bash runs `rm`. It was only a command name known at run time, which asks.
+
+### A name hashed in only some branches, to an unknown path, is a finding
+
+After `if …; then :; else hash -p /bin/cat h; for i in 1; do hash -p /bin/rm h; done; fi`, `h` was taken to be a program named `h`. It's now a `loads-code` finding, which asks.
+
 ## bash-gate@0.1.0
 
 ### First release
