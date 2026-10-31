@@ -1,3 +1,27 @@
+## bash-gate@0.2.0
+
+### Allow rules no longer match a path as written
+
+`allow({ writes: ['src/**'] })` allowed `cd /tmp && echo x > src/a`: the path as written matched, though it's `/tmp/src/a`. Allow rules now match only forms that say where a path is: resolved, from where the script starts, and real.
+
+### Files the script changes before reading them are unknown
+
+Git config and hooks, npm scripts and SSH config the script may write first (`cp -r hooks .git/ && git commit`), or write while they're read (`&`, a pipeline), are an `unknown-file` finding rather than their old contents. So is the real path of anything under a symlink the script may create (`ln -s /etc e && rm e/passwd`).
+
+### Relative globs match from the starting `cwd`, so `recommended` allows writes inside it
+
+With `cwd: '/repo'`, `echo hi > out.txt` was asked about as a write outside the working directory. Relative globs now match paths from an absolute starting `cwd` (and its real path), and `recommended` asks about `..`, `../**` and `~/**` instead of `/**`. Without a starting `cwd`, an absolute path may match a deny or ask rule's relative glob.
+
+### Traps set in a subshell or a child shell see what's defined after them
+
+A trap runs when the shell that set it exits, so it's also walked with that shell's state at its end: `( trap 'f' EXIT; f() { rm -rf /; } )` is denied.
+
+### `analyze` and `check` take one `Environment`, with a `FileSystem` that may not know
+
+The `readFile` and `realpath` options are replaced by `fs: { readFile, realpath }`, where `null` is absent and `undefined` is unknown; `evaluate` takes no options. What it didn't know is an `unknown-file` finding and an entry in `analysis.needs`. `snapshot()` builds a `FileSystem` from records, and `checkAsync()` fetches the needs from an `AsyncFileSystem` over a few rounds.
+
+### `recommended` asks about writes to `.git` and `.git/hooks` as a whole
+
 ## bash-gate@0.1.1
 
 ### Traps and prompt strings see what's defined after them
