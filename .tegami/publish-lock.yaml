@@ -1,10 +1,26 @@
 core:changelogs:
-  - content: "---\npackages:\n  bash-gate:\n    type: minor\n---\n\n### First release\n\nStatic analysis of Bash command lines for agent permission gates: `analyze` lists every program a command line can run, with its options, paths and effects, and `check` decides it under a policy of allow, ask and deny rules.\n\n### The analysis\n\nVariables, functions, aliases, loops, `cd`, wrappers (`env`, `xargs`, `sudo`, `timeout`, …), `bash -c`, `eval`, traps and code inside strings are followed as Bash runs them. Anything it can't follow becomes a dynamic argument or a finding, never a gap. Program specs read options the way each program does, including subcommands and options that run code (`git -c`, `find -exec`, `sed e`, `tar --to-command`, `ssh -o ProxyCommand`).\n\n### Policies\n\nRules match commands, options, paths (as written, resolved, under `~`, and real paths through an optional `realpath`) and effects. A rule that only may match never allows. `recommended` allows reading and everyday git, denies force pushes and deleting top-level directories, and asks about the rest.\n\n### Repository code\n\nAn optional `readFile` hook walks Git config and its includes, Git hooks, `ssh -F` config and npm lifecycle scripts as code. `THREAT_MODEL.md` states the promises and which tests check each, including runs against real Bash.\n"
-    filename: first-release.md
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Traps and prompt strings see what's defined after them\n\nTrap actions, prompt strings and `PROMPT_COMMAND` are also walked with the state at the end of the script, so `trap 'f' EXIT; f() { rm -rf /; }` is denied.\n"
+    filename: later-code-final-state.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A process substitution no longer splits the word it's in\n\n`v=<(f) rm -rf /` runs `rm` with `v` assigned, and `a<(f)` is one argument, as in Bash. The command was taken to be `<(f)`, so the deny rule for `rm` didn't apply and the gate asked instead of denying.\n"
+    filename: process-substitution-words.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### `local` outside a function changes nothing\n\nAs in Bash, where it's an error. `x=-rf; local x=; rm $x /` is denied.\n"
+    filename: local-outside-function.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A command word that may expand to nothing also runs the next word\n\n`$x rm -rf /` is denied: with `$x` empty, Bash runs `rm`. It was only a command name known at run time, which asks.\n"
+    filename: empty-command-word.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A name hashed in only some branches, to an unknown path, is a finding\n\nAfter `if …; then :; else hash -p /bin/cat h; for i in 1; do hash -p /bin/rm h; done; fi`, `h` was taken to be a program named `h`. It's now a `loads-code` finding, which asks.\n"
+    filename: hash-join.md
     v: 0.0.0
 core:packages:
   - changelogIds:
-      - first-release.md
+      - later-code-final-state.md
+      - process-substitution-words.md
+      - local-outside-function.md
+      - empty-command-word.md
+      - hash-join.md
     id: npm:bash-gate
     updated: true
 npm:packages:
