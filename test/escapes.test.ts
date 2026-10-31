@@ -1,5 +1,5 @@
 import { describe, test } from 'bun:test';
-import { check, recommended, type Decision } from '#src/index.ts';
+import { check, recommended, type Decision, type Environment } from '#src/index.ts';
 
 /** Each case: a command, the decision the recommended policy should reach, and what it exercises. */
 const cases: [source: string, decision: Decision, what: string][] = [
@@ -161,6 +161,8 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['git -c core.hooksPath=/tmp/h commit -m x', 'ask', 'git config that changes which hooks run'],
   ["git config core.pager 'rm -rf /'", 'deny', 'setting a git config that runs code later'],
   ['git config user.name agent', 'ask', 'writing the repository Git config'],
+  ['cp -r hooks .git/', 'ask', 'copying into .git, where hooks live'],
+  ['mv hooks .git/hooks', 'ask', 'replacing the hooks directory'],
   ["git rebase -x 'rm -rf /' main", 'deny', 'rebase --exec'],
   ['git bisect run rm -rf /', 'deny', 'bisect run'],
   ['git reset --hard', 'ask', 'discarding work'],
@@ -215,15 +217,35 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['cowsay hi', 'ask', 'a program no rule covers'],
 ];
 
-describe('recommended policy', () => {
-  for (const [source, decision, what] of cases) {
-    test(`${what}: ${JSON.stringify(source)} → ${decision}`, () => {
-      const verdict = check(source, recommended);
-      if (verdict.decision !== decision) {
-        const reasons = verdict.reasons.map((reason) => `${reason.decision}: ${reason.message}`).join('\n');
-        const shapes = verdict.analysis.invocations.map((invocation) => invocation.shape).join('\n');
-        throw new Error(`Expected ${decision}, got ${verdict.decision}\n${reasons}\n--\n${shapes}`);
-      }
-    });
+/**
+ * The same, with a filesystem (`readFile` and `realpath` over a small repository): Git config and hooks are read and
+ * walked. The working directory is relative, so whatever the script writes may be where git reads.
+ */
+const tree: Record<string, string> = { '.git/config': '[core]\n\tbare = false\n', '.git/hooks/pre-commit': 'cat lint' };
+const withFiles: Environment = { fs: { readFile: (path) => tree[path] ?? null, realpath: (path) => path } };
+const filesystemCases: [source: string, decision: Decision, what: string][] = [
+  ['git commit -m x', 'allow', 'a hook the filesystem has is walked'],
+  ['echo x > out && git commit -m x', 'ask', 'a write before git reads, which may go through a symlink to a hook'],
+  ['git commit -m x && echo x > out', 'allow', 'a write after git has read its hooks'],
+  ['git commit -m x | tee out', 'ask', 'a pipeline writing while git reads'],
+  ['git commit -m x & echo x > out', 'ask', 'a background git reading while the script writes'],
+];
+
+function expectDecision(source: string, decision: Decision, environment?: Environment): void {
+  const verdict = check(source, recommended, environment);
+  if (verdict.decision !== decision) {
+    const reasons = verdict.reasons.map((reason) => `${reason.decision}: ${reason.message}`).join('\n');
+    const shapes = verdict.analysis.invocations.map((invocation) => invocation.shape).join('\n');
+    throw new Error(`Expected ${decision}, got ${verdict.decision}\n${reasons}\n--\n${shapes}`);
   }
+}
+
+describe('recommended policy', () => {
+  for (const [source, decision, what] of cases)
+    test(`${what}: ${JSON.stringify(source)} → ${decision}`, () => expectDecision(source, decision));
+});
+
+describe('recommended policy, with a filesystem', () => {
+  for (const [source, decision, what] of filesystemCases)
+    test(`${what}: ${JSON.stringify(source)} → ${decision}`, () => expectDecision(source, decision, withFiles));
 });

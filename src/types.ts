@@ -62,6 +62,12 @@ export interface Invocation {
   cwd: string | undefined;
   /** The directory `~` stands for where it runs: `$HOME`, when that's known and absolute. */
   home?: string;
+  /**
+   * With a filesystem and an absolute `cwd`: where each static positional and write really is, by its resolved
+   * absolute path. `null` when that can't be known: the filesystem didn't say, or the script may have put a symlink
+   * on the way.
+   */
+  realpaths?: Record<string, string | null>;
   /** Wrappers it runs under, outermost first: `['sudo', 'env']`. */
   via: string[];
   /** How it's reached from the top-level script: `['$(…)', 'bash -c', 'eval']`. */
@@ -83,7 +89,8 @@ export type FindingKind =
   | 'sensitive-variable'
   | 'exec-config'
   | 'too-deep'
-  | 'unknown-syntax';
+  | 'unknown-syntax'
+  | 'unknown-file';
 
 /** Something about the script itself, not one invocation, that a gate should know: what the analysis couldn't follow. */
 export interface Finding {
@@ -92,8 +99,16 @@ export interface Finding {
   span: [number, number];
 }
 
+/** Something the analysis asked the filesystem that it didn't know: answering it may settle an `unknown-file` finding. */
+export interface Need {
+  kind: 'file' | 'realpath';
+  path: string;
+}
+
 export interface Analysis {
   source: string;
   invocations: Invocation[];
   findings: Finding[];
+  /** What to fetch before analysing again (see `checkAsync`). Empty without a filesystem, or when it knew everything. */
+  needs: Need[];
 }

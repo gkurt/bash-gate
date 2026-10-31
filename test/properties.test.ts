@@ -97,7 +97,7 @@ const policy: fc.Arbitrary<Policy> = fc.record({
   strict: fc.boolean(),
 });
 
-const decide = (i: Invocation, p: Policy) => evaluate({ source: '', invocations: [i], findings: [] }, p).decision;
+const decide = (i: Invocation, p: Policy) => evaluate({ source: '', invocations: [i], findings: [], needs: [] }, p).decision;
 
 /** Ways to make an invocation able to do more, without making anything known less. */
 const additions: fc.Arbitrary<(i: Invocation) => Invocation> = fc.oneof(
@@ -176,7 +176,9 @@ describe('S3: allow is earned', () => {
     fc.assert(
       fc.property(invocation, policy, (i, p) => {
         const finding = { kind: 'dynamic-command' as const, message: '', span: [0, 0] as [number, number] };
-        expect(evaluate({ source: '', invocations: [i], findings: [finding] }, { ...p, findings: {} }).decision).not.toBe('allow');
+        expect(evaluate({ source: '', invocations: [i], findings: [finding], needs: [] }, { ...p, findings: {} }).decision).not.toBe(
+          'allow',
+        );
       }),
       { numRuns: runs },
     );

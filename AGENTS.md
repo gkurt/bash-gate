@@ -25,10 +25,13 @@ runs everything on Linux, then builds and loads `dist/` in Node.
 
 - `src/words.ts`: word resolution (quotes, braces, variables, field splitting) into static or dynamic `Arg`s.
 - `src/analyze.ts`: the walk. Shell state (variables, functions, aliases, `hash`, `enable`, `cd`), dispatch (alias,
-  function, builtin, program), wrappers, and code inside strings.
+  function, builtin, program), wrappers, and code inside strings. What the script writes, against which file reads
+  and real paths become unknown.
 - `src/argv.ts`: reads argv with a `CommandSpec`. Canonical options, subcommands, nested command lines.
 - `src/specs.ts`: program specs, plus git's config keys that run code.
-- `src/policy.ts`: three-valued rule matching and the verdict. `src/recommended.ts`: the starting policy.
+- `src/policy.ts`: three-valued rule matching, the verdict, and `checkAsync`. `src/recommended.ts`: the starting
+  policy.
+- `src/files.ts`: the `FileSystem` the analysis reads, `snapshot`, and what it didn't know (needs).
 - `src/paths.ts`: path resolution against the tracked working directory.
 - `THREAT_MODEL.md`: the assumptions and promises (S1–S5), and which test checks each.
 

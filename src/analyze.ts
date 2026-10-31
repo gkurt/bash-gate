@@ -17,18 +17,24 @@ import {
   type WordPart,
 } from 'unbash';
 import { emptyParsed, normalize, type Parsed } from './argv.ts';
+import { Changes, Probe, type FileSystem } from './files.ts';
 import { basename, isSystemPath, resolvePath } from './paths.ts';
 import { gitConfig, specFor } from './specs.ts';
 import type { Analysis, Arg, Effect, FindingKind, Invocation } from './types.ts';
 import { dynamicArg, joinStatic, resolveValue, resolveWord, resolveWords, type Lookup, type Value } from './words.ts';
 
-export interface AnalyzeOptions {
+/** What the analysis knows of where the command runs. */
+export interface Environment {
   /** The absolute directory the script starts in. Without it, paths stay relative to wherever that is. */
   cwd?: string;
   /** Variables the shell starts with. Any other variable read before it's set is dynamic. */
   env?: Record<string, string>;
-  /** Reads repository files for Git config, hooks and package scripts. Paths use `/`; return undefined when absent or not a file. */
-  readFile?: (path: string) => string | undefined;
+  /**
+   * The filesystem before the command runs. Git config, hooks, npm scripts and SSH config files are read from it and
+   * walked as code, and paths are resolved through symlinks. A file the script may change before it's read, or a path
+   * it may put a symlink on, is unknown. Give an absolute `cwd` with it: otherwise any write makes later reads unknown.
+   */
+  fs?: FileSystem;
   /** How deep code inside code (`bash -c "eval '…'"`) is followed before the analysis gives up on it. */
   maxDepth?: number;
 }
@@ -100,6 +106,8 @@ interface Context {
   silent: boolean;
   /** Code run with arguments appended (`mapfile -C`, a git shell alias): every command in it may get more. */
   open: boolean;
+  /** Runs alongside the rest of the script (`&`, a pipeline, `<(…)`): what it reads may be written by what comes after. */
+  concurrent: boolean;
 }
 
 /** A simple command on its way to running. */
@@ -130,39 +138,63 @@ const sensitive =
 const devices = /^\/dev\/(null|stdin|stdout|stderr|tty|fd\/\d+)$/;
 
 /** Statically analyses a Bash script: every program it may run, with what, and what the analysis couldn't follow. */
-export function analyze(source: string, options: AnalyzeOptions = {}): Analysis {
-  const analysis: Analysis = { source, invocations: [], findings: [] };
-  const state: State = {
-    vars: new Map(Object.entries(options.env ?? {}).map(([name, value]) => [name, { kind: 'static', value }])),
-    exported: new Set(Object.keys(options.env ?? {})),
-    functions: new Map(),
-    exportedFunctions: new Set(),
-    aliases: new Map(),
-    aliasesUnknown: false,
-    expandAliases: false,
-    hashed: new Map(),
-    disabled: new Set(),
-    integers: new Set(),
-    cwd: options.cwd ?? '.',
+export function analyze(source: string, environment: Environment = {}): Analysis {
+  const script = parse(source);
+  const files = environment.fs ? new Probe(environment.fs) : undefined;
+  const walk = (silent: boolean, everything?: Written): Walker => {
+    const state: State = {
+      vars: new Map(Object.entries(environment.env ?? {}).map(([name, value]) => [name, { kind: 'static', value }])),
+      exported: new Set(Object.keys(environment.env ?? {})),
+      functions: new Map(),
+      exportedFunctions: new Set(),
+      aliases: new Map(),
+      aliasesUnknown: false,
+      expandAliases: false,
+      hashed: new Map(),
+      disabled: new Set(),
+      integers: new Set(),
+      cwd: environment.cwd ?? '.',
+    };
+    const context: Context = {
+      source,
+      aliases: snapshot(state),
+      expanding: [],
+      nesting: [],
+      via: [],
+      depth: 0,
+      calls: [],
+      externalOnly: false,
+      writes: [],
+      reads: [],
+      silent,
+      open: false,
+      concurrent: false,
+    };
+    const walker = new Walker({ source, invocations: [], findings: [], needs: [] }, environment.maxDepth ?? 12, files, everything);
+    walker.script(script, state, context);
+    walker.finish(state);
+    return walker;
   };
-  const context: Context = {
-    source,
-    aliases: snapshot(state),
-    expanding: [],
-    nesting: [],
-    via: [],
-    depth: 0,
-    calls: [],
-    externalOnly: false,
-    writes: [],
-    reads: [],
-    silent: false,
-    open: false,
-  };
-  const walker = new Walker(analysis, options.maxDepth ?? 12, options.readFile);
-  walker.script(parse(source), state, context);
-  walker.finish(state);
+  // Code that runs alongside the rest may read what the script writes after it: a silent first walk finds all of that.
+  const everything = files ? walk(true).written : undefined;
+  const { analysis } = walk(false, everything);
+  if (files) analysis.needs = [...files.needs.values()];
   return analysis;
+}
+
+/** What the script may have written: files' contents, and paths where a symlink may now be. */
+interface Written {
+  contents: Changes;
+  links: Changes;
+}
+
+/**
+ * What a program's writes change for a later read: nothing (`mkdir`, `touch` and `chmod` leave contents alone), files'
+ * contents, or also where symlinks are (`ln`, `cp`, `mv`, `tar` and anything else).
+ */
+function writeKind(program: string): 'none' | 'contents' | 'links' {
+  if (/^(mkdir|touch|chmod|chown|chgrp)$/.test(program)) return 'none';
+  return /^(tee|truncate|dd|rm|rmdir|unlink|shred)$/.test(program) ? 'contents' : 'links';
 }
 
 /** How many times a loop body is walked looking for what it changes before the analysis gives up on it. */
@@ -185,12 +217,68 @@ class Walker {
   pending = new Map<string, { walk: (state: State) => void; shells: Set<State> }>();
   /** While `finish` walks it again, what was already emitted. */
   emitted: Set<string> | undefined;
-  readFile: AnalyzeOptions['readFile'];
+  files: Probe | undefined;
+  /**
+   * What the script may have written so far, in the order of the walk. The filesystem is shared by every shell the
+   * script starts, so this isn't part of a shell's state, and it only grows: a branch's writes count after it.
+   */
+  written: Written = { contents: new Changes(), links: new Changes() };
+  /** What the whole script may write, for code that runs alongside the rest. */
+  everything: Written | undefined;
 
-  constructor(analysis: Analysis, maxDepth: number, readFile?: AnalyzeOptions['readFile']) {
+  constructor(analysis: Analysis, maxDepth: number, files?: Probe, everything?: Written) {
     this.analysis = analysis;
     this.maxDepth = maxDepth;
-    this.readFile = readFile;
+    this.files = files;
+    this.everything = everything;
+  }
+
+  /** `writes` happen: `kind` is what they change for a later read (see `writeKind`). */
+  wrote(writes: Arg[], call: Call, kind: 'none' | 'contents' | 'links'): void {
+    if (!this.files || kind === 'none') return;
+    const sets = kind === 'links' ? [this.written.contents, this.written.links] : [this.written.contents];
+    for (const arg of writes) {
+      const path = arg.kind === 'static' ? resolvePath(call.cwd, arg.value, call.home) : undefined;
+      // Through a symlink that's already there, a write lands somewhere else.
+      const real = path?.startsWith('/') ? this.files.physical(path) : undefined;
+      for (const changes of sets) {
+        changes.add(path);
+        changes.add(real);
+      }
+    }
+  }
+
+  /** Whether the script may have changed `path` before now: its contents, or (`links`) a symlink on its way. */
+  changed(path: string, ctx: Context, kind: keyof Written): boolean {
+    const sets = [this.written[kind], ...(ctx.concurrent && this.everything ? [this.everything[kind]] : [])].filter(
+      (changes) => !changes.empty,
+    );
+    if (sets.length === 0) return false;
+    const real = path.startsWith('/') ? this.files?.physical(path) : undefined;
+    return real === undefined || sets.some((changes) => changes.covers(path) || changes.covers(real));
+  }
+
+  /** A file the command reads (Git config, a hook): its text, or `undefined` when it's absent or not known (a finding). */
+  read(path: string, ctx: Context, call: Call): string | undefined {
+    const text = this.files!.readFile(path);
+    if (this.changed(path, ctx, 'contents')) {
+      this.finding(ctx, 'unknown-file', `\`${path}\` may be changed by the script before it's read`, call.span);
+      return undefined;
+    }
+    if (text === undefined) this.finding(ctx, 'unknown-file', `What \`${path}\` holds isn't known`, call.span);
+    return text ?? undefined;
+  }
+
+  /** Where each static path in `args` really is, by its resolved absolute path (see `Invocation.realpaths`). */
+  realpaths(args: Arg[], ctx: Context, call: Call): Record<string, string | null> {
+    const realpaths: Record<string, string | null> = {};
+    if (!call.cwd?.startsWith('/')) return realpaths;
+    for (const arg of args) {
+      const resolved = arg.kind === 'static' ? resolvePath(call.cwd, arg.value, call.home) : undefined;
+      if (!resolved?.startsWith('/') || Object.hasOwn(realpaths, resolved)) continue;
+      realpaths[resolved] = this.changed(resolved, ctx, 'links') ? null : (this.files!.physical(resolved) ?? null);
+    }
+    return realpaths;
   }
 
   /**
@@ -204,13 +292,15 @@ class Walker {
     for (const statement of script.commands) {
       if (!unit || (previous !== undefined && ctx.source.slice(previous, statement.pos).includes('\n')))
         unit = { aliases: snapshot(state), expanding: [] };
-      this.node(statement.command, statement.background ? clone(state) : state, { ...ctx, ...unit });
+      const background = statement.background ? { concurrent: true } : {};
+      this.node(statement.command, statement.background ? clone(state) : state, { ...ctx, ...unit, ...background });
       previous = statement.end;
     }
   }
 
   list(statements: readonly Statement[], state: State, ctx: Context): void {
-    for (const statement of statements) this.node(statement.command, statement.background ? clone(state) : state, ctx);
+    for (const statement of statements)
+      this.node(statement.command, statement.background ? clone(state) : state, statement.background ? { ...ctx, concurrent: true } : ctx);
   }
 
   node(node: PipelineNode | AndOr | CommandNode | CompoundList, state: State, ctx: Context): void {
@@ -232,9 +322,12 @@ class Walker {
         }
         return;
       }
-      case 'Pipeline':
-        for (const command of node.commands) this.node(command, node.commands.length > 1 ? clone(state) : state, ctx);
+      case 'Pipeline': {
+        const together = node.commands.length > 1;
+        for (const command of node.commands)
+          this.node(command, together ? clone(state) : state, together ? { ...ctx, concurrent: true } : ctx);
         return;
+      }
       case 'Command':
         return this.simple(node, state, ctx);
       case 'If': {
@@ -276,13 +369,15 @@ class Walker {
       case 'Redirected': {
         this.substitutions(node.redirects, state, ctx);
         const files = redirections(node.redirects, lookupIn(state));
+        // Bash opens the files before it runs what's in the group.
+        this.wrote(files.writes, this.at(ctx, state, node), 'contents');
         return this.node(node.command, state, { ...ctx, writes: [...ctx.writes, ...files.writes], reads: [...ctx.reads, ...files.reads] });
       }
       case 'Function':
         state.functions.set(node.name.value, { bodies: [this.body(node, ctx.aliases)], maybeUndefined: false });
         return;
       case 'Coproc':
-        return this.node(node.body, clone(state), ctx);
+        return this.node(node.body, clone(state), { ...ctx, concurrent: true });
       default: {
         // A node this version doesn't know (a newer parser): what it runs can't be followed.
         const unknown = node satisfies never as { type: string; pos: number; end: number };
@@ -392,12 +487,13 @@ class Walker {
 
   /** Command substitutions and arithmetic evaluation hidden in `nodes`. */
   substitutions(nodes: readonly SyntaxNode[], state: State, ctx: Context): void {
-    const visit = (node: SyntaxNode) => {
+    const visit = (node: SyntaxNode, ctx: Context) => {
       if (node.type === 'Script') {
         const scriptCtx = node.source === undefined ? ctx : { ...ctx, source: node.source, outer: ctx.outer ?? [node.pos, node.end] };
         this.script(node, clone(state), { ...scriptCtx, nesting: [...ctx.nesting, '$(…)'] });
         return;
       }
+      if (node.type === 'ProcessSubstitution') return forEachChild(node, (child) => visit(child, { ...ctx, concurrent: true }));
       if (node.type === 'ArithmeticExpansion') {
         if (node.expression) this.arithmetic(node.expression, state, ctx);
         return;
@@ -421,9 +517,9 @@ class Walker {
         this.arithmeticWord(node.left, state, ctx);
         this.arithmeticWord(node.right, state, ctx);
       }
-      forEachChild(node, visit);
+      forEachChild(node, (child) => visit(child, ctx));
     };
-    for (const node of nodes) visit(node);
+    for (const node of nodes) visit(node, ctx);
   }
 
   /** A word Bash evaluates as arithmetic (`[[ x -eq y ]]`, an index, an offset): an expression, after expansion. */
@@ -595,6 +691,7 @@ class Walker {
       const stored = this.assigned(assignment.name, value, state, ctx, call, argv.length === 0);
       if (argv.length === 0) state.vars.set(assignment.name, stored);
     }
+    this.wrote(files.writes, call, 'contents');
     if (argv.length > 0) return this.dispatch(argv, state, ctx, call);
     if (files.writes.length > 0 || files.reads.length > 0)
       this.emit(ctx, call, ':', 'builtin', [{ kind: 'static', value: ':' }], emptyParsed());
@@ -908,6 +1005,7 @@ class Walker {
     for (const effect of effects) parsed.effects.add(effect);
     if (name === '.' || name === 'source') parsed.reads.push(...args.slice(0, 1));
     this.emit(ctx, call, name, 'builtin', argv, parsed);
+    this.wrote(parsed.writes, call, 'contents');
   }
 
   /** Builtins that set variables from input (`read`, `mapfile`, `printf -v`): those become dynamic. */
@@ -1017,6 +1115,8 @@ class Walker {
         remote ? `${program} (remote)` : `${program} -c`,
       );
     }
+    // After what it reads first: `git config k v` reads the config, then writes it.
+    this.wrote(parsed.writes, call, writeKind(program));
   }
 
   /** `git -c key=value`: entries that make git run commands, which are followed when they're shell code. */
@@ -1041,8 +1141,9 @@ class Walker {
   }
 
   gitProject(cwd: string | undefined, parsed: Parsed, state: State, ctx: Context, call: Call): void {
-    const readFile = this.readFile;
-    if (!readFile || !cwd) return;
+    if (!this.files || !cwd) return;
+    // What isn't known is read as absent, so that one round of fetching asks for everything up to the root.
+    const readFile = (path: string) => this.read(path, ctx, call);
     let repoRoot = cwd;
     let gitDir: string | undefined;
     let commonDir: string | undefined;
@@ -1131,8 +1232,8 @@ class Walker {
   }
 
   npmScripts(cwd: string | undefined, argv: Arg[], parsed: Parsed, state: State, ctx: Context, call: Call): void {
-    if (!this.readFile || !cwd) return;
-    const manifest = this.readFile(`${cwd}/package.json`);
+    if (!this.files || !cwd) return;
+    const manifest = this.read(`${cwd}/package.json`, ctx, call);
     if (manifest === undefined) return;
     let packageJson: unknown;
     try {
@@ -1186,10 +1287,10 @@ class Walker {
   }
 
   sshConfig(path: string, cwd: string | undefined, state: State, ctx: Context, call: Call, visited: Set<string>, depth: number): void {
-    if (!this.readFile || visited.has(path)) return;
+    if (!this.files || visited.has(path)) return;
     if (depth > 16) return this.finding(ctx, 'exec-config', 'SSH config includes exceed the analysis limit', call.span);
     visited.add(path);
-    const text = this.readFile(path);
+    const text = this.read(path, ctx, call);
     if (text === undefined) return;
     for (const raw of text.split(/\r?\n/)) {
       const line = raw.trim();
@@ -1332,6 +1433,7 @@ class Walker {
       writes,
       cwd: call.cwd,
       ...(call.home ? { home: call.home } : {}),
+      ...(this.files ? { realpaths: this.realpaths([...parsed.positionals, ...writes], ctx, call) } : {}),
       via: ctx.via,
       nesting: ctx.nesting,
       shape: '',

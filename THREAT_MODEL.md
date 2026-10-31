@@ -16,18 +16,27 @@ known variables), no `BASH_ENV` or `ENV`, a `PATH` of system directories only, n
 default shell options. Everything the shell knows comes from the command itself. When the integration can't
 guarantee this, the gate's answers are about some other shell.
 
-The integration may provide `readFile(path)` to inspect repository-controlled configuration and scripts (return
-`undefined` for missing or non-file paths), and `realpath(path)` to resolve paths (return `undefined` only when
-nothing exists there, so its parent is tried; throw for a dangling symlink). These are synchronous, use
-`/`-separated paths, and callback errors propagate to the caller. Without these hooks, the limits below apply.
+The integration may provide `fs`, the filesystem as it is before the command runs: `readFile(path)` to inspect
+repository-controlled configuration and scripts, and `realpath(path)` to resolve paths. Each answers `null` when
+nothing is there (for `realpath`, not even a dangling symlink) and `undefined` when it doesn't know. They are
+synchronous, use `/`-separated paths, and callback errors propagate to the caller. An unknown answer is an
+`unknown-file` finding, so it can't lead to an allow; `checkAsync` fetches unknown answers from an asynchronous
+filesystem and analyses again. Without `fs`, the limits below apply.
+
+The answers describe the filesystem before the command, which the command may change. A file the script may write
+before it's read, or while it's read (code that runs alongside: `&`, a pipeline, `<(…)`, `coproc`), is unknown, and
+so is the real path of anything under a path where the script may create a symlink. A write may land elsewhere
+through a symlink that's already there, so writes count at their real path too, and without an absolute `cwd` any
+write makes later reads unknown. The writes counted are those of redirections and specs.
 
 Out of scope:
 
 - **What programs do with their input.** `cat` reading a file, a compiler running build scripts, and file-based
-  configuration when no `readFile` hook is supplied. With the hook, repository Git config (and includes), Git hooks,
-  SSH config passed with `-F`, and npm lifecycle scripts are followed. Specs describe other known argument behavior.
+  configuration when no `fs` is supplied. With it, repository Git config (and includes), Git hooks, SSH config passed
+  with `-F`, and npm lifecycle scripts are followed. Specs describe other known argument behavior, writes included: a
+  file written by a program in a way its spec doesn't describe can change what a later read sees.
 - **What the filesystem holds.** Globs and which files exist. `$HOME` too, unless the script sets it or the integration
-  passes it in `env`. Symlink targets are considered only when `realpath` is supplied and the invocation's `cwd` is
+  passes it in `env`. Symlink targets are considered only when `fs` is supplied and the invocation's `cwd` is
   absolute. Deny and ask rules match any path form; allow rules must match the resolved real path as well.
 - **Other shells.** zsh, fish, PowerShell, cmd.exe. Their code run from Bash (`zsh -c`) is never parsed as Bash: it
   counts as code the analysis can't see into.
@@ -79,6 +88,7 @@ The parser version is pinned. Errors thrown by caller-supplied filesystem callba
 | S1      | Scripts run in real Bash with logging stubs: everything that ran must be covered    | `test/bash.test.ts`        |
 | S1      | The same, for generated scripts mixing the constructs the analysis follows          | `test/bash.test.ts`        |
 | S1      | Known escapes, one per construct                                                    | `test/escapes.test.ts`     |
+| S1      | With a filesystem: what the script writes before or alongside a read is unknown     | `test/analyze.test.ts`     |
 | S2      | Property tests over generated invocations and policies                              | `test/properties.test.ts`  |
 | S3      | Property tests: generated commands with findings or maybe-matches are never allowed | `test/properties.test.ts`  |
 | S4      | Metamorphic tests: chains of generated rewrites of denied and asked commands        | `test/metamorphic.test.ts` |

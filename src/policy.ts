@@ -1,5 +1,6 @@
-import { analyze, type AnalyzeOptions } from './analyze.ts';
+import { analyze, type Environment } from './analyze.ts';
 import { canonicalOption, specAt } from './argv.ts';
+import { snapshot, type AsyncFileSystem } from './files.ts';
 import { isSystemPath, resolvePath, tildePath } from './paths.ts';
 import { specFor } from './specs.ts';
 import type { Analysis, Arg, Decision, Effect, Finding, FindingKind, Invocation } from './types.ts';
@@ -62,17 +63,6 @@ export interface Verdict {
   analysis: Analysis;
 }
 
-export interface EvaluateOptions {
-  /**
-   * Resolves an absolute path to its filesystem target, or `undefined` when nothing exists there; then its parent is
-   * tried. Anything else it can't resolve, such as a dangling symlink, must throw. Called only when the invocation has
-   * an absolute working directory.
-   */
-  realpath?: (path: string) => string | undefined;
-}
-
-export interface CheckOptions extends AnalyzeOptions, EvaluateOptions {}
-
 type Conditions = Omit<Rule, 'decision'>;
 
 export const allow = (command: string | Conditions, conditions?: Conditions): Rule => rule('allow', command, conditions);
@@ -84,16 +74,40 @@ function rule(decision: Decision, command: string | Conditions, conditions: Cond
 }
 
 /** Analyses `source` and decides it under `policy`. */
-export function check(source: string, policy: Policy, options?: CheckOptions): Verdict {
-  return evaluate(analyze(source, options), policy, options);
+export function check(source: string, policy: Policy, environment?: Environment): Verdict {
+  return evaluate(analyze(source, environment), policy);
+}
+
+/**
+ * `check` with a filesystem only reachable asynchronously: analyses with what's been fetched, fetches what the analysis
+ * needed, and goes again, up to `rounds` times. What's still needed after the last round stays an `unknown-file`
+ * finding.
+ */
+export async function checkAsync(
+  source: string,
+  policy: Policy,
+  environment: Omit<Environment, 'fs'> & { fs: AsyncFileSystem },
+  { rounds = 8 }: { rounds?: number } = {},
+): Promise<Verdict> {
+  const files: Record<string, string | null> = Object.create(null);
+  const realpaths: Record<string, string | null> = Object.create(null);
+  for (let round = 1; ; round++) {
+    const analysis = analyze(source, { ...environment, fs: snapshot({ files, realpaths }) });
+    if (analysis.needs.length === 0 || round >= rounds) return evaluate(analysis, policy);
+    await Promise.all(
+      analysis.needs.map(async ({ kind, path }) => {
+        if (kind === 'file') files[path] = await environment.fs.readFile(path);
+        else realpaths[path] = await environment.fs.realpath(path);
+      }),
+    );
+  }
 }
 
 const severity: Record<Decision, number> = { allow: 0, ask: 1, deny: 2 };
 
-export function evaluate(analysis: Analysis, policy: Policy, options: EvaluateOptions = {}): Verdict {
+export function evaluate(analysis: Analysis, policy: Policy): Verdict {
   const reasons: Reason[] = [];
-  for (const invocation of analysis.invocations)
-    if (invocation.kind !== 'function') reasons.push(decide(invocation, policy, options.realpath));
+  for (const invocation of analysis.invocations) if (invocation.kind !== 'function') reasons.push(decide(invocation, policy));
 
   for (const finding of analysis.findings) {
     reasons.push({
@@ -118,9 +132,9 @@ export function evaluate(analysis: Analysis, policy: Policy, options: EvaluateOp
 /** No, maybe, yes. */
 type Tri = 0 | 1 | 2;
 
-function decide(invocation: Invocation, policy: Policy, realpath?: EvaluateOptions['realpath']): Reason {
+function decide(invocation: Invocation, policy: Policy): Reason {
   const base = { span: invocation.span, invocation };
-  const matches = policy.rules.map((rule) => [rule, matchRule(rule, invocation, realpath)] as const).filter(([, tri]) => tri > 0);
+  const matches = policy.rules.map((rule) => [rule, matchRule(rule, invocation)] as const).filter(([, tri]) => tri > 0);
   const hit = (decision: Decision, tri: Tri) => matches.find(([rule, t]) => rule.decision === decision && t === tri)?.[0];
   const denied = hit('deny', 2);
   if (denied) return { ...base, decision: 'deny', certain: true, rule: denied, message: denied.reason ?? `Denied: ${describe(denied)}` };
@@ -149,7 +163,7 @@ function decide(invocation: Invocation, policy: Policy, realpath?: EvaluateOptio
 }
 
 /** How `rule` matches `invocation`: 0 no, 1 maybe, 2 yes. Exported for the property tests. */
-export function matchRule(rule: Rule, invocation: Invocation, realpath?: EvaluateOptions['realpath']): Tri {
+export function matchRule(rule: Rule, invocation: Invocation): Tri {
   const all = rule.decision === 'allow';
   let result: Tri = 2;
   const and = (tri: Tri) => {
@@ -157,8 +171,8 @@ export function matchRule(rule: Rule, invocation: Invocation, realpath?: Evaluat
   };
   if (rule.command !== undefined) and(matchCommand(rule.command, invocation));
   if (rule.options && result > 0) and(matchOptions(rule.options, invocation, all));
-  if (rule.args && result > 0) and(matchPaths(rule.args, invocation.positionals, invocation, all, realpath));
-  if (rule.writes && result > 0) and(matchPaths(rule.writes, invocation.writes, invocation, all, realpath));
+  if (rule.args && result > 0) and(matchPaths(rule.args, invocation.positionals, invocation, all));
+  if (rule.writes && result > 0) and(matchPaths(rule.writes, invocation.writes, invocation, all));
   if (rule.effects && result > 0) and(matchEffects(rule.effects, invocation, all));
   return result;
 }
@@ -218,12 +232,14 @@ function matchEffects(effects: Effect[], invocation: Invocation, all: boolean): 
 }
 
 /**
- * Whether any of `args` matches any of `globs` (`all`: every one does), as written or as a path resolved against
- * where the invocation runs. A path that can't be resolved may be anywhere.
+ * Whether any of `args` matches any of `globs` (`all`: every one does), as written, as a path resolved against where
+ * the invocation runs, and as its real path when the analysis had a filesystem. A path that can't be resolved, or
+ * whose real path isn't known, may be anywhere.
  */
-function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: boolean, realpath?: EvaluateOptions['realpath']): Tri {
+function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: boolean): Tri {
   const patterns = globs.map(globToRegExp);
   const absolute = globs.some((glob) => glob.startsWith('/') || glob.startsWith('~'));
+  const { realpaths } = invocation;
   let result: Tri = all ? 2 : 0;
   for (const arg of args) {
     if (arg.kind === 'dynamic') {
@@ -231,36 +247,18 @@ function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: b
       continue;
     }
     const resolved = resolvePath(invocation.cwd, arg.value, invocation.home);
-    const physical =
-      realpath && invocation.cwd?.startsWith('/') && resolved?.startsWith('/') ? physicalPath(resolved, realpath) : undefined;
+    const physical = realpaths && resolved !== undefined && Object.hasOwn(realpaths, resolved) ? realpaths[resolved] : undefined;
     const forms = [arg.value, resolved, resolved === undefined ? undefined : tildePath(resolved, invocation.home), physical].filter(
-      (form) => form !== undefined,
+      (form) => form !== undefined && form !== null,
     );
     const matches = patterns.some((pattern) => forms.some((form) => pattern.test(form)));
-    const realMatches = physical !== undefined && patterns.some((pattern) => pattern.test(physical));
-    if (all && (!matches || (realpath !== undefined && !realMatches))) return 0;
+    const realMatches = typeof physical === 'string' && patterns.some((pattern) => pattern.test(physical));
+    if (all && (!matches || (realpaths !== undefined && !realMatches))) return 0;
     if (!all && matches) return 2;
-    const outside = resolved === undefined || resolved === '..' || resolved.startsWith('../');
+    const outside = resolved === undefined || resolved === '..' || resolved.startsWith('../') || physical === null;
     if (!all && outside && absolute) result = 1;
   }
   return result;
-}
-
-/**
- * Where the absolute `path` really is: the real path of its deepest ancestor that exists, then the rest, which doesn't
- * exist yet and so holds no symlinks. `undefined` when not even `/` resolves.
- */
-function physicalPath(path: string, realpath: NonNullable<EvaluateOptions['realpath']>): string | undefined {
-  let base = path;
-  let rest = '';
-  for (;;) {
-    const real = realpath(base);
-    if (real !== undefined) return rest === '' ? real : `${real.replace(/\/+$/, '')}/${rest}`;
-    if (base === '/') return undefined;
-    const slash = base.lastIndexOf('/');
-    rest = rest === '' ? base.slice(slash + 1) : `${base.slice(slash + 1)}/${rest}`;
-    base = base.slice(0, slash) || '/';
-  }
 }
 
 /** `**` crosses directories, `*` and `?` don't; everything else is literal. */

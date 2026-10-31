@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { allow, analyze, check, deny, recommended, type Arg } from '#src/index.ts';
+import { allow, analyze, check, checkAsync, deny, recommended, snapshot, type Arg } from '#src/index.ts';
 
 const values = (args: Arg[]) => args.map((arg) => (arg.kind === 'static' ? arg.value : `<${arg.reason}>`));
 const only = (source: string) => {
@@ -135,7 +135,7 @@ describe('invocations', () => {
     expect(values(rm.argv)).toEqual(['rm', '<placeholder>']);
   });
 
-  test('reads Git config includes, hooks and package lifecycle scripts through the supplied hook', () => {
+  test('reads Git config includes, hooks and package lifecycle scripts from the filesystem', () => {
     const files: Record<string, string> = {
       '/repo/.git': 'gitdir: .git/worktrees/app',
       '/repo/.git/worktrees/app/commondir': '../..',
@@ -145,22 +145,22 @@ describe('invocations', () => {
       '/repo/package.json': JSON.stringify({ scripts: { pretest: 'cat before', test: 'cat run', posttest: 'cat after' } }),
       '/repo/ssh.conf': 'Match exec "cat match"\n',
     };
-    const readFile = (path: string) => files[path];
-    const git = analyze('git commit -m x', { cwd: '/repo', readFile });
+    const fs = { readFile: (path: string) => files[path] ?? null, realpath: (path: string) => path };
+    const git = analyze('git commit -m x', { cwd: '/repo', fs });
     expect(git.invocations.filter((invocation) => invocation.program === 'cat').map((invocation) => values(invocation.argv))).toEqual([
       ['cat', 'configured'],
       ['cat', 'hook'],
     ]);
     expect(git.findings.some((finding) => finding.kind === 'exec-config')).toBe(true);
 
-    const npm = analyze('npm test', { cwd: '/repo', readFile });
+    const npm = analyze('npm test', { cwd: '/repo', fs });
     expect(npm.invocations.filter((invocation) => invocation.program === 'cat').map((invocation) => values(invocation.argv))).toEqual([
       ['cat', 'before'],
       ['cat', 'run'],
       ['cat', 'after'],
     ]);
 
-    const ssh = analyze('ssh -F ssh.conf host', { cwd: '/repo', readFile });
+    const ssh = analyze('ssh -F ssh.conf host', { cwd: '/repo', fs });
     expect(ssh.invocations.some((invocation) => invocation.program === 'cat' && values(invocation.argv).includes('match'))).toBe(true);
   });
 });
@@ -218,34 +218,116 @@ describe('policy', () => {
   });
 
   test('real paths participate in deny and ask matching, and are required for an allow match', () => {
-    const realpath = (path: string) => (path === '/repo/link' ? '/outside/secret' : undefined);
-    expect(check('cat link', { rules: [deny({ args: ['/outside/**'] })], default: 'allow' }, { cwd: '/repo', realpath }).decision).toBe(
-      'deny',
-    );
-    expect(check('cat link', { rules: [allow({ args: ['/repo/link'] })], default: 'deny' }, { cwd: '/repo', realpath }).decision).toBe(
-      'deny',
-    );
-    expect(check('cat link', { rules: [allow({ args: ['/outside/**'] })], default: 'deny' }, { cwd: '/repo', realpath }).decision).toBe(
-      'allow',
-    );
+    const fs = { readFile: () => null, realpath: (path: string) => (path === '/repo/link' ? '/outside/secret' : path) };
+    const options = { cwd: '/repo', fs };
+    expect(check('cat link', { rules: [deny({ args: ['/outside/**'] })], default: 'allow' }, options).decision).toBe('deny');
+    expect(check('cat link', { rules: [allow({ args: ['/repo/link'] })], default: 'deny' }, options).decision).toBe('deny');
+    expect(check('cat link', { rules: [allow({ args: ['/outside/**'] })], default: 'deny' }, options).decision).toBe('allow');
   });
 
   test('a path that does not exist yet is real under its deepest existing ancestor', () => {
     const real: Record<string, string> = { '/': '/', '/repo': '/repo', '/repo/src': '/repo/src', '/repo/etc': '/etc', '/etc': '/etc' };
-    const realpath = (path: string) => real[path];
-    const options = { cwd: '/repo', realpath };
+    const options = { cwd: '/repo', fs: { readFile: () => null, realpath: (path: string) => real[path] ?? null } };
     const inside = { rules: [allow({ writes: ['/repo/**'] })], default: 'ask' as const };
     expect(check('touch new.txt', inside, options).decision).toBe('allow');
     expect(check('mkdir -p src/a/b', inside, options).decision).toBe('allow');
     expect(check('echo hi > src/new/out.txt', inside, options).decision).toBe('allow');
     expect(check('echo hi > etc/new', inside, options).decision).toBe('ask');
     expect(check('echo hi > etc/new', { rules: [deny({ writes: ['/etc/**'] })], default: 'allow' }, options).decision).toBe('deny');
-    expect(check('touch new.txt', inside, { cwd: '/repo', realpath: () => undefined }).decision).toBe('ask');
+    expect(check('touch new.txt', inside, { cwd: '/repo', fs: { readFile: () => null, realpath: () => null } }).decision).toBe('ask');
   });
 
   test('reasons point at the source', () => {
     const verdict = check('ls && rm -rf /', { rules: [deny('rm')], default: 'allow' });
     expect(verdict.reasons).toHaveLength(1);
     expect(verdict.analysis.source.slice(...verdict.reasons[0]!.span)).toBe('rm -rf /');
+  });
+});
+
+describe('filesystem', () => {
+  const tree: Record<string, string> = {
+    '/repo/.git/config': '[core]\n\tbare = false\n',
+    '/repo/.git/hooks/pre-commit': 'cat lint',
+    '/repo/hooks/pre-commit': 'rm -rf /',
+  };
+  const dirs = new Set(['/', '/repo', '/repo/.git', '/repo/.git/hooks', '/repo/hooks', '/etc']);
+  const links: Record<string, string> = { '/repo/out': '/repo/.git/hooks/pre-commit' };
+  const fs = {
+    readFile: (path: string) => tree[path] ?? null,
+    realpath: (path: string) => links[path] ?? (path in tree || dirs.has(path) ? path : null),
+  };
+  const environment = { cwd: '/repo', fs };
+  const unknown = (source: string) => analyze(source, environment).findings.some((finding) => finding.kind === 'unknown-file');
+
+  test('a file the script may change before it is read is unknown', () => {
+    for (const source of [
+      'printf x > .git/hooks/pre-commit && git commit -m x',
+      'cp -r hooks .git/ && git commit -m x',
+      'mv hooks .git/hooks && git commit -m x',
+      'git config user.name x && git status',
+      'echo x > "$f" && git commit -m x',
+      'echo x > out && git commit -m x',
+      'if a; then cp -r hooks .git/; fi; git commit -m x',
+      'for i in 1 2; do git commit -m x; cp -r hooks .git/; done',
+      'bash -c "cp -r hooks .git/"; git commit -m x',
+    ])
+      expect([source, unknown(source)]).toEqual([source, true]);
+    const changed = analyze('cp -r hooks .git/ && git commit -m x', environment);
+    expect(changed.invocations.some((invocation) => invocation.program === 'cat')).toBe(false);
+  });
+
+  test('what runs alongside may read what is written after it', () => {
+    for (const source of [
+      'git commit -m x | cp -r hooks .git/',
+      'git commit -m x & cp -r hooks .git/',
+      'cat <(git commit -m x); cp -r hooks .git/',
+      'coproc git commit -m x; cp -r hooks .git/',
+    ])
+      expect([source, unknown(source)]).toEqual([source, true]);
+  });
+
+  test('reads before a write, and writes elsewhere, are known', () => {
+    for (const source of [
+      'git commit -m x && printf x > .git/hooks/pre-commit',
+      'echo x > notes.txt && git commit -m x',
+      'mkdir sub && cd sub && git status',
+      'touch .git/hooks/x && chmod +x .git/hooks/pre-commit && git commit -m x',
+      'git config user.name x',
+    ])
+      expect([source, unknown(source)]).toEqual([source, false]);
+    const commit = analyze('echo x > notes.txt && git commit -m x', environment);
+    expect(commit.invocations.some((invocation) => invocation.program === 'cat')).toBe(true);
+  });
+
+  test('a path the script may put a symlink on has no known real path', () => {
+    const rules = [allow('rm|ln|mkdir|echo'), deny('rm', { args: ['/etc/**'] })];
+    expect(check('rm e/passwd', { rules, default: 'ask' }, environment).decision).toBe('allow');
+    expect(check('ln -s /etc e && rm e/passwd', { rules, default: 'ask' }, environment).decision).toBe('ask');
+    expect(check('ln -s /etc e && rm e/passwd', { rules, default: 'ask', strict: true }, environment).decision).toBe('deny');
+    const rm = analyze('ln -s /etc e && rm e/passwd', environment).invocations[1]!;
+    expect(rm.realpaths).toEqual({ '/repo/e/passwd': null });
+    const inside = { rules: [allow({ writes: ['/repo/**'] })], default: 'ask' as const };
+    expect(check('mkdir d && echo x > d/f', inside, environment).decision).toBe('allow');
+    expect(check('ln -s ~ h && echo x > h/.bashrc', inside, environment).decision).toBe('ask');
+  });
+
+  test('what the filesystem does not know is a need and a finding', () => {
+    const analysis = analyze('git commit -m x', { cwd: '/repo/sub', fs: snapshot({}) });
+    expect(analysis.needs).toContainEqual({ kind: 'file', path: '/repo/sub/.git/config' });
+    expect(analysis.needs).toContainEqual({ kind: 'file', path: '/.git/config' });
+    expect(analysis.findings.some((finding) => finding.kind === 'unknown-file')).toBe(true);
+    expect(analyze('git commit -m x').needs).toEqual([]);
+  });
+
+  test('checkAsync fetches what each round needs, and decides as the sync check does', async () => {
+    const remote = { readFile: async (path: string) => fs.readFile(path), realpath: async (path: string) => fs.realpath(path) };
+    const hooked: Record<string, string> = { ...tree, '/repo/.git/hooks/pre-commit': 'rm -rf /' };
+    const evil = { readFile: async (path: string) => hooked[path] ?? null, realpath: remote.realpath };
+    expect((await checkAsync('git commit -m x', recommended, { cwd: '/repo', fs: remote })).decision).toBe('allow');
+    expect((await checkAsync('git commit -m x', recommended, { cwd: '/repo', fs: evil })).decision).toBe('deny');
+    expect(check('git commit -m x', recommended, environment).decision).toBe('allow');
+    const short = await checkAsync('git commit -m x', recommended, { cwd: '/repo', fs: remote }, { rounds: 1 });
+    expect(short.decision).toBe('ask');
+    expect(short.analysis.needs.length).toBeGreaterThan(0);
   });
 });

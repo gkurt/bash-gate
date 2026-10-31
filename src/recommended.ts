@@ -35,7 +35,7 @@ export const recommended: Policy = {
     ask({ writes: ['/**', '~', '~/**', '..', '../**'], reason: 'Writes outside the working directory' }),
     ask('uniq|xxd|tree', { writes: ['**'], reason: 'Writes through an output-file argument' }),
     ask({
-      writes: ['.git/config', '**/.git/config', '.git/hooks/**', '**/.git/hooks/**'],
+      writes: ['.git', '**/.git', '.git/config', '**/.git/config', '.git/hooks', '**/.git/hooks', '.git/hooks/**', '**/.git/hooks/**'],
       reason: 'Changes Git configuration or hooks that can run code later',
     }),
   ],
