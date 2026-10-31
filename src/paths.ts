@@ -38,6 +38,15 @@ export function tildePath(path: string, home: string | undefined): string | unde
   return path.startsWith(`${root === '/' ? '' : root}/`) ? `~${path.slice(root === '/' ? 0 : root.length)}` : undefined;
 }
 
+/** The normalised absolute `path` from the normalised absolute directory `base`: `x`, `../y`, or `.` for `base` itself. */
+export function relativePath(path: string, base: string): string {
+  const from = base.split('/').filter(Boolean);
+  const to = path.split('/').filter(Boolean);
+  let common = 0;
+  while (common < from.length && common < to.length && from[common] === to[common]) common++;
+  return [...Array.from({ length: from.length - common }, () => '..'), ...to.slice(common)].join('/') || '.';
+}
+
 function normalize(path: string): string | undefined {
   const absolute = path.startsWith('/');
   const parts: string[] = [];

@@ -37,7 +37,9 @@ Out of scope:
   file written by a program in a way its spec doesn't describe can change what a later read sees.
 - **What the filesystem holds.** Globs and which files exist. `$HOME` too, unless the script sets it or the integration
   passes it in `env`. Symlink targets are considered only when `fs` is supplied and the invocation's `cwd` is
-  absolute. Deny and ask rules match any path form; allow rules must match the resolved real path as well.
+  absolute. Deny and ask rules match any path form; allow rules must match the resolved real path as well. Relative
+  globs match from the starting `cwd` when it's given as an absolute path; when it isn't, an absolute path may match
+  them.
 - **Other shells.** zsh, fish, PowerShell, cmd.exe. Their code run from Bash (`zsh -c`) is never parsed as Bash: it
   counts as code the analysis can't see into.
 - **Timing and resources.** Fork bombs and `sleep 1e9` are effects of allowed programs.

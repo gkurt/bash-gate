@@ -231,6 +231,20 @@ const filesystemCases: [source: string, decision: Decision, what: string][] = [
   ['git commit -m x & echo x > out', 'ask', 'a background git reading while the script writes'],
 ];
 
+/** The same, starting in a known absolute directory: relative globs match from it. */
+const started: Environment = { cwd: '/repo', env: { HOME: '/home/me' } };
+const startedCases: [source: string, decision: Decision, what: string][] = [
+  ['echo hi > out.txt', 'allow', 'writing inside the project, which resolves to an absolute path'],
+  ['echo hi > /repo/out.txt', 'allow', 'writing inside the project by its absolute path'],
+  ['echo hi > /etc/passwd', 'ask', 'writing outside the project'],
+  ['echo hi > ../x', 'ask', 'writing above the project'],
+  ['cd /tmp && echo hi > x', 'ask', 'writing after leaving the project'],
+  ['echo hi > ~/.bashrc', 'ask', 'writing to home'],
+  ['echo hi > .git/config', 'ask', 'writing the Git config'],
+  ['rm -rf /repo', 'deny', 'deleting the project by its absolute path'],
+  ['cd .. && rm -rf repo', 'deny', 'deleting the project from above'],
+];
+
 function expectDecision(source: string, decision: Decision, environment?: Environment): void {
   const verdict = check(source, recommended, environment);
   if (verdict.decision !== decision) {
@@ -243,6 +257,11 @@ function expectDecision(source: string, decision: Decision, environment?: Enviro
 describe('recommended policy', () => {
   for (const [source, decision, what] of cases)
     test(`${what}: ${JSON.stringify(source)} → ${decision}`, () => expectDecision(source, decision));
+});
+
+describe('recommended policy, from an absolute working directory', () => {
+  for (const [source, decision, what] of startedCases)
+    test(`${what}: ${JSON.stringify(source)} → ${decision}`, () => expectDecision(source, decision, started));
 });
 
 describe('recommended policy, with a filesystem', () => {

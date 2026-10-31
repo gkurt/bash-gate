@@ -1,7 +1,7 @@
 import { analyze, type Environment } from './analyze.ts';
 import { canonicalOption, specAt } from './argv.ts';
 import { snapshot, type AsyncFileSystem } from './files.ts';
-import { isSystemPath, resolvePath, tildePath } from './paths.ts';
+import { isSystemPath, relativePath, resolvePath, tildePath } from './paths.ts';
 import { specFor } from './specs.ts';
 import type { Analysis, Arg, Decision, Effect, Finding, FindingKind, Invocation } from './types.ts';
 
@@ -107,7 +107,7 @@ const severity: Record<Decision, number> = { allow: 0, ask: 1, deny: 2 };
 
 export function evaluate(analysis: Analysis, policy: Policy): Verdict {
   const reasons: Reason[] = [];
-  for (const invocation of analysis.invocations) if (invocation.kind !== 'function') reasons.push(decide(invocation, policy));
+  for (const invocation of analysis.invocations) if (invocation.kind !== 'function') reasons.push(decide(invocation, policy, analysis));
 
   for (const finding of analysis.findings) {
     reasons.push({
@@ -132,9 +132,9 @@ export function evaluate(analysis: Analysis, policy: Policy): Verdict {
 /** No, maybe, yes. */
 type Tri = 0 | 1 | 2;
 
-function decide(invocation: Invocation, policy: Policy): Reason {
+function decide(invocation: Invocation, policy: Policy, start: Start): Reason {
   const base = { span: invocation.span, invocation };
-  const matches = policy.rules.map((rule) => [rule, matchRule(rule, invocation)] as const).filter(([, tri]) => tri > 0);
+  const matches = policy.rules.map((rule) => [rule, matchRule(rule, invocation, start)] as const).filter(([, tri]) => tri > 0);
   const hit = (decision: Decision, tri: Tri) => matches.find(([rule, t]) => rule.decision === decision && t === tri)?.[0];
   const denied = hit('deny', 2);
   if (denied) return { ...base, decision: 'deny', certain: true, rule: denied, message: denied.reason ?? `Denied: ${describe(denied)}` };
@@ -154,7 +154,7 @@ function decide(invocation: Invocation, policy: Policy): Reason {
     floor = {
       ...base,
       decision: 'ask',
-      certain: matchRule(asked, invocation) === 2,
+      certain: matchRule(asked, invocation, start) === 2,
       rule: asked,
       message: asked.reason ?? `Asks: ${describe(asked)}`,
     };
@@ -162,8 +162,11 @@ function decide(invocation: Invocation, policy: Policy): Reason {
   return floor && severity[floor.decision] >= severity[above.decision] ? floor : above;
 }
 
+/** Where the script starts, which relative globs are matched from (see `Analysis`). */
+type Start = Pick<Analysis, 'cwd' | 'realcwd'>;
+
 /** How `rule` matches `invocation`: 0 no, 1 maybe, 2 yes. Exported for the property tests. */
-export function matchRule(rule: Rule, invocation: Invocation): Tri {
+export function matchRule(rule: Rule, invocation: Invocation, start: Start = {}): Tri {
   const all = rule.decision === 'allow';
   let result: Tri = 2;
   const and = (tri: Tri) => {
@@ -171,8 +174,8 @@ export function matchRule(rule: Rule, invocation: Invocation): Tri {
   };
   if (rule.command !== undefined) and(matchCommand(rule.command, invocation));
   if (rule.options && result > 0) and(matchOptions(rule.options, invocation, all));
-  if (rule.args && result > 0) and(matchPaths(rule.args, invocation.positionals, invocation, all));
-  if (rule.writes && result > 0) and(matchPaths(rule.writes, invocation.writes, invocation, all));
+  if (rule.args && result > 0) and(matchPaths(rule.args, invocation.positionals, invocation, all, start));
+  if (rule.writes && result > 0) and(matchPaths(rule.writes, invocation.writes, invocation, all, start));
   if (rule.effects && result > 0) and(matchEffects(rule.effects, invocation, all));
   return result;
 }
@@ -233,12 +236,15 @@ function matchEffects(effects: Effect[], invocation: Invocation, all: boolean): 
 
 /**
  * Whether any of `args` matches any of `globs` (`all`: every one does), as written, as a path resolved against where
- * the invocation runs, and as its real path when the analysis had a filesystem. A path that can't be resolved, or
- * whose real path isn't known, may be anywhere.
+ * the invocation runs, and as its real path when the analysis had a filesystem. Relative globs match paths from where
+ * the script starts. A path that can't be resolved, or whose real path isn't known, may be anywhere; one whose place
+ * against the start isn't known may match any relative glob.
  */
-function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: boolean): Tri {
+function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: boolean, start: Start): Tri {
   const patterns = globs.map(globToRegExp);
-  const absolute = globs.some((glob) => glob.startsWith('/') || glob.startsWith('~'));
+  const anchored = (path: string) => !path.startsWith('/') && !path.startsWith('~');
+  const absolute = globs.some((glob) => !anchored(glob));
+  const relative = globs.some(anchored);
   const { realpaths } = invocation;
   let result: Tri = all ? 2 : 0;
   for (const arg of args) {
@@ -248,15 +254,23 @@ function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: b
     }
     const resolved = resolvePath(invocation.cwd, arg.value, invocation.home);
     const physical = realpaths && resolved !== undefined && Object.hasOwn(realpaths, resolved) ? realpaths[resolved] : undefined;
-    const forms = [arg.value, resolved, resolved === undefined ? undefined : tildePath(resolved, invocation.home), physical].filter(
-      (form) => form !== undefined && form !== null,
+    const local = resolved?.startsWith('/') && start.cwd !== undefined ? relativePath(resolved, start.cwd) : undefined;
+    const realLocal = typeof physical === 'string' && typeof start.realcwd === 'string' ? relativePath(physical, start.realcwd) : undefined;
+    const real = [physical, realLocal].filter((form) => typeof form === 'string');
+    const forms = [arg.value, resolved, resolved === undefined ? undefined : tildePath(resolved, invocation.home), local, ...real].filter(
+      (form) => typeof form === 'string',
     );
     const matches = patterns.some((pattern) => forms.some((form) => pattern.test(form)));
-    const realMatches = typeof physical === 'string' && patterns.some((pattern) => pattern.test(physical));
+    const realMatches = patterns.some((pattern) => real.some((form) => pattern.test(form)));
     if (all && (!matches || (realpaths !== undefined && !realMatches))) return 0;
     if (!all && matches) return 2;
     const outside = resolved === undefined || resolved === '..' || resolved.startsWith('../') || physical === null;
-    if (!all && outside && absolute) result = 1;
+    const unplaced =
+      resolved === undefined ||
+      physical === null ||
+      (!anchored(resolved) && local === undefined) ||
+      (typeof physical === 'string' && realLocal === undefined);
+    if (!all && ((outside && absolute) || (unplaced && relative))) result = 1;
   }
   return result;
 }

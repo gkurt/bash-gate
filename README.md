@@ -62,7 +62,7 @@ const policy: Policy = {
     deny('git push', { options: ['-f', '--force-with-lease'], reason: 'No force pushes' }),
     deny('rm', { options: ['-r'], args: ['/', '/*', '~', '~/*'] }),
     ask({ effects: ['network', 'exec:arbitrary'] }),
-    ask({ writes: ['/**', '~/**', '../**'] }),
+    ask({ writes: ['..', '../**', '~/**'] }),
   ],
 };
 ```
@@ -74,7 +74,9 @@ const policy: Policy = {
   match a path whose real path isn't known. Allow rules must match a known path form and, with a filesystem, the real
   path, so they never match a path whose real path can't be known. When `$HOME` is known (set in the script, or given
   in `env`), `~` globs match absolute paths under it, and the other way round. Another user's home (`~root`) may be
-  anywhere.
+  anywhere. Relative globs (`src/**`, `../**`) also match paths from where the script starts, when `cwd` was given as
+  an absolute path (and from its real path, with a filesystem). Without it, an absolute path may be anywhere against
+  the start, so it may match a deny or ask rule's relative glob.
 - `effects`: `fs:read`, `fs:write`, `fs:delete`, `network`, `privilege`, `exec:arbitrary`, `exec:project`, `exec:file`,
   `exec:remote`, `shell-state`.
 - An allow rule never applies to a program given by a non-system path (`./ls`).
@@ -84,7 +86,8 @@ const policy: Policy = {
 
 `recommended` (`src/recommended.ts`) is a starting point. It allows reading and everyday git, denies force pushes and
 deleting top-level directories, and asks about deleting, network, privilege, code it can't see, writes outside the
-working directory, and writes to `.git`, `.git/config` or `.git/hooks`. It does not ask about `exec:project` (`npm test`,
+working directory (`..`, `../**`, `~/**`: an absolute path counts as outside unless `cwd` shows it's inside), and
+writes to `.git`, `.git/config` or `.git/hooks`. It does not ask about `exec:project` (`npm test`,
 `make`, git hooks); add that if it matters.
 
 ## The environment

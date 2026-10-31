@@ -25,7 +25,10 @@ import { dynamicArg, joinStatic, resolveValue, resolveWord, resolveWords, type L
 
 /** What the analysis knows of where the command runs. */
 export interface Environment {
-  /** The absolute directory the script starts in. Without it, paths stay relative to wherever that is. */
+  /**
+   * The absolute directory the script starts in: relative globs in rules match from it. Without it, paths stay relative
+   * to wherever that is, and an absolute path may be anywhere against it.
+   */
   cwd?: string;
   /** Variables the shell starts with. Any other variable read before it's set is dynamic. */
   env?: Record<string, string>;
@@ -178,6 +181,9 @@ export function analyze(source: string, environment: Environment = {}): Analysis
   // Code that runs alongside the rest may read what the script writes after it: a silent first walk finds all of that.
   const everything = files ? walk(true).written : undefined;
   const { analysis } = walk(false, everything);
+  const start = environment.cwd?.startsWith('/') ? resolvePath('/', environment.cwd) : undefined;
+  if (start !== undefined) analysis.cwd = start;
+  if (start !== undefined && files) analysis.realcwd = files.physical(start) ?? null;
   if (files) analysis.needs = [...files.needs.values()];
   return analysis;
 }

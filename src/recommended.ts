@@ -32,7 +32,8 @@ export const recommended: Policy = {
     }),
     deny('rm', { options: ['--no-preserve-root'], reason: 'Lets rm delete /' }),
     ask({ effects: ['exec:arbitrary', 'exec:file', 'exec:remote', 'privilege', 'network', 'fs:delete'] }),
-    ask({ writes: ['/**', '~', '~/**', '..', '../**'], reason: 'Writes outside the working directory' }),
+    // Relative globs match from where the script starts: an absolute path may be outside it when that isn't given.
+    ask({ writes: ['..', '../**', '~', '~/**'], reason: 'Writes outside the working directory' }),
     ask('uniq|xxd|tree', { writes: ['**'], reason: 'Writes through an output-file argument' }),
     ask({
       writes: ['.git', '**/.git', '.git/config', '**/.git/config', '.git/hooks', '**/.git/hooks', '.git/hooks/**', '**/.git/hooks/**'],

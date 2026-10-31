@@ -107,6 +107,10 @@ export interface Need {
 
 export interface Analysis {
   source: string;
+  /** The absolute directory the script starts in, when it was given: relative globs match paths from it. */
+  cwd?: string;
+  /** With a filesystem, where `cwd` really is; `null` when that isn't known. */
+  realcwd?: string | null;
   invocations: Invocation[];
   findings: Finding[];
   /** What to fetch before analysing again (see `checkAsync`). Empty without a filesystem, or when it knew everything. */

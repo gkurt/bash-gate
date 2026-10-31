@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { allow, analyze, check, checkAsync, deny, recommended, snapshot, type Arg } from '#src/index.ts';
+import { allow, analyze, ask, check, checkAsync, deny, recommended, snapshot, type Arg } from '#src/index.ts';
 
 const values = (args: Arg[]) => args.map((arg) => (arg.kind === 'static' ? arg.value : `<${arg.reason}>`));
 const only = (source: string) => {
@@ -235,6 +235,17 @@ describe('policy', () => {
     expect(check('echo hi > etc/new', inside, options).decision).toBe('ask');
     expect(check('echo hi > etc/new', { rules: [deny({ writes: ['/etc/**'] })], default: 'allow' }, options).decision).toBe('deny');
     expect(check('touch new.txt', inside, { cwd: '/repo', fs: { readFile: () => null, realpath: () => null } }).decision).toBe('ask');
+  });
+
+  test('relative globs match from where the script starts, and its real path', () => {
+    const inside = { rules: [ask({ writes: ['..', '../**'] })], default: 'allow' as const };
+    expect(check('echo hi > /repo/out', inside, { cwd: '/repo' }).decision).toBe('allow');
+    expect(check('echo hi > /srv/out', inside, { cwd: '/repo' }).decision).toBe('ask');
+    expect(check('echo hi > /repo/out', inside).decision).toBe('ask');
+    const real: Record<string, string> = { '/': '/', '/repo': '/data/repo', '/data': '/data', '/data/repo': '/data/repo' };
+    const fs = { readFile: () => null, realpath: (path: string) => real[path] ?? null };
+    expect(check('echo hi > out', inside, { cwd: '/repo', fs }).decision).toBe('allow');
+    expect(check('echo hi > out', inside, { cwd: '/repo', fs: { readFile: () => null, realpath: () => undefined } }).decision).toBe('ask');
   });
 
   test('reasons point at the source', () => {
