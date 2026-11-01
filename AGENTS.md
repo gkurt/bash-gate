@@ -33,6 +33,10 @@ runs everything on Linux, then builds and loads `dist/` in Node.
   policy.
 - `src/files.ts`: the `FileSystem` the analysis reads, `snapshot`, and what it didn't know (needs).
 - `src/paths.ts`: path resolution against the tracked working directory.
+- `src/cover.ts`: whether an analysis covers a process a run started (S1): `covers` and `predicting`.
+- `src/trace/`: layer 3, `bash-gate/trace`. `index.ts` runs a command under `supervisor.c` (ptrace and seccomp, x86_64
+  Linux) and checks each exec against the analysis: refused in `enforce` mode, reported in `trace` mode. The only code
+  that uses Node APIs, so `src/tsconfig.json` leaves it out.
 - `THREAT_MODEL.md`: the assumptions and promises (S1–S5), and which test checks each.
 
 ## Rules for changes
@@ -40,15 +44,16 @@ runs everything on Linux, then builds and loads `dist/` in Node.
 - Fail closed: anything the analysis can't follow becomes a dynamic `Arg`, `maybeOptions`, `open`, or a finding. It
   never disappears.
 - A new construct or spec gets a case in `test/escapes.test.ts`. If it changes what runs, it also gets a script in
-  `test/bash.test.ts`, which checks the analysis against real Bash.
+  `test/scripts.ts`, which `test/bash.test.ts` checks against real Bash and, on x86_64 Linux, `test/trace.test.ts`
+  against every exec the kernel sees.
 - Check Bash semantics in Bash before encoding them, with harmless commands (`echo`).
 - `unbash` stays pinned to an exact version: a parser that disagrees with Bash is the classic bypass.
 
 ## Coding Conventions
 
 - Bun runs the scripts and tests, but code is written against Node: `node:*` modules, never `Bun.*` (`tsc` has only
-  the `bun:test` module's types). `src/` uses no runtime APIs at all: `src/tsconfig.json` has no Node, Bun or DOM
-  types, so the package runs wherever JavaScript does.
+  the `bun:test` module's types). `src/` outside `src/trace/` uses no runtime APIs at all: `src/tsconfig.json` has no
+  Node, Bun or DOM types, so the main entry runs wherever JavaScript does.
 - Prefer colocation.
 - Avoid verbose code comments; write self-explanatory code. Comments are acceptable for:
   - Explaining complex logic, workarounds, or decisions

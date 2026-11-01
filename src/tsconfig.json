@@ -1,6 +1,7 @@
 {
-  // The library runs wherever JavaScript does: no Node, Bun or DOM types here.
+  // The library runs wherever JavaScript does: no Node, Bun or DOM types here. Layer 3 (`trace/`) runs on Node.
   "extends": "../tsconfig.json",
   "compilerOptions": { "types": [] },
-  "include": ["./**/*.ts"]
+  "include": ["./**/*.ts"],
+  "exclude": ["./trace"]
 }

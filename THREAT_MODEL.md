@@ -78,12 +78,25 @@ finding retains a known denial, so S4 is also tested directly where bypasses sho
 the walk stops with a `too-deep` finding. A syntax node the analysis doesn't know (a newer parser) becomes a finding.
 The parser version is pinned. Errors thrown by caller-supplied filesystem callbacks propagate to the caller.
 
+**S6. Under enforcement, an exec the analysis doesn't cover doesn't run.** With `bash-gate/trace` in `enforce` mode,
+every exec the shell makes, or a wrapper it follows makes (`env`, `xargs`, `find -exec`: a program without
+subcommands that the analysis predicts commands under, run on this machine), either is covered by the analysis it was
+given, as S1 defines it, or fails with EPERM before the program runs. So does one from a process with several
+threads, whose arguments could change after the check, and one whose arguments can't be read. What a program the
+analysis doesn't follow inside starts (`git`, `make`, a script file) isn't checked: that's its behaviour, out of scope
+above. The supervisor checks execs only: a builtin's write needs none. Under it no exec gains privileges
+(`no_new_privs`), i386 execs kill the process, and so does any x32 system call.
+
 ## What is trusted
 
 - **[unbash](https://github.com/webpro-nl/unbash) 6.0.1 parsing like Bash 5.3.** A parser that disagrees with Bash is
   the classic bypass, so S1 is tested against Bash itself, not against the parser.
 - **The specs.** A wrong spec, such as a missed option that takes a value or runs code, breaks S1 for that program.
 - **The integration.** It must run exactly the string that was analysed, in the shell the assumptions describe.
+  `bash-gate/trace` does that itself, given the analysis that was checked.
+- **For S6, the kernel and the supervisor.** ptrace and seccomp stop every `execve` and `execveat` (x86_64 Linux). A
+  process in the tree that writes another's memory (`/proc/<pid>/mem`) can change what an allowed exec runs; only a
+  program the analysis doesn't follow can.
 
 ## How each promise is checked
 
@@ -92,6 +105,7 @@ The parser version is pinned. Errors thrown by caller-supplied filesystem callba
 | S1      | Scripts run in real Bash with logging stubs: everything that ran must be covered    | `test/bash.test.ts`        |
 | S1      | The same, for generated scripts mixing the constructs the analysis follows          | `test/bash.test.ts`        |
 | S1      | Known escapes, one per construct                                                    | `test/escapes.test.ts`     |
+| S1      | The hand-written scripts with real programs: every exec the kernel sees is covered  | `test/trace.test.ts`       |
 | S1      | With a filesystem: what the script writes before or alongside a read is unknown     | `test/analyze.test.ts`     |
 | S2      | Property tests over generated invocations and policies                              | `test/properties.test.ts`  |
 | S3      | Property tests: generated commands with findings or maybe-matches are never allowed | `test/properties.test.ts`  |
@@ -99,7 +113,7 @@ The parser version is pinned. Errors thrown by caller-supplied filesystem callba
 | S5      | Property tests: arbitrary token soup never throws                                   | `test/properties.test.ts`  |
 | S5      | Deeply nested loops stay cheap and below the budget                                 | `test/analyze.test.ts`     |
 | S5      | Exhaustive `switch`es with a fail-closed `default`                                  | `src/analyze.ts`           |
+| S6      | Execs the analysis didn't predict are refused, from the shell and from wrappers     | `test/trace.test.ts`       |
 
-Still to come: `strace` in a Linux container as the oracle, so every program started counts, not only the stubbed
-ones; an LLM red team judged by that oracle; and enforcement at exec time so that a gap in S1 is a refused command
-rather than an escape.
+Still to come: the generated scripts under the supervisor too, not only on stubs; an LLM red team judged by
+`trace` mode; and the supervisor on arm64.

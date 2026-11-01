@@ -4,8 +4,9 @@ Static analysis of Bash commands: every program a command line may run, with its
 effects, and a policy that allows, asks about or denies it. Built for gating the commands an AI agent runs, but the
 analysis stands on its own: highlighting, auditing, explaining commands.
 
-Prototype. Parsing is [unbash](https://github.com/webpro-nl/unbash); everything else is here. It runs anywhere
-JavaScript does: no Node APIs, no native code.
+Prototype. Parsing is [unbash](https://github.com/webpro-nl/unbash); everything else is here. The analysis runs
+anywhere JavaScript does: no Node APIs, no native code. [`bash-gate/trace`](#running-under-the-supervisor) runs the
+command and holds it to the analysis, on Linux.
 
 ```sh
 npm install bash-gate
@@ -159,6 +160,39 @@ const verdict = await checkAsync('git commit -m wip', recommended, { cwd: '/repo
 Only content that names the next file costs a round: finding `.git` above a directory takes one, its hooks and
 includes another. Needs left after the last round stay findings, so the command asks.
 
+## Running under the supervisor
+
+Static analysis can be wrong. `bash-gate/trace` runs the command with every exec in its process tree stopped, and
+checks each one against the analysis, so a gap in it is a refused command rather than an escape:
+
+```ts
+import { analyze } from 'bash-gate';
+import { run } from 'bash-gate/trace';
+
+const result = await run('ls; cat secret', { analysis: analyze('ls'), cwd: '/repo' });
+result.stderr; // 'bash: line 1: /usr/bin/cat: Operation not permitted'
+result.execs; // [{ path: '/usr/bin/ls', argv: ['ls'], via: [], covered: true, refused: false }, { …, refused: true }]
+```
+
+- It runs `bash --noprofile --norc -c <source>` in `cwd`, with exactly `env` (by default a `PATH` of system
+  directories), and resolves with the exit code, the output, and every exec once every process has exited. `timeout`
+  kills the whole tree. The analysis defaults to `analyze(source, options)`; pass the one you checked, so the run is
+  held to what the policy saw.
+- `mode: 'enforce'` (the default) fails an exec the analysis doesn't cover with EPERM before it runs. `mode: 'trace'`
+  lets it run and marks it `covered: false`: an oracle for tests, fuzzing and red teams.
+- **What's checked** is what the shell starts, and what a wrapper it follows starts (`env`, `xargs`, `find -exec`,
+  `timeout`, `nice`…), against the invocations under that wrapper. A program the analysis doesn't follow
+  inside (`git`, `make`, `npm`, `python3`, a script file) runs its own children unchecked (`via: null`): what it does
+  is its behaviour, judged by the policy when it was asked about. `covers(analysis, argv, via)` in the main entry is
+  the same check.
+- A finding that hides code (`eval "$x"`, a dynamic command) covers anything, as in S1: the policy asked about it.
+- An exec from a process with several threads is refused: another thread could change its arguments after the check.
+- The supervisor (`src/trace/supervisor.c`) is built with the system's C compiler (`$CC`, else `cc`) into
+  `~/.cache/bash-gate` on first use, or ahead of time with `buildSupervisor(directory)` and passed as `supervisor`.
+  x86_64 Linux only.
+- Under the supervisor nothing gains privileges: `sudo` and other setuid programs fail. Programs that stop themselves
+  (`SIGSTOP`, `SIGTSTP`) carry on instead. i386 and x32 programs can't exec.
+
 ## Tests
 
 ```sh
@@ -173,11 +207,15 @@ bun run checks   # tsc, then bun test
   real paths the script's writes make unknown, needs, and `checkAsync`.
 - `test/metamorphic.test.ts`: generated chains of equivalent rewrites of denied and asked commands, plus rewrites that
   hide values, checked under strict and non-strict policies. Set `METAMORPHIC_RUNS` to change the number of cases.
-- `test/bash.test.ts`: runs scripts in real Bash with a `PATH` of logging stubs. Every program that ran must be one
+- `test/bash.test.ts`: runs scripts (the hand-written ones are in `test/scripts.ts`) in real Bash with a `PATH` of
+  logging stubs. Every program that ran must be one
   the analysis predicted, with those arguments. This is the check that keeps the analysis honest. Extend it before
   trusting a new construct. Besides the hand-written scripts, it generates scripts that mix variables, functions,
   aliases, `hash -p`, loops, substitutions, `eval`, `bash -c` and traps over a few shared names. Set `BASH_RUNS` to
   change the number of generated scripts.
+- `test/trace.test.ts`: on x86_64 Linux with a C compiler, the hand-written scripts again, with real programs under the
+  supervisor: every exec the kernel sees, by any path, must be covered. Plus what enforcement refuses and what it
+  leaves to the programs it doesn't follow.
 
 ## Known gaps
 
@@ -200,3 +238,6 @@ bun run checks   # tsc, then bun test
 - Paths: `~` is only a real directory when `$HOME` is known. Symlinks are resolved only with `fs` and an absolute
   working directory.
 - The walk has a work budget. A script past it gets a `too-deep` finding rather than a full analysis.
+- **The supervisor checks execs, not other effects.** A builtin's write (`echo x > f`) needs no exec, and what a
+  program the analysis doesn't follow starts isn't checked. A process in the tree that writes another's memory
+  (`/proc/<pid>/mem`) can change what an allowed exec runs; only a program the analysis doesn't follow can do that.

@@ -24,4 +24,12 @@ jobs:
       - run: bun run build
       # The built package, as Node loads it.
       - run: node --input-type=module -e "import { check, recommended } from './dist/index.js'; if (check('rm -rf /', recommended).decision !== 'deny') process.exit(1);"
+      # Layer 3 as Node loads it: the supervisor builds from dist/supervisor.c, and an exec it didn't predict is refused.
+      - run: |
+          node --input-type=module -e "
+            import { analyze } from './dist/index.js';
+            import { run } from './dist/trace.js';
+            const result = await run('ls /; cat /etc/hostname', { analysis: analyze('ls /') });
+            if (result.execs.map((exec) => exec.refused).join() !== 'false,true') process.exit(1);
+          "
       - run: npm pack --dry-run

@@ -48,6 +48,13 @@
         "default": "./dist/index.js"
       },
       "source": "./src/index.ts"
+    },
+    "./trace": {
+      "import": {
+        "types": "./dist/trace.d.ts",
+        "default": "./dist/trace.js"
+      },
+      "source": "./src/trace/index.ts"
     }
   },
   "scripts": {

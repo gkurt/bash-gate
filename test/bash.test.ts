@@ -15,7 +15,8 @@ import {
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import * as fc from 'fast-check';
-import { analyze, type Arg, type FindingKind, type Invocation } from '#src/index.ts';
+import { analyze, covers } from '#src/index.ts';
+import { scripts } from './scripts.ts';
 
 /**
  * The analysis against real Bash: each script runs with a `PATH` of stubs that only log their arguments, and every
@@ -23,74 +24,6 @@ import { analyze, type Arg, type FindingKind, type Invocation } from '#src/index
  * fine (both branches of an `if`); missing one that runs is a hole in a gate. Builtins run for real, so scripts stay
  * inside the temporary directory.
  */
-const scripts = [
-  'cmd=rm; $cmd -rf x',
-  '"r"m -rf x',
-  '\\rm x',
-  '{rm,-rf,x}',
-  'rm {,-rf} x',
-  'x="a  b"; cat $x "$x" pre$x',
-  'f() { cat "$@"; }; f a b',
-  'ls() { cat inside; }; ls; command ls x',
-  'shopt -s expand_aliases\nalias l="ls -la"\nl x',
-  'shopt -s expand_aliases; alias l="ls -la"; l x; ls z',
-  'eval "cat a; ls b"',
-  `f() { eval 'f() { cat redefined; }; f'; }; f`,
-  `exec /bin/bash -c "eval 'cat nested; ls child'"`,
-  `f() { cat exported; }; export -f f; exec /bin/bash -c f`,
-  "trap 'rm x' EXIT; ls",
-  "x=ls; trap 'f; $x y' EXIT; f() { cat late; }; x=sort",
-  "( trap 'f; x=$(echo e)' EXIT; enable -n echo; f() { cat sub; } ); ls after",
-  "for i in 1 2; do ( trap 'f' EXIT; f() { cat loop; } ); done",
-  "trap -- 'cat dashes' EXIT; ls",
-  'f() { :; }; trap f ERR; f() { cat middle; }; false; f() { :; }',
-  "x=ls; trap 'x=cat' ERR; false; $x y",
-  "trap 'f() { cat trapped; }' ERR; f() { ls a; }; false; f",
-  "x=ls; trap 'x=cat' DEBUG; $x y",
-  "trap 'cat reset' EXIT INT; trap - exit; trap '' 2; ls",
-  'cat $(ls x) <(sort y)',
-  'for f in a b; do cat "$f"; done',
-  'if true; then cat a; else ls b; fi',
-  'cat <<EOF\n$(ls x)\nEOF',
-  '(( a[$(ls q)] = 1 ))',
-  '(( a[$(cat arithmetic)] = 1 ))',
-  'echo $(( $(cat arithmetic) ))',
-  'for ((i=$(cat arithmetic); i<1; i++)); do :; done',
-  'let "i=$(cat arithmetic)"',
-  '[[ $(cat arithmetic) -eq 1 ]]',
-  'a[$(cat arithmetic)]=value',
-  'echo "${a[$(cat arithmetic)]}"',
-  's=abcdef; echo "${s:$(cat arithmetic)}"',
-  'declare -i n=$(cat arithmetic)',
-  'mapfile -C cat -c 1 arr <<< "line"',
-  "compgen -C 'ls -1' x",
-  'echo `ls y`',
-  'enable -n echo; echo hi',
-  'x=$(cat a) y=$(ls b); cat "$x"',
-  'case a in a) cat 1;; b) ls 2;; esac',
-  'git -C . status --short',
-  'exec cat a',
-  'sudo rm -rf x; env A=1 cat y; xargs grep z < /dev/null',
-  'set -- -rf x; rm "$@"',
-  'i=0; while (( i < 2 )); do cat $i; i=$((i + 1)); done',
-  'x=ls; y=ls; z=ls; for i in 1 2 3; do $z -rf x; z=$y; y=$x; x=rm; done',
-  'shopt -s expand_aliases\nif :; then\nalias rm=cat\nrm -rf x\nfi\nrm y',
-  'shopt -s expand_aliases\nf() { ls a; }\nalias ls=cat\nf; ls b; x=$(ls c)',
-  'shopt -s expand_aliases\nalias s="sudo "\nalias l="ls -la"\ns l x',
-  'shopt -s expand_aliases\nalias s="sudo "\nalias q="; cat q"\ns q',
-  "shopt -s expand_aliases\neval $'alias ls=cat\\nls a'; eval 'alias rm=cat; rm b'",
-  'shopt -s expand_aliases\nif [ -n "$x" ]; then alias rm=cat; fi\nrm a',
-  'shopt -s expand_aliases\nalias c=cat\nc <<EOF\n$(ls body)\nEOF\nc <<"EOF"\n$(rm quoted)\nEOF',
-  "shopt -s expand_aliases\nalias c='cat <<EOF'\nc\n$(ls body)\nEOF\nls after",
-  "/bin/sh -c 'alias ls=cat\nls a'",
-  "/bin/bash --posix -c 'alias ls=cat\nls a'; /bin/bash -O expand_aliases -c 'alias rm=cat\nrm b'",
-  'set -o posix\nalias ls=cat\nls a',
-  "PS4='+$(ls ps4) '; set -x; cat a",
-  'x=<(sort s) y=1 cat a<(ls l)b',
-  'f() { cat body; }; $unset f; $unset ls x',
-  'x=a; local x=b; cat $x; f() { local x=c; cat $x; }; f; cat $x',
-];
-
 const stubs = ['rm', 'ls', 'cat', 'sort', 'git', 'grep', 'echo', 'env', 'sudo', 'xargs'];
 /** The first executable `name` on `PATH`, with Windows' executable extensions, as a shell would find it. */
 function which(name: string): string | null {
@@ -112,36 +45,6 @@ function which(name: string): string | null {
 
 const bash = which('bash');
 const compatibleBash = bash !== null && !(process.platform === 'win32' && /\\Windows\\System32\\bash\.exe$/i.test(bash));
-
-/** Findings that leave code unseen, such as a command name only known at run time (`eval`?): any run is accounted for. */
-const blind = new Set<FindingKind>(['parse-error', 'too-deep', 'unknown-syntax', 'dynamic-script', 'exec-config', 'dynamic-command']);
-/** Findings that leave one call's program unknown: that invocation may be any program. */
-const unsure = new Set<FindingKind>(['loads-code', 'unknown-alias']);
-
-/**
- * Whether the invocation predicts this run: the program, then each argument where it stands. A dynamic word that may
- * split stands for any number of words, one that may not for exactly one word that starts with its static prefix.
- */
-function covers(invocation: Invocation, argv: string[], anyProgram: boolean): boolean {
-  const [first, ...rest] = invocation.argv;
-  const head: Arg =
-    invocation.program === null
-      ? first!
-      : anyProgram
-        ? { kind: 'dynamic', text: '', reason: 'placeholder', split: false, prefix: '' }
-        : { kind: 'static', value: invocation.program };
-  return matches([head, ...rest], argv, invocation.open);
-}
-
-function matches(pattern: Arg[], words: string[], open: boolean): boolean {
-  const [arg, ...rest] = pattern;
-  if (!arg) return open || words.length === 0;
-  if (arg.kind === 'dynamic' && arg.split) return words.some((_, i) => matches(rest, words.slice(i), open)) || matches(rest, [], open);
-  const [word, ...after] = words;
-  if (word === undefined) return false;
-  if (arg.kind === 'static' ? arg.value !== word : !word.startsWith(arg.prefix)) return false;
-  return matches(rest, after, open);
-}
 
 /**
  * Generated scripts: random mixes of the constructs the analysis follows, over a few shared names, so variables,
@@ -284,18 +187,11 @@ describe.skipIf(!compatibleBash)('against bash', () => {
     return ran;
   }
 
-  /** What ran that no invocation of the analysis covers; `excuse` lets findings account for what they hide. */
+  /** What ran that the analysis doesn't cover; `excuse` lets findings account for what they hide. */
   function missed(script: string, ran: string[][], excuse: boolean): string[] {
-    const { invocations, findings } = analyze(script);
-    const excused = excuse ? findings : [];
-    if (excused.some((finding) => blind.has(finding.kind))) return [];
-    const unsureSpans = new Set(excused.filter((finding) => unsure.has(finding.kind)).map((finding) => finding.span.join()));
-    const predicted = invocations.filter(
-      (invocation) => invocation.kind === 'external' && invocation.via.every((program) => program === 'bash' || program === 'sh'),
-    );
-    return ran
-      .filter((argv) => !predicted.some((invocation) => covers(invocation, argv, unsureSpans.has(invocation.span.join()))))
-      .map((argv) => argv.join(' '));
+    const analysis = analyze(script);
+    const checked = excuse ? analysis : { ...analysis, findings: [] };
+    return ran.filter((argv) => !covers(checked, argv)).map((argv) => argv.join(' '));
   }
 
   for (const script of scripts) {
