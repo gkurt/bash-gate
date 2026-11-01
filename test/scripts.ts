@@ -39,6 +39,7 @@ export const scripts = [
   's=abcdef; echo "${s:$(cat arithmetic)}"',
   'declare -i n=$(cat arithmetic)',
   'mapfile -C cat -c 1 arr <<< "line"',
+  "cat <<< <(ls here); cat > $'' <<< $''; ls after",
   "compgen -C 'ls -1' x",
   'echo `ls y`',
   'enable -n echo; echo hi',
@@ -47,6 +48,7 @@ export const scripts = [
   'git -C . status --short',
   'exec cat a',
   'sudo rm -rf x; env A=1 cat y; xargs grep z < /dev/null',
+  'hash -p /bin/cat ls; ls a; env ls b; xargs ls c </dev/null',
   'set -- -rf x; rm "$@"',
   'i=0; while (( i < 2 )); do cat $i; i=$((i + 1)); done',
   'x=ls; y=ls; z=ls; for i in 1 2 3; do $z -rf x; z=$y; y=$x; x=rm; done',
@@ -63,6 +65,7 @@ export const scripts = [
   'set -o posix\nalias ls=cat\nls a',
   "PS4='+$(ls ps4) '; set -x; cat a",
   'x=<(sort s) y=1 cat a<(ls l)b',
+  'x=a; x=<(sort s); cat $x',
   'f() { cat body; }; $unset f; $unset ls x',
   'x=a; local x=b; cat $x; f() { local x=c; cat $x; }; f; cat $x',
 ];

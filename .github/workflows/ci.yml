@@ -20,6 +20,7 @@ jobs:
         env:
           PROPERTY_RUNS: 5000
           BASH_RUNS: 1000
+          TRACE_RUNS: 500
       - run: bun typecheck
       - run: bun run build
       # The built package, as Node loads it.

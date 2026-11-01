@@ -90,7 +90,7 @@ above. The supervisor checks execs only: a builtin's write needs none. Under it 
 
 ## What is trusted
 
-- **[unbash](https://github.com/webpro-nl/unbash) 6.0.1 parsing like Bash 5.3.** A parser that disagrees with Bash is
+- **[unbash](https://github.com/webpro-nl/unbash) 6.0.3 parsing like Bash 5.3.** A parser that disagrees with Bash is
   the classic bypass, so S1 is tested against Bash itself, not against the parser.
 - **The specs.** A wrong spec, such as a missed option that takes a value or runs code, breaks S1 for that program.
 - **The integration.** It must run exactly the string that was analysed, in the shell the assumptions describe.
@@ -107,6 +107,7 @@ above. The supervisor checks execs only: a builtin's write needs none. Under it 
 | S1      | The same, for generated scripts mixing the constructs the analysis follows          | `test/bash.test.ts`        |
 | S1      | Known escapes, one per construct                                                    | `test/escapes.test.ts`     |
 | S1      | The hand-written scripts with real programs: every exec the kernel sees is covered  | `test/trace.test.ts`       |
+| S1      | The same, for the generated scripts                                                 | `test/trace.test.ts`       |
 | S1      | With a filesystem: what the script writes before or alongside a read is unknown     | `test/analyze.test.ts`     |
 | S2      | Property tests over generated invocations and policies                              | `test/properties.test.ts`  |
 | S3      | Property tests: generated commands with findings or maybe-matches are never allowed | `test/properties.test.ts`  |
@@ -116,5 +117,4 @@ above. The supervisor checks execs only: a builtin's write needs none. Under it 
 | S5      | Exhaustive `switch`es with a fail-closed `default`                                  | `src/analyze.ts`           |
 | S6      | Execs the analysis didn't predict are refused, from the shell and from wrappers     | `test/trace.test.ts`       |
 
-Still to come: the generated scripts under the supervisor too, not only on stubs; an LLM red team judged by
-`trace` mode; and the supervisor on arm64.
+Still to come: an LLM red team judged by `trace` mode, and the supervisor on arm64.

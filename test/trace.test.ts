@@ -3,8 +3,10 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import * as fc from 'fast-check';
 import { analyze } from '#src/index.ts';
 import { buildSupervisor, run, type RunOptions } from '#src/trace/index.ts';
+import { generatedScript } from './generated.ts';
 import { scripts } from './scripts.ts';
 
 /**
@@ -12,6 +14,7 @@ import { scripts } from './scripts.ts';
  * the stricter oracle for S1. Real programs run, inside a temporary directory.
  */
 const supported = process.platform === 'linux' && process.arch === 'x64' && spawnSync('cc', ['--version']).status === 0;
+const runs = Number(process.env.TRACE_RUNS ?? 50);
 
 describe.skipIf(!supported)('trace', () => {
   const dir = mkdtempSync(join(tmpdir(), 'bash-gate-trace-'));
@@ -25,16 +28,37 @@ describe.skipIf(!supported)('trace', () => {
   };
   fresh();
   const shown = (execs: { argv: string[] }[]) => execs.map((exec) => exec.argv.join(' '));
+  const traced = (script: string, funcnest = '8') => {
+    fresh();
+    return run(script, options({ mode: 'trace', env: { PATH: '/usr/bin:/bin', FUNCNEST: funcnest } }));
+  };
 
   for (const script of scripts) {
     test(`covers ${JSON.stringify(script)}`, async () => {
-      fresh();
-      const result = await run(script, options({ mode: 'trace', env: { PATH: '/usr/bin:/bin', FUNCNEST: '8' } }));
+      const result = await traced(script);
       expect(result.timedOut).toBe(false);
       expect(result.execs.length).toBeGreaterThan(0);
       expect(shown(result.execs.filter((exec) => exec.covered === false))).toEqual([]);
     });
   }
+
+  test(
+    'covers generated scripts',
+    async () => {
+      await fc.assert(
+        fc.asyncProperty(generatedScript, async (script) => {
+          // A function calling itself twice per loop pass forks thousands of processes by FUNCNEST=8, each stopped by
+          // the supervisor. A lower limit only makes Bash run less than the analysis predicts.
+          const result = await traced(script, '4');
+          if (result.timedOut) throw new Error(`Timed out:\n${script}`);
+          const misses = shown(result.execs.filter((exec) => exec.covered === false));
+          if (misses.length > 0) throw new Error(`Ran but not predicted: ${misses.join(' | ')}\n--- script ---\n${script}`);
+        }),
+        { numRuns: runs },
+      );
+    },
+    { timeout: Math.max(5_000, runs * 1_000) },
+  );
 
   test('enforce refuses what the analysis did not predict, before it runs', async () => {
     const result = await run('echo before; cat /etc/hostname; echo after', options({ analysis: analyze('echo before; echo after') }));

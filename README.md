@@ -211,15 +211,16 @@ bun run checks   # tsc, then bun test
   real paths the script's writes make unknown, needs, and `checkAsync`.
 - `test/metamorphic.test.ts`: generated chains of equivalent rewrites of denied and asked commands, plus rewrites that
   hide values, checked under strict and non-strict policies. Set `METAMORPHIC_RUNS` to change the number of cases.
-- `test/bash.test.ts`: runs scripts (the hand-written ones are in `test/scripts.ts`) in real Bash with a `PATH` of
+- `test/bash.test.ts`: runs scripts (the hand-written ones are in `test/scripts.ts`, the generator in `test/generated.ts`) in real Bash with a `PATH` of
   logging stubs. Every program that ran must be one
   the analysis predicted, with those arguments. This is the check that keeps the analysis honest. Extend it before
   trusting a new construct. Besides the hand-written scripts, it generates scripts that mix variables, functions,
   aliases, `hash -p`, loops, substitutions, `eval`, `bash -c` and traps over a few shared names. Set `BASH_RUNS` to
   change the number of generated scripts.
-- `test/trace.test.ts`: on x86_64 Linux with a C compiler, the hand-written scripts again, with real programs under the
-  supervisor: every exec the kernel sees, by any path, must be covered. Plus what enforcement refuses and what it
-  leaves to the programs it doesn't follow.
+- `test/trace.test.ts`: on x86_64 Linux with a C compiler, the hand-written and generated scripts again, with real
+  programs under the supervisor: every exec the kernel sees, by any path, must be covered. Plus what enforcement
+  refuses and what it leaves to the programs it doesn't follow. Set `TRACE_RUNS` to change the number of generated
+  scripts.
 
 ## Known gaps
 
@@ -237,8 +238,6 @@ bun run checks   # tsc, then bun test
 - Dynamic arithmetic values are findings unless the analyzer can establish they are numeric. Static values are
   recursively followed in arithmetic commands, expansions, loops, `let`, integer tests, array indices, substring
   offsets and integer declarations.
-- unbash rejects some redirection targets Bash accepts, an empty `$''` (`cat > $''`) and a here-string that is a
-  process substitution (`cat <<< <(f)`): a parse error, which asks.
 - Paths: `~` is only a real directory when `$HOME` is known. Symlinks are resolved only with `fs` and an absolute
   working directory.
 - The walk has a work budget. A script past it gets a `too-deep` finding rather than a full analysis.

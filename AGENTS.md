@@ -20,7 +20,7 @@ Prefer these scripts over ad-hoc commands. Do not prefix them with `bun run` whe
 `bun typecheck`) — those are whitelisted for agent use. Before finishing, run `bun run fix` then `bun run checks` — the
 linter, formatter and `tsc` own all mechanical style rules. Fix the code; don't disable rules.
 
-`PROPERTY_RUNS`, `METAMORPHIC_RUNS` and `BASH_RUNS` set how many cases the generated tests try. CI (`.github/workflows/ci.yml`)
+`PROPERTY_RUNS`, `METAMORPHIC_RUNS`, `BASH_RUNS` and `TRACE_RUNS` set how many cases the generated tests try. CI (`.github/workflows/ci.yml`)
 runs everything on Linux, then builds and loads `dist/` in Node.
 
 ## Project Structure

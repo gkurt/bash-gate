@@ -73,7 +73,7 @@
     "prepublishOnly": "bun run checks && bun run build"
   },
   "dependencies": {
-    "unbash": "6.0.2"
+    "unbash": "6.0.3"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

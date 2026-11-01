@@ -1183,10 +1183,12 @@ class Walker {
       open: open || call.open,
       cwd,
     });
-    for (const nested of parsed.nested) this.dispatch(nested.argv, clone(state), inner, innerCall(nested.open));
+    // What a program starts is found on `PATH`: the shell's `hash -p` table isn't passed on.
+    const unhashed = () => ({ ...clone(state), hashed: new Map<string, string | undefined>() });
+    for (const nested of parsed.nested) this.dispatch(nested.argv, unhashed(), inner, innerCall(nested.open));
     for (const text of parsed.argvStrings) {
       const words = text.kind === 'static' ? resolveWords(text.value, lookupIn(state)) : undefined;
-      if (words) this.dispatch(words, clone(state), inner, innerCall(false));
+      if (words) this.dispatch(words, unhashed(), inner, innerCall(false));
       else this.finding(ctx, 'dynamic-script', `${program} runs a command line only known at run time`, call.span);
     }
     for (const script of parsed.scripts) {
@@ -1625,8 +1627,20 @@ function rejoined(command: Command): Command {
       end: next.end,
       parts: [...wordParts(tail), ...wordParts(next)],
     };
+    // Field by field: unbash's nodes keep `name`, `append` and `index` in getters, which a spread drops.
     joined[joined.length - 1] =
-      previous.type === 'Assignment' ? { ...previous, text: previous.text + next.text, end: next.end, value } : value;
+      previous.type === 'Assignment'
+        ? {
+            type: 'Assignment',
+            pos: previous.pos,
+            end: next.end,
+            text: previous.text + next.text,
+            name: previous.name,
+            append: previous.append,
+            index: previous.index,
+            value,
+          }
+        : value;
   }
   if (joined.length === items.length) return command;
   const prefix: Command['prefix'][number][] = [];
