@@ -83,6 +83,8 @@ export class Probe {
 /** Paths the script may have changed by some point, resolved; `any` when one of them can't be known. */
 export class Changes {
   paths = new Set<string>();
+  /** Work trees git may have rewritten: everything under each but its `.git`, which git never writes there. */
+  trees: { root: string; git: string }[] = [];
   any = false;
 
   add(path: string | undefined): void {
@@ -90,24 +92,33 @@ export class Changes {
     else this.paths.add(path);
   }
 
+  addTree(root: string, git: string): void {
+    this.trees.push({ root, git });
+  }
+
   get empty(): boolean {
-    return !this.any && this.paths.size === 0;
+    return !this.any && this.paths.size === 0 && this.trees.length === 0;
   }
 
   /** Whether `path` is, or may be, a changed path or under one. */
   covers(path: string): boolean {
     if (this.any) return true;
     for (const changed of this.paths) if (within(path, changed)) return true;
-    return false;
+    return this.trees.some(({ root, git }) => within(path, root) && !compare(path, git));
   }
 }
 
 /** Whether `path` is `dir` or under it. Paths that can't be compared (`~`, relative to another place) may be. */
 function within(path: string, dir: string): boolean {
-  if (dir.startsWith('~') || path.startsWith('~') || path.startsWith('/') !== dir.startsWith('/')) return true;
+  return compare(path, dir) ?? true;
+}
+
+/** Whether `path` is `dir` or under it; `undefined` when they can't be compared. */
+function compare(path: string, dir: string): boolean | undefined {
+  if (dir.startsWith('~') || path.startsWith('~') || path.startsWith('/') !== dir.startsWith('/')) return undefined;
   const [dirUp, dirRest] = steps(dir);
   const [pathUp, pathRest] = steps(path);
-  if (dirUp !== pathUp) return true;
+  if (dirUp !== pathUp) return undefined;
   return dirRest === '' || pathRest === dirRest || pathRest.startsWith(`${dirRest}/`);
 }
 

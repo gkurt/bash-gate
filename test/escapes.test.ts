@@ -103,6 +103,9 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ["shopt -s expand_aliases; alias ls='rm -rf /'; ls", 'allow', 'an alias applies from the next line, not the same one'],
   ["shopt -s expand_aliases\nalias ls='rm -rf /'\nls", 'deny', 'an alias on the next line'],
   ["shopt -s expand_aliases\nalias ls='rm -rf /'\n\\ls", 'allow', 'an escaped word is not alias-expanded'],
+  ['shopt -s expand_aliases\nalias c=cat\nc <<EOF\n$(rm -rf /)\nEOF', 'deny', 'an aliased command with a here-document'],
+  ["shopt -s expand_aliases\nalias c=cat\nc <<'EOF'\n$(rm -rf /)\nEOF", 'allow', 'an aliased command with a quoted here-document'],
+  ["shopt -s expand_aliases\nalias c='cat <<EOF'\nc\n$(rm -rf /)\nEOF", 'deny', 'an alias that starts a here-document'],
   ['hash -p /bin/rm ls; ls -rf /', 'deny', 'hash -p maps a name to another program'],
   ['enable -f ./evil.so evil', 'ask', 'enable -f loads code'],
   ['PATH=/tmp:$PATH ls', 'ask', 'PATH changes what runs'],
@@ -232,6 +235,8 @@ const filesystemCases: [source: string, decision: Decision, what: string][] = [
   ['git commit -m x', 'allow', 'a hook the filesystem has is walked'],
   ['echo x > out && git commit -m x', 'ask', 'a write before git reads, which may go through a symlink to a hook'],
   ['git commit -m x && echo x > out', 'allow', 'a write after git has read its hooks'],
+  ['git stash && git commit -m x', 'ask', 'git rewriting the work tree before it reads hooks'],
+  ['git commit -m x && git commit -m y', 'allow', 'a commit leaves the hooks the next one reads alone'],
   ['git commit -m x | tee out', 'ask', 'a pipeline writing while git reads'],
   ['git commit -m x & echo x > out', 'ask', 'a background git reading while the script writes'],
 ];

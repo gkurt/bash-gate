@@ -298,6 +298,34 @@ describe('filesystem', () => {
     expect(changed.invocations.some((invocation) => invocation.program === 'cat')).toBe(false);
   });
 
+  test('a program that may write files no spec names makes every later read unknown', () => {
+    for (const source of [
+      'make && git commit -m x',
+      'cargo build && git commit -m x',
+      'python3 -c x && git commit -m x',
+      './build.sh && git commit -m x',
+      'npm install && git commit -m x',
+      'git clone url dir && git commit -m x',
+    ])
+      expect([source, unknown(source)]).toEqual([source, true]);
+  });
+
+  test('git rewrites its work tree, but not its .git', () => {
+    for (const source of ['git checkout main && git commit -m x', 'git stash && git commit -m x', 'git add . && git commit -m x'])
+      expect([source, unknown(source)]).toEqual([source, false]);
+    const project: Record<string, string> = {
+      '/repo/.git/config': '[core]\n\thooksPath = hooks\n',
+      '/repo/hooks/pre-commit': 'cat lint',
+      '/repo/package.json': '{"scripts":{"test":"cat x"}}',
+    };
+    const fs = { readFile: (path: string) => project[path] ?? null, realpath: (path: string) => path };
+    const changed = (source: string) => analyze(source, { cwd: '/repo', fs }).findings.some((finding) => finding.kind === 'unknown-file');
+    for (const source of ['git checkout main && git commit -m x', 'git reset --hard && npm test', 'git stash pop && npm test'])
+      expect([source, changed(source)]).toEqual([source, true]);
+    for (const source of ['git commit -m x && npm test', 'git stash list && npm test', 'npm test && git commit -m x'])
+      expect([source, changed(source)]).toEqual([source, false]);
+  });
+
   test('what runs alongside may read what is written after it', () => {
     for (const source of [
       'git commit -m x | cp -r hooks .git/',

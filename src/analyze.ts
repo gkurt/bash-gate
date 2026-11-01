@@ -214,6 +214,24 @@ function writeKind(program: string): 'none' | 'contents' | 'links' {
   return /^(tee|truncate|dd|rm|rmdir|unlink|shred)$/.test(program) ? 'contents' : 'links';
 }
 
+/** Git subcommands (by canonical name) that may rewrite files in the work tree. */
+const gitWritesTree =
+  /^(checkout|switch|restore|reset|merge|rebase|cherry-pick|pull|apply|mv|clean|submodule|filter-branch|gc|bisect( \S+)?|stash( (push|pop|branch))?)$/;
+
+/**
+ * Whether a program may write files the analysis can't name: one without a spec, one running code that isn't followed,
+ * or one whose spec writes without saying where. Git's own writes are its work tree (`gitWritesTree`) and `.git`, but
+ * a clone, a new worktree or an init lands somewhere else.
+ */
+function writesUnknown(program: string, parsed: Parsed, followed: boolean): boolean {
+  if (!specFor(program)) return true;
+  const { effects } = parsed;
+  if (effects.has('exec:arbitrary') || effects.has('exec:file') || (effects.has('exec:project') && !followed)) return true;
+  if (program === 'git')
+    return /^(clone|worktree|init)$/.test(parsed.subcommands.join(' ')) || (!followed && gitWritesTree.test(parsed.subcommands.join(' ')));
+  return (effects.has('fs:write') || effects.has('fs:delete')) && parsed.writes.length === 0;
+}
+
 /** How many times a loop body is walked looking for what it changes before the analysis gives up on it. */
 const maxIterations = 32;
 
@@ -269,6 +287,28 @@ class Walker {
         changes.add(path);
         changes.add(real);
       }
+    }
+  }
+
+  /** A program writes files no one can name: from here on, every file and real path is unknown. */
+  wroteAnything(): void {
+    if (!this.files) return;
+    this.writes++;
+    this.written.contents.add(undefined);
+    this.written.links.add(undefined);
+  }
+
+  /** Git rewrites the work tree at `root`, files and symlinks, but not its `.git` (`git`). */
+  wroteTree(root: string, git: string): void {
+    if (!this.files) return;
+    if (!root.startsWith('/')) return this.wroteAnything();
+    this.writes++;
+    const real = this.files.physical(root);
+    const realGit = this.files.physical(git);
+    for (const changes of [this.written.contents, this.written.links]) {
+      changes.addTree(root, git);
+      if (real === undefined || realGit === undefined) changes.add(undefined);
+      else changes.addTree(real, realGit);
     }
   }
 
@@ -1111,11 +1151,13 @@ class Walker {
     }
     this.emit(ctx, call, program, 'external', argv, parsed, path);
     const cwd = parsed.cwd?.kind === 'static' ? resolvePath(call.cwd, parsed.cwd.value, call.home) : parsed.cwd ? undefined : call.cwd;
+    // Whether the project code it runs (hooks, npm scripts) was walked, along with what that code writes.
+    let followed = false;
     if (program === 'git') {
       for (const config of parsed.configs) this.gitConfigEntry(config, state, ctx, call);
-      this.gitProject(cwd, parsed, state, ctx, call);
+      followed = this.gitProject(cwd, parsed, state, ctx, call);
     } else if (program === 'npm') {
-      this.npmScripts(cwd, argv, parsed, state, ctx, call);
+      followed = this.npmScripts(cwd, argv, parsed, state, ctx, call);
     } else if (program === 'ssh') {
       for (const value of parsed.options['-o'] ?? []) {
         if (value === true || value.kind === 'dynamic') {
@@ -1165,6 +1207,7 @@ class Walker {
     }
     // After what it reads first: `git config k v` reads the config, then writes it.
     this.wrote(parsed.writes, call, writeKind(program));
+    if (writesUnknown(program, parsed, followed)) this.wroteAnything();
   }
 
   /** `git -c key=value`: entries that make git run commands, which are followed when they're shell code. */
@@ -1188,8 +1231,9 @@ class Walker {
     }
   }
 
-  gitProject(cwd: string | undefined, parsed: Parsed, state: State, ctx: Context, call: Call): void {
-    if (!this.files || !cwd) return;
+  /** Git config, the work tree's writes and the hooks: `false` when the repository wasn't found, so none were followed. */
+  gitProject(cwd: string | undefined, parsed: Parsed, state: State, ctx: Context, call: Call): boolean {
+    if (!this.files || !cwd) return false;
     // What isn't known is read as absent, so that one round of fetching asks for everything up to the root.
     const readFile = (path: string) => this.read(path, ctx, call);
     let repoRoot = cwd;
@@ -1199,7 +1243,7 @@ class Walker {
     let direct: string | undefined;
     for (let depth = 0; depth < 16; depth++) {
       const candidate = resolvePath(repoRoot, '.git');
-      if (!candidate) return;
+      if (!candidate) return false;
       const config = readFile(`${candidate}/config`);
       if (config !== undefined) {
         gitDir = candidate;
@@ -1218,10 +1262,10 @@ class Walker {
         break;
       }
       const parent = resolvePath(repoRoot, '..');
-      if (!parent || parent === repoRoot) return;
+      if (!parent || parent === repoRoot) return false;
       repoRoot = parent;
     }
-    if (!gitDir || !configPath) return;
+    if (!gitDir || !configPath) return false;
     const entries: { key: string; value: string }[] = [];
     const visited = new Set<string>();
     const load = (path: string, depth: number): void => {
@@ -1255,8 +1299,9 @@ class Walker {
       if (entry.key.toLowerCase() === 'core.hookspath') hooksPath = entry.value;
     }
 
+    if (gitWritesTree.test(parsed.subcommands.join(' '))) this.wroteTree(repoRoot, resolvePath(repoRoot, '.git')!);
     const subcommand = parsed.subcommands.at(-1);
-    if (!subcommand) return;
+    if (!subcommand) return true;
     const hooks: Record<string, string[]> = {
       commit: ['pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit'],
       push: ['pre-push'],
@@ -1269,7 +1314,7 @@ class Walker {
       'apply|am': ['applypatch-msg', 'pre-applypatch', 'post-applypatch'],
     };
     const names = hooks[subcommand] ?? (subcommand === 'apply' || subcommand === 'am' ? hooks['apply|am'] : undefined);
-    if (!names) return;
+    if (!names) return true;
     const directory = hooksPath ? (resolvePath(repoRoot, hooksPath) ?? hooksPath) : `${commonDir ?? gitDir}/hooks`;
     for (const name of names) {
       if (parsed.options['--no-verify'] && ['pre-commit', 'commit-msg', 'pre-push'].includes(name)) continue;
@@ -1277,18 +1322,21 @@ class Walker {
       const script = readFile(path);
       if (script !== undefined) this.code(script, childState(state, repoRoot), ctx, call, `git hook ${name}`);
     }
+    return true;
   }
 
-  npmScripts(cwd: string | undefined, argv: Arg[], parsed: Parsed, state: State, ctx: Context, call: Call): void {
-    if (!this.files || !cwd) return;
+  /** The package.json scripts `npm run` and the like run: `false` when they weren't followed. */
+  npmScripts(cwd: string | undefined, argv: Arg[], parsed: Parsed, state: State, ctx: Context, call: Call): boolean {
+    if (!this.files || !cwd) return false;
     const manifest = this.read(`${cwd}/package.json`, ctx, call);
-    if (manifest === undefined) return;
+    if (manifest === undefined) return false;
     let packageJson: unknown;
     try {
       packageJson = JSON.parse(manifest);
     } catch (error) {
       if (!(error instanceof SyntaxError)) throw error;
-      return this.finding(ctx, 'exec-config', 'package.json is invalid JSON; npm scripts cannot be inspected', call.span);
+      this.finding(ctx, 'exec-config', 'package.json is invalid JSON; npm scripts cannot be inspected', call.span);
+      return false;
     }
 
     if (
@@ -1297,10 +1345,12 @@ class Walker {
       !('scripts' in packageJson) ||
       typeof packageJson.scripts !== 'object' ||
       packageJson.scripts === null
-    )
-      return this.finding(ctx, 'exec-config', 'package.json scripts are not a readable object', call.span);
+    ) {
+      this.finding(ctx, 'exec-config', 'package.json scripts are not a readable object', call.span);
+      return false;
+    }
 
-    if (parsed.subcommands[0] !== 'run') return;
+    if (parsed.subcommands[0] !== 'run') return false;
     const verbs = new Set(['run', 'run-script', 'test', 't', 'start', 'stop', 'restart']);
     let verb: string | undefined;
     for (let i = 1; i < argv.length; i++) {
@@ -1322,7 +1372,7 @@ class Walker {
         : verb === 't'
           ? 'test'
           : verb;
-    if (!name) return;
+    if (!name) return false;
     const scripts = packageJson.scripts as Record<string, unknown>;
     for (const scriptName of [`pre${name}`, name, `post${name}`]) {
       const script = scripts[scriptName];
@@ -1332,6 +1382,7 @@ class Walker {
       }
       this.code(script, childState(state, cwd), ctx, call, `npm ${scriptName}`);
     }
+    return true;
   }
 
   sshConfig(path: string, cwd: string | undefined, state: State, ctx: Context, call: Call, visited: Set<string>, depth: number): void {

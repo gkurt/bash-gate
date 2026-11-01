@@ -27,14 +27,16 @@ The answers describe the filesystem before the command, which the command may ch
 before it's read, or while it's read (code that runs alongside: `&`, a pipeline, `<(…)`, `coproc`), is unknown, and
 so is the real path of anything under a path where the script may create a symlink. A write may land elsewhere
 through a symlink that's already there, so writes count at their real path too, and without an absolute `cwd` any
-write makes later reads unknown. The writes counted are those of redirections and specs.
+write makes later reads unknown. The writes counted are those of redirections and specs, plus the work tree (all but
+its `.git`) of a git command that rewrites it. A program that may write files no one can name (no spec, code the
+analysis doesn't follow, or a spec that writes without saying where) makes every later read and real path unknown.
 
 Out of scope:
 
 - **What programs do with their input.** `cat` reading a file, a compiler running build scripts, and file-based
   configuration when no `fs` is supplied. With it, repository Git config (and includes), Git hooks, SSH config passed
   with `-F`, and npm lifecycle scripts are followed. Specs describe other known argument behavior, writes included: a
-  file written by a program in a way its spec doesn't describe can change what a later read sees.
+  specified program that writes a file its spec doesn't name can change what a later read sees.
 - **What the filesystem holds.** Globs and which files exist. `$HOME` too, unless the script sets it or the integration
   passes it in `env`. Symlink targets are considered only when `fs` is supplied and the invocation's `cwd` is
   absolute. Deny and ask rules match any path form; allow rules must match the resolved real path as well. Relative

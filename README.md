@@ -139,8 +139,11 @@ SSH config files passed with `-F`, and npm lifecycle scripts are read and walked
 - The answers are about the filesystem _before_ the command. A file the script may write before it's read
   (`cp -r hooks .git/ && git commit`), or while it's read (a pipeline, `&`, `<(…)`), is an `unknown-file` finding.
   A write may go through a symlink, so without an absolute `cwd` any write makes later reads unknown. A path under one
-  the script may put a symlink on (`ln`, `cp`, `mv`, `tar`…) has no known real path. `mkdir`, `touch` and `chmod` change nothing a read sees. Only the writes the specs
-  and redirections show count: what an unspecified program writes is out of scope.
+  the script may put a symlink on (`ln`, `cp`, `mv`, `tar`…) has no known real path. `mkdir`, `touch` and `chmod` change nothing a read sees. Git commands
+  that rewrite the work tree (`checkout`, `stash`, `reset`, `merge`…) change everything in it but its `.git`. A program
+  that may write files no one can name makes every later read unknown: one without a spec, one running code the
+  analysis doesn't follow (`make`, `npm install`, `python3 -c`, `./build.sh`), or one whose spec writes without saying
+  where.
 
 `snapshot({ files, realpaths })` builds a `FileSystem` from records: a path in neither isn't known. Where the
 filesystem is only reachable asynchronously (a browser, a remote sandbox), `checkAsync` analyses with what it has,
@@ -185,13 +188,13 @@ bun run checks   # tsc, then bun test
 - **Project code depends on the integration.** Without `fs`, npm scripts, Git hooks and config includes cannot be
   followed; commands remain `exec:project`, and the recommended policy asks about direct writes to `.git`,
   `.git/config` and `.git/hooks`. `make` is `exec:project` and Makefiles aren't parsed.
-- **What a program writes is what its spec says.** With `fs`, a file is unknown once a redirection or a spec's write
-  may have reached it. A program that writes files no spec describes (a build script, `git checkout`) can still change
-  a hook or put a symlink in place before a later command reads it.
+- **What a specified program writes is what its spec says.** With `fs`, a file is unknown once a redirection, a spec's
+  write, a work tree git rewrites, or a program that may write anything may have reached it. A program whose spec
+  names some of its writes but misses others can still change a hook or put a symlink in place before a later command
+  reads it.
 - Dynamic arithmetic values are findings unless the analyzer can establish they are numeric. Static values are
   recursively followed in arithmetic commands, expansions, loops, `let`, integer tests, array indices, substring
   offsets and integer declarations.
-- An aliased command with a here-document is parsed again without the document's body: a parse error, which asks.
 - unbash rejects some redirection targets Bash accepts, an empty `$''` (`cat > $''`) and a here-string that is a
   process substitution (`cat <<< <(f)`): a parse error, which asks.
 - Paths: `~` is only a real directory when `$HOME` is known. Symlinks are resolved only with `fs` and an absolute

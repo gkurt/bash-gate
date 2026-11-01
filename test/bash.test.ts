@@ -80,6 +80,8 @@ const scripts = [
   'shopt -s expand_aliases\nalias s="sudo "\nalias q="; cat q"\ns q',
   "shopt -s expand_aliases\neval $'alias ls=cat\\nls a'; eval 'alias rm=cat; rm b'",
   'shopt -s expand_aliases\nif [ -n "$x" ]; then alias rm=cat; fi\nrm a',
+  'shopt -s expand_aliases\nalias c=cat\nc <<EOF\n$(ls body)\nEOF\nc <<"EOF"\n$(rm quoted)\nEOF',
+  "shopt -s expand_aliases\nalias c='cat <<EOF'\nc\n$(ls body)\nEOF\nls after",
   "/bin/sh -c 'alias ls=cat\nls a'",
   "/bin/bash --posix -c 'alias ls=cat\nls a'; /bin/bash -O expand_aliases -c 'alias rm=cat\nrm b'",
   'set -o posix\nalias ls=cat\nls a',
