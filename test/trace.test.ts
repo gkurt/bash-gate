@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as fc from 'fast-check';
@@ -95,6 +95,14 @@ describe.skipIf(!supported)('trace', () => {
         'true ["env","nice"] true',
       ]),
     );
+  });
+
+  test('nothing a command started outlives the run, daemons included', async () => {
+    fresh();
+    const script = "setsid -f sh -c 'sleep 0.3; echo > setsid'; nohup sh -c 'sleep 0.3; echo > nohup' >/dev/null 2>&1 &";
+    const result = await run(script, options());
+    expect(result.code).toBe(0);
+    expect(readdirSync(work).sort()).toEqual(['nohup', 'setsid']);
   });
 
   test('a wrapper starting what the analysis did not predict is refused', async () => {

@@ -31,6 +31,13 @@ write makes later reads unknown. The writes counted are those of redirections an
 its `.git`) of a git command that rewrites it. A program that may write files no one can name (no spec, code the
 analysis doesn't follow, or a spec that writes without saying where) makes every later read and real path unknown.
 
+Nothing else changes the filesystem between the analysis and the end of the run. That rules out a process an earlier
+command left running: a job from an allowed `make &`, `nohup` or `setsid -f` could rewrite `.git/config` or a hook
+after the next command was analysed, and that command's git would run it. The integration runs commands one at a
+time, and each ends only once everything it started has exited or been killed. `bash-gate/trace` does that itself:
+`run` resolves once every process in the tree has exited, daemons included, and `timeout` or the supervisor's own exit
+kills what's left.
+
 Out of scope:
 
 - **What programs do with their input.** `cat` reading a file, a compiler running build scripts, and file-based
@@ -93,8 +100,9 @@ above. The supervisor checks execs only: a builtin's write needs none. Under it 
 - **[unbash](https://github.com/webpro-nl/unbash) 6.0.3 parsing like Bash 5.3.** A parser that disagrees with Bash is
   the classic bypass, so S1 is tested against Bash itself, not against the parser.
 - **The specs.** A wrong spec, such as a missed option that takes a value or runs code, breaks S1 for that program.
-- **The integration.** It must run exactly the string that was analysed, in the shell the assumptions describe.
-  `bash-gate/trace` does that itself, given the analysis that was checked.
+- **The integration.** It must run exactly the string that was analysed, in the shell the assumptions describe, with
+  nothing from an earlier command still running. `bash-gate/trace` does that itself, given the analysis that was
+  checked.
 - **For S6, the kernel and the supervisor.** ptrace and seccomp stop every `execve` and `execveat` (x86_64 Linux). A
   process in the tree that writes another's memory (`/proc/<pid>/mem`) can change what an allowed exec runs; only a
   program the analysis doesn't follow can.

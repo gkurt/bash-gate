@@ -178,7 +178,8 @@ check('git status', recommended).decision; // 'allow'</pre>
           <div data-lesson="files"></div>
           <p class="tip">
             Answers are about the filesystem before the command runs. A file the script may write before it's read is unknown, which is why
-            the hooks after a <code>sh</code> that can write anything become unknown too. Where the filesystem is only reachable
+            the hooks after a <code>sh</code> that can write anything become unknown too. Nothing else may write before the run ends, so run
+            commands one at a time, each once everything the last one started has exited. Where the filesystem is only reachable
             asynchronously, <code>checkAsync</code> fetches what the analysis <code>needs</code> and goes again.
           </p>
         </section>

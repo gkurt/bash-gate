@@ -105,6 +105,11 @@ writes to `.git`, `.git/config` or `.git/hooks`. It does not ask about `exec:pro
 and `fs`, the filesystem as it is before the command runs. Everything in it is plain data or synchronous, so it works
 wherever JavaScript does; the library uses no Node filesystem APIs.
 
+The answers hold only if nothing else writes before the run ends. Run commands one at a time, and don't start the next
+while anything the last one started is still running: a job it left in the background (`make &`, `nohup`,
+`setsid -f`) could rewrite a hook or `.git/config` after the next command was checked. `bash-gate/trace` waits for, or
+kills, the whole process tree.
+
 ```ts
 import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { check, recommended, type FileSystem } from 'bash-gate';
@@ -179,8 +184,8 @@ result.execs; // [{ path: '/usr/bin/ls', argv: ['ls'], via: [], covered: true, r
 ```
 
 - It runs `bash --noprofile --norc -c <source>` in `cwd`, with exactly `env` (by default a `PATH` of system
-  directories), and resolves with the exit code, the output, and every exec once every process has exited. `timeout`
-  kills the whole tree. The analysis defaults to `analyze(source, options)`; pass the one you checked, so the run is
+  directories), and resolves with the exit code, the output, and every exec once every process has exited, daemons
+  included (`setsid -f`, `nohup … &`), so nothing it started outlives it. `timeout` kills the whole tree. The analysis defaults to `analyze(source, options)`; pass the one you checked, so the run is
   held to what the policy saw.
 - `mode: 'enforce'` (the default) fails an exec the analysis doesn't cover with EPERM before it runs. `mode: 'trace'`
   lets it run and marks it `covered: false`: an oracle for tests, fuzzing and red teams.
