@@ -27,8 +27,10 @@ runs everything on Linux, then builds and loads `dist/` in Node.
 - `src/analyze.ts`: the walk. Shell state (variables, functions, aliases, `hash`, `enable`, `cd`), dispatch (alias,
   function, builtin, program), wrappers, and code inside strings. What the script writes, against which file reads
   and real paths become unknown.
-- `src/argv.ts`: reads argv with a `CommandSpec`. Canonical options, subcommands, nested command lines.
-- `src/specs.ts`: program specs, plus git's config keys that run code.
+- `src/argv.ts`: reads argv with a `CommandSpec`. Canonical options, subcommands, nested command lines, and cobra's
+  rules for Go programs (`readCobra`).
+- `src/specs.ts`: program specs, plus git's config keys that run code. The `gh` spec's subcommands and options follow
+  `gh help reference`.
 - `src/policy.ts`: three-valued rule matching, the verdict, and `checkAsync`. `src/recommended.ts`: the starting
   policy.
 - `src/files.ts`: the `FileSystem` the analysis reads, `snapshot`, and what it didn't know (needs).

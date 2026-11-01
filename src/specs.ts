@@ -1,4 +1,4 @@
-import type { CommandSpec, OptionSpec, Parsed } from './argv.ts';
+import { normalize, readCobra, type CommandSpec, type OptionSpec, type Parsed } from './argv.ts';
 import type { Arg, Effect } from './types.ts';
 
 /**
@@ -524,6 +524,1136 @@ const git: CommandSpec = {
   },
 };
 
+const sshOptions = opts(
+  ...'-b= -c= -D= -E= -e= -F= -I= -i= -J= -L= -l= -m= -O= -o= -p= -Q= -R= -S= -W= -w= -B='.split(' '),
+  ...'-4 -6 -A -a -C -f -G -g -K -k -M -N -n -q -s -T -t -V -v -X -x -Y -y'.split(' '),
+);
+
+/** What ssh's options run (`-o ProxyCommand`), the config it reads (`-F`), and `command`, run on the remote host. */
+function sshRuns(options: Parsed['options'], command: Arg[], parsed: Parsed): void {
+  parsed.reads.push(...(options['-F'] ?? []).filter((value): value is Arg => value !== true));
+  for (const value of options['-o'] ?? []) {
+    if (value === true) continue;
+    if (value.kind === 'dynamic') {
+      parsed.maybeOptions = true;
+      continue;
+    }
+    const match = /^(?:ProxyCommand|LocalCommand|KnownHostsCommand)(?:\s+|=\s*)(.+)$/i.exec(value.value);
+    if (match) parsed.effects.add('exec:arbitrary');
+  }
+  if (command.length === 0) return;
+  parsed.effects.add('exec:remote');
+  const dynamic = command.find((arg) => arg.kind === 'dynamic');
+  parsed.scripts.push(dynamic ?? { kind: 'static', value: command.map((arg) => staticValue(arg)).join(' ') });
+}
+
+/** A word gh doesn't know is an alias (a shell one, with `!`) or an extension: code of its own. */
+function finishGh(parsed: Parsed): void {
+  if (parsed.subcommands.length === 0 && parsed.unknownSubcommand) parsed.effects.add('exec:arbitrary');
+}
+
+/** `gh alias set name expansion` defines code that runs later: shell code (`--shell`, or `!`), else a gh command line. */
+function finishAlias(parsed: Parsed): void {
+  const expansion = parsed.positionals[1];
+  const value = staticValue(expansion);
+  if (!expansion || value === '-') parsed.effects.add('exec:arbitrary');
+  else if (value === undefined) parsed.scripts.push(expansion);
+  else if (parsed.options['--shell'] || value.startsWith('!')) parsed.scripts.push({ kind: 'static', value: value.replace(/^!/, '') });
+  else parsed.argvStrings.push({ kind: 'static', value: `gh ${value}` });
+}
+
+/** `gh config set editor|pager|browser value`: a command line gh runs later, split as shell words. */
+function finishGhConfig(parsed: Parsed): void {
+  const [key, value] = parsed.positionals;
+  const name = staticValue(key);
+  if (value && (name === undefined || /^(editor|pager|browser)$/.test(name))) parsed.argvStrings.push(value);
+}
+
+/** `-F key=@file` takes the value from a file (`@-`: standard input). */
+function finishFields(parsed: Parsed): void {
+  for (const field of parsed.options['--field'] ?? []) {
+    if (field === true) continue;
+    if (field.kind === 'dynamic') {
+      if (/^[^=]*(=(@.*)?)?$/.test(field.prefix)) parsed.reads.push(field);
+      continue;
+    }
+    const file = /^[^=]*=@(.+)$/.exec(field.value)?.[1];
+    if (file && file !== '-') parsed.reads.push({ kind: 'static', value: file });
+  }
+}
+
+/** `gh repo clone` and `gh gist clone` run `git clone` with the arguments after the repository, `--` ones included. */
+function finishClone(parsed: Parsed): void {
+  const [repository, ...rest] = parsed.positionals;
+  if (repository)
+    parsed.nested.push({ argv: [{ kind: 'static', value: 'git' }, { kind: 'static', value: 'clone' }, ...rest, repository], open: false });
+}
+
+/** `gh repo fork --clone [repository] [-- gitflags]`: the flags go to `git clone`. */
+function finishFork(parsed: Parsed): void {
+  if (!parsed.options['--clone']) return;
+  parsed.effects.add('fs:write');
+  parsed.nested.push({ argv: [{ kind: 'static', value: 'git' }, { kind: 'static', value: 'clone' }, ...parsed.positionals], open: false });
+}
+
+/** `gh release create|upload tag files…` uploads the files. */
+function finishAssets(parsed: Parsed): void {
+  parsed.reads.push(...parsed.positionals.slice(1));
+}
+
+function finishVerifyAsset(parsed: Parsed): void {
+  const file = parsed.positionals.at(-1);
+  if (file) parsed.reads.push(file);
+}
+
+/**
+ * `gh codespace ssh` and `cp` split their arguments as gh does: flags (those in `valued` take the next word), then the
+ * rest. The flags go to ssh or scp, whose config file (`-F`) isn't followed as ssh's is.
+ */
+function codespaceArgs(parsed: Parsed, valued: string): { options: Parsed['options']; rest: Arg[] } {
+  const args = parsed.positionals;
+  let i = 0;
+  for (let value = staticValue(args[0]); value?.startsWith('-'); value = staticValue(args[i]))
+    i += value.length === 2 && valued.includes(value[1]!) ? 2 : 1;
+  const { options } = normalize(args.slice(0, i), { options: opts(...valued.split('').map((letter) => `-${letter}=`)) });
+  const rest = args.slice(i);
+  const next = rest[0];
+  if (options['-F'] || (next?.kind === 'dynamic' && (next.prefix === '' || next.prefix.startsWith('-')))) {
+    parsed.maybeOptions = true;
+    parsed.effects.add('exec:arbitrary');
+  }
+  return { options, rest };
+}
+
+/** `gh codespace ssh [flags] [command]`: the command runs in the codespace. */
+function finishCodespaceSsh(parsed: Parsed): void {
+  const { options, rest } = codespaceArgs(parsed, 'bcDeFIiLlmOopRSWw');
+  sshRuns(options, rest, parsed);
+}
+
+/** `gh codespace cp [flags] sources… destination`: paths starting `remote:` are in the codespace. scp's `-S` is a program. */
+function finishCodespaceCopy(parsed: Parsed): void {
+  const { options, rest } = codespaceArgs(parsed, 'cFiJloPS');
+  sshRuns(options, [], parsed);
+  if (options['-S']) parsed.effects.add('exec:arbitrary');
+  const local = (arg: Arg) => !staticValue(arg)?.startsWith('remote:');
+  parsed.reads.push(...rest.slice(0, -1).filter(local));
+  const destination = rest.at(-1);
+  if (!destination || !local(destination)) return;
+  parsed.effects.add('fs:write');
+  parsed.writes.push(destination);
+}
+
+/** Each level's options apply under it too, as cobra's persistent flags do (`gh pr -R` is `gh pr merge -R`). */
+function persistent(spec: CommandSpec, inherited: OptionSpec[] = []): CommandSpec {
+  const options = [...(spec.options ?? []), ...inherited];
+  if (!spec.subcommands) return { ...spec, options };
+  const subcommands = Object.fromEntries(Object.entries(spec.subcommands).map(([name, sub]) => [name, persistent(sub, options)]));
+  return { ...spec, options, subcommands };
+}
+
+const json = opts('-q= --jq=', '--json=', '-t= --template=');
+const codespace = opts('-c= --codespace=', '-R= --repo=', '--repo-owner=');
+
+/** The GitHub CLI. Nearly every command calls the API; those that run git (`pr checkout`) run its hooks. */
+const gh: CommandSpec = {
+  ...persistent({
+    options: opts('--help', '--version'),
+    subcommands: {
+      'agent-task|agent-tasks|agent|agents': {
+        effects: ['network'],
+        subcommands: {
+          create: { options: opts('-b= --base=', '-a= --custom-agent=', '--follow', o('-F= --from-file=', { role: 'read' })) },
+          list: { options: opts('-L= --limit=', '-w --web', ...json) },
+          view: { options: opts('--follow', '--log', '-w --web', ...json) },
+        },
+      },
+      alias: {
+        subcommands: {
+          delete: { effects: ['fs:write'], options: opts('--all') },
+          import: { effects: ['fs:write'], positionals: 'read', options: opts('--clobber') },
+          'list|ls': {},
+          set: { effects: ['fs:write'], options: opts('--clobber', '-s --shell'), finish: finishAlias },
+        },
+      },
+      api: {
+        effects: ['network'],
+        options: opts(
+          '--cache=',
+          '-F= --field=',
+          '-H= --header=',
+          '--hostname=',
+          '-i --include',
+          o('--input=', { role: 'read' }),
+          '-q= --jq=',
+          '-X= --method=',
+          '--paginate',
+          '-p= --preview=',
+          '-f= --raw-field=',
+          '--silent',
+          '--slurp',
+          '-t= --template=',
+          '--verbose',
+        ),
+        finish: finishFields,
+      },
+      'attestation|at': {
+        effects: ['network'],
+        subcommands: {
+          download: {
+            effects: ['fs:write'],
+            options: opts('-d= --digest-alg=', '--hostname=', '-L= --limit=', '-o= --owner=', '--predicate-type=', '-R= --repo='),
+          },
+          'trusted-root': { options: opts('--hostname=', o('--tuf-root=', { role: 'read' }), '--tuf-url=', '--verify-only') },
+          verify: {
+            positionals: 'read',
+            options: opts(
+              o('-b= --bundle=', { role: 'read' }),
+              '--bundle-from-oci',
+              '--cert-identity=',
+              '-i= --cert-identity-regex=',
+              '--cert-oidc-issuer=',
+              o('--custom-trusted-root=', { role: 'read' }),
+              '--deny-self-hosted-runners',
+              '-d= --digest-alg=',
+              '--format=',
+              '--hostname=',
+              '-q= --jq=',
+              '-L= --limit=',
+              '--no-public-good',
+              '-o= --owner=',
+              '--predicate-type=',
+              '-R= --repo=',
+              '--signer-digest=',
+              '--signer-repo=',
+              '--signer-workflow=',
+              '--source-digest=',
+              '--source-ref=',
+              '-t= --template=',
+            ),
+          },
+        },
+      },
+      auth: {
+        subcommands: {
+          login: {
+            effects: ['network', 'fs:write'],
+            options: opts(
+              '-c --clipboard',
+              '-p= --git-protocol=',
+              '-h= --hostname=',
+              '--insecure-storage',
+              '-s= --scopes=',
+              '--skip-ssh-key',
+              '-w --web',
+              '--with-token',
+            ),
+          },
+          logout: { effects: ['network', 'fs:write'], options: opts('-h= --hostname=', '-u= --user=') },
+          refresh: {
+            effects: ['network', 'fs:write'],
+            options: opts(
+              '-c --clipboard',
+              '-h= --hostname=',
+              '--insecure-storage',
+              '-r= --remove-scopes=',
+              '--reset-scopes',
+              '-s= --scopes=',
+            ),
+          },
+          'setup-git': { effects: ['fs:write'], options: opts('-f --force', '-h= --hostname=') },
+          status: {
+            effects: ['network'],
+            options: opts('-a --active', '-h= --hostname=', '--jq=', '--json=', '-t --show-token', '--template='),
+          },
+          switch: { effects: ['fs:write'], options: opts('-h= --hostname=', '-u= --user=') },
+          token: { options: opts('-h= --hostname=', '-u= --user=') },
+        },
+      },
+      browse: {
+        effects: ['network'],
+        options: opts(
+          '-R= --repo=',
+          '-a --actions',
+          '--blame',
+          '-b= --branch=',
+          '-c=? --commit=?',
+          '-n --no-browser',
+          '-p --projects',
+          '-r --releases',
+          '-s --settings',
+          '-w --wiki',
+        ),
+      },
+      cache: {
+        effects: ['network'],
+        options: opts('-R= --repo='),
+        subcommands: {
+          delete: { options: opts('-a --all', '-r= --ref=', '--succeed-on-no-caches') },
+          'list|ls': { options: opts('-k= --key=', '-L= --limit=', '-O= --order=', '-r= --ref=', '-S= --sort=', ...json) },
+        },
+      },
+      'codespace|cs': {
+        effects: ['network'],
+        subcommands: {
+          code: { options: opts('--insiders', '-w --web', ...codespace) },
+          cp: {
+            options: opts(o('-e --expand', { effects: ['exec:remote'] }), '-p= --profile=', '-r --recursive', ...codespace),
+            finish: finishCodespaceCopy,
+          },
+          create: {
+            options: opts(
+              '-b= --branch=',
+              '--default-permissions',
+              '--devcontainer-path=',
+              '-d= --display-name=',
+              '--idle-timeout=',
+              '-l= --location=',
+              '-m= --machine=',
+              '-R= --repo=',
+              '--retention-period=',
+              '-s --status',
+              '-w --web',
+            ),
+          },
+          delete: { options: opts('--all', '--days=', '-f --force', '-o= --org=', '-u= --user=', ...codespace) },
+          edit: { options: opts('-d= --display-name=', '-m= --machine=', ...codespace) },
+          jupyter: { options: opts(...codespace) },
+          'list|ls': { options: opts('-L= --limit=', '-o= --org=', '-R= --repo=', '-u= --user=', '-w --web', ...json) },
+          logs: { options: opts('-f --follow', ...codespace) },
+          ports: {
+            options: opts(...json, ...codespace),
+            subcommands: {
+              forward: {},
+              visibility: {},
+            },
+          },
+          rebuild: { options: opts('--full', ...codespace) },
+          ssh: {
+            options: opts(
+              '--config',
+              o('-d --debug', { effects: ['fs:write'] }),
+              o('--debug-file=', { role: 'write' }),
+              '--profile=',
+              '--server-port=',
+              ...codespace,
+            ),
+            finish: finishCodespaceSsh,
+          },
+          stop: { options: opts('-o= --org=', '-u= --user=', ...codespace) },
+          view: { options: opts(...json, ...codespace) },
+        },
+      },
+      completion: { options: opts('-s= --shell=') },
+      config: {
+        subcommands: {
+          'clear-cache': { effects: ['fs:delete'] },
+          get: { options: opts('-h= --host=') },
+          'list|ls': { options: opts('-h= --host=') },
+          set: { effects: ['fs:write'], options: opts('-h= --host='), finish: finishGhConfig },
+        },
+      },
+      copilot: { effects: ['exec:arbitrary', 'fs:write'], options: opts('--remove') },
+      discussion: {
+        effects: ['network'],
+        options: opts('-R= --repo='),
+        subcommands: {
+          comment: { options: opts('-b= --body=', o('-F= --body-file=', { role: 'read' }), '--delete', '--edit', '--yes') },
+          create: {
+            options: opts('-b= --body=', o('-F= --body-file=', { role: 'read' }), '-c= --category=', '-l= --label=', '-t= --title='),
+          },
+          edit: {
+            options: opts(
+              '--add-label=',
+              '-b= --body=',
+              o('-F= --body-file=', { role: 'read' }),
+              '-c= --category=',
+              '--remove-label=',
+              '-t= --title=',
+            ),
+          },
+          'list|ls': {
+            options: opts(
+              '--after=',
+              '--answered',
+              '-A= --author=',
+              '-c= --category=',
+              '-l= --label=',
+              '-L= --limit=',
+              '--order=',
+              '-S= --search=',
+              '--sort=',
+              '-s= --state=',
+              '-w --web',
+              ...json,
+            ),
+          },
+          view: { options: opts('--after=', '-c --comments', '-L= --limit=', '--order=', '-w --web', ...json) },
+        },
+      },
+      'extension|extensions|ext': {
+        subcommands: {
+          browse: { effects: ['network', 'fs:write'], options: opts(o('--debug', { effects: ['fs:write'] }), '-s --single-column') },
+          create: { effects: ['fs:write'], options: opts('--precompiled=') },
+          exec: { effects: ['exec:arbitrary'] },
+          install: { effects: ['network', 'fs:write'], options: opts('--force', '--pin=') },
+          'list|ls': {},
+          'remove|uninstall': { effects: ['fs:delete'] },
+          search: {
+            effects: ['network'],
+            options: opts('--license=', '-L= --limit=', '--order=', '--owner=', '--sort=', '-w --web', ...json),
+          },
+          upgrade: { effects: ['network', 'fs:write'], options: opts('--all', '--dry-run', '--force') },
+        },
+      },
+      gist: {
+        effects: ['network'],
+        subcommands: {
+          clone: { finish: finishClone },
+          'create|new': { positionals: 'read', options: opts('-d= --desc=', '-f= --filename=', '-p --public', '-w --web') },
+          delete: { options: opts('--yes') },
+          edit: { options: opts(o('-a= --add=', { role: 'read' }), '-d= --desc=', '-f= --filename=', '-r= --remove=') },
+          'list|ls': { options: opts('--filter=', '--include-content', '-L= --limit=', '--public', '--secret') },
+          rename: {},
+          view: { options: opts('-f= --filename=', '--files', '-r --raw', '-w --web') },
+        },
+      },
+      'gpg-key': {
+        effects: ['network'],
+        subcommands: {
+          add: { positionals: 'read', options: opts('-t= --title=') },
+          delete: { options: opts('-y --yes') },
+          'list|ls': {},
+        },
+      },
+      issue: {
+        effects: ['network'],
+        options: opts('-R= --repo='),
+        subcommands: {
+          close: { options: opts('-c= --comment=', '--duplicate-of=', '-r= --reason=') },
+          comment: {
+            options: opts(
+              '-b= --body=',
+              o('-F= --body-file=', { role: 'read' }),
+              '--create-if-none',
+              '--delete-last',
+              '--edit-last',
+              '-e --editor',
+              '-w --web',
+              '--yes',
+            ),
+          },
+          'create|new': {
+            options: opts(
+              '-a= --assignee=',
+              '--blocked-by=',
+              '--blocking=',
+              '-b= --body=',
+              o('-F= --body-file=', { role: 'read' }),
+              '-e --editor',
+              '-l= --label=',
+              '-m= --milestone=',
+              '--parent=',
+              '-p= --project=',
+              o('--recover=', { role: 'read' }),
+              '-T= --template=',
+              '-t= --title=',
+              '--type=',
+              '-w --web',
+            ),
+          },
+          delete: { options: opts('--yes') },
+          develop: { options: opts('-b= --base=', '--branch-repo=', o('-c --checkout', { effects: hooks }), '-l --list', '-n= --name=') },
+          edit: {
+            options: opts(
+              '--add-assignee=',
+              '--add-blocked-by=',
+              '--add-blocking=',
+              '--add-label=',
+              '--add-project=',
+              '--add-sub-issue=',
+              '-b= --body=',
+              o('-F= --body-file=', { role: 'read' }),
+              '-m= --milestone=',
+              '--parent=',
+              '--remove-assignee=',
+              '--remove-blocked-by=',
+              '--remove-blocking=',
+              '--remove-label=',
+              '--remove-milestone',
+              '--remove-parent',
+              '--remove-project=',
+              '--remove-sub-issue=',
+              '--remove-type',
+              '-t= --title=',
+              '--type=',
+            ),
+          },
+          'list|ls': {
+            options: opts(
+              '--app=',
+              '-a= --assignee=',
+              '-A= --author=',
+              '-l= --label=',
+              '-L= --limit=',
+              '--mention=',
+              '-m= --milestone=',
+              '-S= --search=',
+              '-s= --state=',
+              '--type=',
+              '-w --web',
+              ...json,
+            ),
+          },
+          lock: { options: opts('-r= --reason=') },
+          pin: {},
+          reopen: { options: opts('-c= --comment=') },
+          status: { options: opts(...json) },
+          transfer: {},
+          unlock: {},
+          unpin: {},
+          view: { options: opts('-c --comments', '-w --web', ...json) },
+        },
+      },
+      label: {
+        effects: ['network'],
+        options: opts('-R= --repo='),
+        subcommands: {
+          clone: { options: opts('-f --force') },
+          create: { options: opts('-c= --color=', '-d= --description=', '-f --force') },
+          delete: { options: opts('--yes') },
+          edit: { options: opts('-c= --color=', '-d= --description=', '-n= --name=') },
+          'list|ls': { options: opts('-L= --limit=', '--order=', '-S= --search=', '--sort=', '-w --web', ...json) },
+        },
+      },
+      help: {},
+      licenses: {},
+      org: {
+        effects: ['network'],
+        subcommands: {
+          'list|ls': { options: opts('-L= --limit=') },
+        },
+      },
+      pr: {
+        effects: ['network'],
+        options: opts('-R= --repo='),
+        subcommands: {
+          'checkout|co': { effects: hooks, options: opts('-b= --branch=', '--detach', '-f --force', '--recurse-submodules') },
+          checks: { options: opts('--fail-fast', '-i= --interval=', '--required', '--watch', '-w --web', ...json) },
+          close: { options: opts('-c= --comment=', o('-d --delete-branch', { effects: hooks })) },
+          comment: {
+            options: opts(
+              '-b= --body=',
+              o('-F= --body-file=', { role: 'read' }),
+              '--create-if-none',
+              '--delete-last',
+              '--edit-last',
+              '-e --editor',
+              '-w --web',
+              '--yes',
+            ),
+          },
+          'create|new': {
+            effects: ['exec:project'],
+            options: opts(
+              '-a= --assignee=',
+              '-B= --base=',
+              '-b= --body=',
+              o('-F= --body-file=', { role: 'read' }),
+              '-d --draft',
+              '--dry-run',
+              '-e --editor',
+              '-f --fill',
+              '--fill-first',
+              '--fill-verbose',
+              '-H= --head=',
+              '-l= --label=',
+              '-m= --milestone=',
+              '--no-maintainer-edit',
+              '-p= --project=',
+              o('--recover=', { role: 'read' }),
+              '-r= --reviewer=',
+              '-T= --template=',
+              '-t= --title=',
+              '-w --web',
+            ),
+          },
+          diff: { options: opts('--color=', '-e= --exclude=', '--name-only', '--patch', '-w --web') },
+          edit: {
+            options: opts(
+              '--add-assignee=',
+              '--add-label=',
+              '--add-project=',
+              '--add-reviewer=',
+              '-B= --base=',
+              '-b= --body=',
+              o('-F= --body-file=', { role: 'read' }),
+              '-m= --milestone=',
+              '--remove-assignee=',
+              '--remove-label=',
+              '--remove-milestone',
+              '--remove-project=',
+              '--remove-reviewer=',
+              '-t= --title=',
+            ),
+          },
+          'list|ls': {
+            options: opts(
+              '--app=',
+              '-a= --assignee=',
+              '-A= --author=',
+              '-B= --base=',
+              '-d --draft',
+              '-H= --head=',
+              '-l= --label=',
+              '-L= --limit=',
+              '-S= --search=',
+              '-s= --state=',
+              '-w --web',
+              ...json,
+            ),
+          },
+          lock: { options: opts('-r= --reason=') },
+          merge: {
+            options: opts(
+              '--admin',
+              '-A= --author-email=',
+              '--auto',
+              '-b= --body=',
+              o('-F= --body-file=', { role: 'read' }),
+              o('-d --delete-branch', { effects: hooks }),
+              '--disable-auto',
+              '--match-head-commit=',
+              '-m --merge',
+              '-r --rebase',
+              '-s --squash',
+              '-t= --subject=',
+            ),
+          },
+          ready: { options: opts('--undo') },
+          reopen: { options: opts('-c= --comment=') },
+          revert: { options: opts('-b= --body=', o('-F= --body-file=', { role: 'read' }), '-d --draft', '-t= --title=') },
+          review: {
+            options: opts('-a --approve', '-b= --body=', o('-F= --body-file=', { role: 'read' }), '-c --comment', '-r --request-changes'),
+          },
+          status: { options: opts('-c --conflict-status', ...json) },
+          unlock: {},
+          'update-branch': { options: opts('--rebase') },
+          view: { options: opts('-c --comments', '-w --web', ...json) },
+        },
+      },
+      preview: {
+        subcommands: {
+          prompter: {},
+        },
+      },
+      project: {
+        effects: ['network'],
+        subcommands: {
+          close: { options: opts('--format=', '-q= --jq=', '--owner=', '-t= --template=', '--undo') },
+          copy: {
+            options: opts('--drafts', '--format=', '-q= --jq=', '--source-owner=', '--target-owner=', '-t= --template=', '--title='),
+          },
+          create: { options: opts('--format=', '-q= --jq=', '--owner=', '-t= --template=', '--title=') },
+          delete: { options: opts('--format=', '-q= --jq=', '--owner=', '-t= --template=') },
+          edit: {
+            options: opts(
+              '-d= --description=',
+              '--format=',
+              '-q= --jq=',
+              '--owner=',
+              '--readme=',
+              '-t= --template=',
+              '--title=',
+              '--visibility=',
+            ),
+          },
+          'field-create': {
+            options: opts('--data-type=', '--format=', '-q= --jq=', '--name=', '--owner=', '--single-select-options=', '-t= --template='),
+          },
+          'field-delete': { options: opts('--format=', '--id=', '-q= --jq=', '-t= --template=') },
+          'field-list': { options: opts('--format=', '-q= --jq=', '-L= --limit=', '--owner=', '-t= --template=') },
+          'item-add': { options: opts('--format=', '-q= --jq=', '--owner=', '-t= --template=', '--url=') },
+          'item-archive': { options: opts('--format=', '--id=', '-q= --jq=', '--owner=', '-t= --template=', '--undo') },
+          'item-create': { options: opts('--body=', '--format=', '-q= --jq=', '--owner=', '-t= --template=', '--title=') },
+          'item-delete': { options: opts('--format=', '--id=', '-q= --jq=', '--owner=', '-t= --template=') },
+          'item-edit': {
+            options: opts(
+              '--body=',
+              '--clear',
+              '--date=',
+              '--field-id=',
+              '--format=',
+              '--id=',
+              '--iteration-id=',
+              '-q= --jq=',
+              '--number=',
+              '--project-id=',
+              '--single-select-option-id=',
+              '-t= --template=',
+              '--text=',
+              '--title=',
+            ),
+          },
+          'item-list': { options: opts('--format=', '-q= --jq=', '-L= --limit=', '--owner=', '--query=', '-t= --template=') },
+          link: { options: opts('--owner=', '-R= --repo=', '-T= --team=') },
+          'list|ls': { options: opts('--closed', '--format=', '-q= --jq=', '-L= --limit=', '--owner=', '-t= --template=', '-w --web') },
+          'mark-template': { options: opts('--format=', '-q= --jq=', '--owner=', '-t= --template=', '--undo') },
+          unlink: { options: opts('--owner=', '-R= --repo=', '-T= --team=') },
+          view: { options: opts('--format=', '-q= --jq=', '--owner=', '-t= --template=', '-w --web') },
+        },
+      },
+      release: {
+        effects: ['network'],
+        options: opts('-R= --repo='),
+        subcommands: {
+          'create|new': {
+            options: opts(
+              '--discussion-category=',
+              '-d --draft',
+              '--fail-on-no-commits',
+              '--generate-notes',
+              '--latest',
+              '-n= --notes=',
+              o('-F= --notes-file=', { role: 'read' }),
+              '--notes-from-tag',
+              '--notes-start-tag=',
+              '-p --prerelease',
+              '--target=',
+              '-t= --title=',
+              '--verify-tag',
+            ),
+            finish: finishAssets,
+          },
+          delete: { options: opts('--cleanup-tag', '-y --yes') },
+          'delete-asset': { options: opts('-y --yes') },
+          download: {
+            effects: ['fs:write'],
+            options: opts(
+              '-A= --archive=',
+              '--clobber',
+              o('-D= --dir=', { role: 'write' }),
+              o('-O= --output=', { role: 'write' }),
+              '-p= --pattern=',
+              '--skip-existing',
+            ),
+          },
+          edit: {
+            options: opts(
+              '--discussion-category=',
+              '--draft',
+              '--latest',
+              '-n= --notes=',
+              o('-F= --notes-file=', { role: 'read' }),
+              '--prerelease',
+              '--tag=',
+              '--target=',
+              '-t= --title=',
+              '--verify-tag',
+            ),
+          },
+          'list|ls': { options: opts('--exclude-drafts', '--exclude-pre-releases', '-L= --limit=', '-O= --order=', ...json) },
+          upload: { options: opts('--clobber'), finish: finishAssets },
+          verify: { options: opts('--format=', '-q= --jq=', '-t= --template=') },
+          'verify-asset': { options: opts('--format=', '-q= --jq=', '-t= --template='), finish: finishVerifyAsset },
+          view: { options: opts('-w --web', ...json) },
+        },
+      },
+      repo: {
+        effects: ['network'],
+        subcommands: {
+          archive: { options: opts('-y --yes') },
+          autolink: {
+            subcommands: {
+              'create|new': { options: opts('-n --numeric') },
+              delete: { options: opts('--yes') },
+              'list|ls': { options: opts('-w --web', ...json) },
+              view: { options: opts(...json) },
+            },
+          },
+          clone: { options: opts('--no-upstream', '-u= --upstream-remote-name='), finish: finishClone },
+          'create|new': {
+            options: opts(
+              '--add-readme',
+              o('-c --clone', { effects: ['fs:write'] }),
+              '-d= --description=',
+              '--disable-issues',
+              '--disable-wiki',
+              '-g= --gitignore=',
+              '-h= --homepage=',
+              '--include-all-branches',
+              '--internal',
+              '-l= --license=',
+              '--private',
+              '--public',
+              o('--push', { effects: ['exec:project'] }),
+              '-r= --remote=',
+              o('-s= --source=', { role: 'read', effects: ['fs:write'] }),
+              '-t= --team=',
+              '-p= --template=',
+            ),
+          },
+          delete: { options: opts('--yes') },
+          'deploy-key': {
+            subcommands: {
+              add: { positionals: 'read', options: opts('-w --allow-write', '-t= --title=') },
+              delete: {},
+              'list|ls': { options: opts(...json) },
+            },
+          },
+          edit: {
+            options: opts(
+              '--accept-visibility-change-consequences',
+              '--add-topic=',
+              '--allow-forking',
+              '--allow-update-branch',
+              '--default-branch=',
+              '--delete-branch-on-merge',
+              '-d= --description=',
+              '--enable-advanced-security',
+              '--enable-auto-merge',
+              '--enable-discussions',
+              '--enable-issues',
+              '--enable-merge-commit',
+              '--enable-projects',
+              '--enable-rebase-merge',
+              '--enable-secret-scanning',
+              '--enable-secret-scanning-push-protection',
+              '--enable-squash-merge',
+              '--enable-wiki',
+              '-h= --homepage=',
+              '--remove-topic=',
+              '--squash-merge-commit-message=',
+              '--template',
+              '--visibility=',
+            ),
+          },
+          fork: {
+            options: opts(
+              '--clone',
+              '--default-branch-only',
+              '--fork-name=',
+              '--org=',
+              o('--remote', { effects: ['fs:write'] }),
+              '--remote-name=',
+            ),
+            finish: finishFork,
+          },
+          gitignore: {
+            subcommands: {
+              'list|ls': {},
+              view: {},
+            },
+          },
+          license: {
+            subcommands: {
+              'list|ls': {},
+              view: { options: opts('-w --web') },
+            },
+          },
+          'list|ls': {
+            options: opts(
+              '--archived',
+              '--fork',
+              '-l= --language=',
+              '-L= --limit=',
+              '--no-archived',
+              '--source',
+              '--topic=',
+              '--visibility=',
+              ...json,
+            ),
+          },
+          'read-dir': { options: opts('--ref=', ...json) },
+          'read-file': { options: opts('--allow-escape-sequences', '--clobber', o('-o= --output=', { role: 'write' }), '--ref=', ...json) },
+          rename: { effects: ['fs:write'], options: opts('-y --yes') },
+          'set-default': { effects: ['fs:write'], options: opts('-u --unset', '-v --view') },
+          sync: { effects: hooks, options: opts('-b= --branch=', '--force', '-s= --source=') },
+          unarchive: { options: opts('-y --yes') },
+          view: { options: opts('-b= --branch=', '-w --web', ...json) },
+        },
+      },
+      'ruleset|rs': {
+        effects: ['network'],
+        options: opts('-R= --repo='),
+        subcommands: {
+          check: { options: opts('--default', '-w --web') },
+          'list|ls': { options: opts('-L= --limit=', '-o= --org=', '-p --parents', '-w --web') },
+          view: { options: opts('-o= --org=', '-p --parents', '-w --web') },
+        },
+      },
+      run: {
+        effects: ['network'],
+        options: opts('-R= --repo='),
+        subcommands: {
+          cancel: { options: opts('--force') },
+          delete: {},
+          download: { effects: ['fs:write'], options: opts(o('-D= --dir=', { role: 'write' }), '-n= --name=', '-p= --pattern=') },
+          'list|ls': {
+            options: opts(
+              '-a --all',
+              '-b= --branch=',
+              '-c= --commit=',
+              '--created=',
+              '-e= --event=',
+              '-L= --limit=',
+              '-s= --status=',
+              '-u= --user=',
+              '-w= --workflow=',
+              ...json,
+            ),
+          },
+          rerun: { options: opts('-d --debug', '--failed', '-j= --job=') },
+          view: {
+            options: opts('-a= --attempt=', '--exit-status', '-j= --job=', '--log', '--log-failed', '-v --verbose', '-w --web', ...json),
+          },
+          watch: { options: opts('--compact', '--exit-status', '-i= --interval=') },
+        },
+      },
+      search: {
+        effects: ['network'],
+        subcommands: {
+          code: {
+            options: opts(
+              '--extension=',
+              '--filename=',
+              '--language=',
+              '-L= --limit=',
+              '--match=',
+              '--owner=',
+              '-R= --repo=',
+              '--size=',
+              '-w --web',
+              ...json,
+            ),
+          },
+          commits: {
+            options: opts(
+              '--author=',
+              '--author-date=',
+              '--author-email=',
+              '--author-name=',
+              '--committer=',
+              '--committer-date=',
+              '--committer-email=',
+              '--committer-name=',
+              '--hash=',
+              '-L= --limit=',
+              '--merge',
+              '--order=',
+              '--owner=',
+              '--parent=',
+              '-R= --repo=',
+              '--sort=',
+              '--tree=',
+              '--visibility=',
+              '-w --web',
+              ...json,
+            ),
+          },
+          issues: {
+            options: opts(
+              '--app=',
+              '--archived',
+              '--assignee=',
+              '--author=',
+              '--closed=',
+              '--commenter=',
+              '--comments=',
+              '--created=',
+              '--include-prs',
+              '--interactions=',
+              '--involves=',
+              '--label=',
+              '--language=',
+              '-L= --limit=',
+              '--locked',
+              '--match=',
+              '--mentions=',
+              '--milestone=',
+              '--no-assignee',
+              '--no-label',
+              '--no-milestone',
+              '--no-project',
+              '--order=',
+              '--owner=',
+              '--project=',
+              '--reactions=',
+              '-R= --repo=',
+              '--sort=',
+              '--state=',
+              '--team-mentions=',
+              '--updated=',
+              '--visibility=',
+              '-w --web',
+              ...json,
+            ),
+          },
+          prs: {
+            options: opts(
+              '--app=',
+              '--archived',
+              '--assignee=',
+              '--author=',
+              '-B= --base=',
+              '--checks=',
+              '--closed=',
+              '--commenter=',
+              '--comments=',
+              '--created=',
+              '--draft',
+              '-H= --head=',
+              '--interactions=',
+              '--involves=',
+              '--label=',
+              '--language=',
+              '-L= --limit=',
+              '--locked',
+              '--match=',
+              '--mentions=',
+              '--merged',
+              '--merged-at=',
+              '--milestone=',
+              '--no-assignee',
+              '--no-label',
+              '--no-milestone',
+              '--no-project',
+              '--order=',
+              '--owner=',
+              '--project=',
+              '--reactions=',
+              '-R= --repo=',
+              '--review=',
+              '--review-requested=',
+              '--reviewed-by=',
+              '--sort=',
+              '--state=',
+              '--team-mentions=',
+              '--updated=',
+              '--visibility=',
+              '-w --web',
+              ...json,
+            ),
+          },
+          repos: {
+            options: opts(
+              '--archived',
+              '--created=',
+              '--followers=',
+              '--forks=',
+              '--good-first-issues=',
+              '--help-wanted-issues=',
+              '--include-forks=',
+              '--language=',
+              '--license=',
+              '-L= --limit=',
+              '--match=',
+              '--number-topics=',
+              '--order=',
+              '--owner=',
+              '--size=',
+              '--sort=',
+              '--stars=',
+              '--topic=',
+              '--updated=',
+              '--visibility=',
+              '-w --web',
+              ...json,
+            ),
+          },
+        },
+      },
+      secret: {
+        effects: ['network'],
+        options: opts('-R= --repo='),
+        subcommands: {
+          'delete|remove': { options: opts('-a= --app=', '-e= --env=', '-o= --org=', '-u --user') },
+          'list|ls': { options: opts('-a= --app=', '-e= --env=', '-o= --org=', '-u --user', ...json) },
+          set: {
+            options: opts(
+              '-a= --app=',
+              '-b= --body=',
+              '-e= --env=',
+              o('-f= --env-file=', { role: 'read' }),
+              '--no-repos-selected',
+              '--no-store',
+              '-o= --org=',
+              '-r= --repos=',
+              '-u --user',
+              '-v= --visibility=',
+            ),
+          },
+        },
+      },
+      'skill|skills': {
+        subcommands: {
+          'install|add': {
+            effects: ['network', 'fs:write'],
+            options: opts(
+              '--agent=',
+              '--all',
+              '--allow-hidden-dirs',
+              o('--dir=', { role: 'write' }),
+              '-f --force',
+              '--from-local',
+              '--pin=',
+              '--scope=',
+              '--upstream',
+            ),
+          },
+          'list|ls': { options: opts('--agent=', '--dir=', '--scope=', ...json) },
+          'preview|show': { effects: ['network'], options: opts('--allow-hidden-dirs') },
+          publish: { effects: ['network'], options: opts('--dry-run', '--fix', '--tag=') },
+          search: { effects: ['network'], options: opts('-L= --limit=', '--owner=', '--page=', ...json) },
+          update: { effects: ['network', 'fs:write'], options: opts('--all', '--dir=', '--dry-run', '--force', '--unpin') },
+        },
+      },
+      'ssh-key': {
+        effects: ['network'],
+        subcommands: {
+          add: { positionals: 'read', options: opts('-t= --title=', '--type=') },
+          delete: { options: opts('-y --yes') },
+          'list|ls': {},
+        },
+      },
+      status: { effects: ['network'], options: opts('-e= --exclude=', '-o= --org=') },
+      variable: {
+        effects: ['network'],
+        options: opts('-R= --repo='),
+        subcommands: {
+          'delete|remove': { options: opts('-e= --env=', '-o= --org=') },
+          get: { options: opts('-e= --env=', '-o= --org=', ...json) },
+          'list|ls': { options: opts('-e= --env=', '-o= --org=', ...json) },
+          set: {
+            options: opts(
+              '-b= --body=',
+              '-e= --env=',
+              o('-f= --env-file=', { role: 'read' }),
+              '-o= --org=',
+              '-r= --repos=',
+              '-v= --visibility=',
+            ),
+          },
+        },
+      },
+      version: {},
+      workflow: {
+        effects: ['network'],
+        options: opts('-R= --repo='),
+        subcommands: {
+          disable: {},
+          enable: {},
+          'list|ls': { options: opts('-a --all', '-L= --limit=', ...json) },
+          run: { options: opts('-F= --field=', '--json', '-f= --raw-field=', '-r= --ref='), finish: finishFields },
+          view: { options: opts('-r= --ref=', '-w --web', '-y --yaml') },
+        },
+      },
+    },
+  }),
+  parse: (args, parsed) => readCobra(gh, args, parsed),
+  finish: finishGh,
+};
+
 /** `find`: starting points, then an expression whose actions run commands, delete and write files. */
 const findActions = new Set(['-exec', '-execdir', '-ok', '-okdir']);
 const findTakesOne = new Set(
@@ -775,27 +1905,8 @@ const programs: Record<string, CommandSpec> = {
   ssh: {
     posix: true,
     effects: ['network'],
-    options: opts(
-      ...'-b= -c= -D= -E= -e= -F= -I= -i= -J= -L= -l= -m= -O= -o= -p= -Q= -R= -S= -W= -w= -B='.split(' '),
-      ...'-4 -6 -A -a -C -f -G -g -K -k -M -N -n -q -s -T -t -V -v -X -x -Y -y'.split(' '),
-    ),
-    finish(parsed) {
-      parsed.reads.push(...(parsed.options['-F'] ?? []).filter((value): value is Arg => value !== true));
-      for (const value of parsed.options['-o'] ?? []) {
-        if (value === true) continue;
-        if (value.kind === 'dynamic') {
-          parsed.maybeOptions = true;
-          continue;
-        }
-        const match = /^(?:ProxyCommand|LocalCommand|KnownHostsCommand)(?:\s+|=\s*)(.+)$/i.exec(value.value);
-        if (match) parsed.effects.add('exec:arbitrary');
-      }
-      const command = parsed.positionals.slice(1);
-      if (command.length === 0) return;
-      parsed.effects.add('exec:remote');
-      const dynamic = command.find((arg) => arg.kind === 'dynamic');
-      parsed.scripts.push(dynamic ?? { kind: 'static', value: command.map((arg) => staticValue(arg)).join(' ') });
-    },
+    options: sshOptions,
+    finish: (parsed) => sshRuns(parsed.options, parsed.positionals.slice(1), parsed),
   },
   setsid: { posix: true, command: {}, options: opts('-w --wait', '-f --fork', '-c --ctty') },
   strace: {
@@ -1295,6 +2406,7 @@ const programs: Record<string, CommandSpec> = {
   },
   find,
   git,
+  gh,
   curl: {
     effects: ['network'],
     options: opts(

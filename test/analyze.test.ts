@@ -59,6 +59,34 @@ describe('options', () => {
     expect(invocation.unknownOptions).toEqual(['-a', '-b', '--cd']);
   });
 
+  test('gh finds its subcommand as cobra does: a flag before it takes the next word unless it is a known boolean', () => {
+    for (const source of ['gh -R o/r pr merge 1', 'gh pr -R o/r merge 1', 'gh pr merge --repo=o/r 1']) {
+      const invocation = only(source);
+      expect(invocation.subcommands).toEqual(['pr', 'merge']);
+      expect(values(invocation.options['--repo'] as Arg[])).toEqual(['o/r']);
+      expect(values(invocation.positionals)).toEqual(['1']);
+    }
+    expect(only('gh pr ls').subcommands).toEqual(['pr', 'list']);
+    // `--foo` takes `pr`, so `merge` is the command: an alias or an extension, if anything.
+    const unknown = only('gh --foo pr merge');
+    expect(unknown.subcommands).toEqual([]);
+    expect(unknown.unknownSubcommand).toEqual({ kind: 'static', value: 'merge' });
+    expect(unknown.effects).toContain('exec:arbitrary');
+  });
+
+  test('gh reads files given to it, writes where it downloads, and runs git clone with the flags after --', () => {
+    expect(values(only('gh api repos/o/r -F a=@notes.md -F b=c -F c=@-').reads)).toEqual(['notes.md']);
+    expect(values(only('gh release create v1 a.zip b.zip --notes-file notes.md').reads)).toEqual(['notes.md', 'a.zip', 'b.zip']);
+    expect(values(only('gh release download v1 -D out').writes)).toEqual(['out']);
+    const copy = only('gh codespace cp remote:a b.txt');
+    expect(values(copy.writes)).toEqual(['b.txt']);
+    expect(values(only('gh codespace cp a.txt remote:b').reads)).toEqual(['a.txt']);
+    expect(only('gh codespace cp -- -S prog remote:a b').effects).toContain('exec:arbitrary');
+    const [, git] = analyze('gh repo clone o/r dir -- --depth 1').invocations;
+    expect(values(git!.argv)).toEqual(['git', 'clone', 'dir', '--depth', '1', 'o/r']);
+    expect(git!.via).toEqual(['gh']);
+  });
+
   test('output-file positionals are writes, not reads', () => {
     for (const source of ['uniq input output', 'xxd -r input output']) {
       const invocation = only(source);
@@ -206,6 +234,26 @@ describe('policy', () => {
 
   test('rule options use the spec spelling at the subcommand', () => {
     expect(check('git branch -D x', { rules: [deny('git branch', { options: ['-d'] })], default: 'allow' }).decision).toBe('deny');
+  });
+
+  test('a subcommand only known at run time may be any, at every level under it', () => {
+    expect(check('git $x stash drop', { rules: [deny('git stash drop')], default: 'allow' }).decision).toBe('ask');
+    expect(check('gh $x pr merge', { rules: [deny('gh pr merge')], default: 'allow' }).decision).toBe('ask');
+  });
+
+  test('gh rules match wherever the flags are, as gh reads them', () => {
+    const policy = { rules: [deny('gh pr merge', { options: ['--admin'] })], default: 'allow' as const };
+    for (const source of [
+      'gh pr merge 1 --admin',
+      'gh -R o/r pr merge --admin',
+      'gh pr -R o/r merge --admin',
+      'gh --repo o/r pr --json x merge --admin',
+    ])
+      expect(check(source, policy).decision).toBe('deny');
+    expect(check('gh pr merge 1', policy).decision).toBe('allow');
+    // `pr` has no `--admin`, so it takes `merge` as its value: gh prints usage and merges nothing.
+    expect(check('gh pr --admin merge', policy).decision).toBe('allow');
+    expect(check('GH_PAGER=x gh pr view', { rules: [allow('gh pr view')], default: 'deny' }).decision).toBe('ask');
   });
 
   test('~ is $HOME when it is known, so ~ globs match absolute paths and the other way round', () => {

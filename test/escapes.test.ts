@@ -202,6 +202,16 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['flock lockfile rm -rf /', 'deny', 'flock command wrapper'],
   ['busybox rm -rf /', 'deny', 'busybox applet dispatch'],
 
+  // GitHub CLI.
+  ['gh pr list', 'ask', 'gh calls the API'],
+  ["gh alias set x --shell 'rm -rf /'", 'deny', 'a gh shell alias'],
+  ["gh alias set x '!rm -rf /'", 'deny', 'a gh alias marked as shell code with !'],
+  ["gh config set pager 'rm -rf /'", 'deny', 'gh config naming a command it runs later'],
+  ['gh repo clone o/r -- -c core.pager="rm -rf /"', 'deny', 'git config passed through gh repo clone'],
+  ["gh codespace ssh -- 'rm -rf /'", 'deny', 'gh codespace ssh runs its command in the codespace'],
+  ['gh cs ssh -- -o ProxyCommand=evil', 'ask', 'an ssh option gh passes on runs a local command'],
+  ['gh some-alias', 'ask', 'a gh alias or extension'],
+
   // Writes.
   ['echo hi > out.txt', 'allow', 'writing inside the project'],
   ['echo hi > /etc/passwd', 'ask', 'writing outside the project'],

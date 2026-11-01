@@ -143,6 +143,56 @@ export function normalize(args: Arg[], spec: CommandSpec | undefined): Parsed {
   return parsed;
 }
 
+/**
+ * Reads `args` as a cobra (Go) program does, for a spec's `parse`. The subcommand is the first word that isn't a flag,
+ * and a flag before it takes the next word unless it's a known boolean or has its value after `=`: `gh -R o/r pr merge`
+ * runs `pr merge`, with `-R` its option. The leaf then reads its options anywhere: a level's options must be copied to
+ * the levels under it, as cobra's persistent flags are.
+ */
+export function readCobra(root: CommandSpec, args: Arg[], parsed: Parsed): void {
+  const levels = [root];
+  let current = root;
+  let rest = args;
+  search: while (current.subcommands) {
+    for (let i = 0; i < rest.length; i++) {
+      const arg = rest[i]!;
+      if (arg.kind === 'dynamic') {
+        if (!arg.split && arg.prefix.startsWith('-') && arg.prefix.includes('=')) continue;
+        parsed.unknownSubcommand = arg;
+        break search;
+      }
+      if (arg.value === '--') break search;
+      if (arg.value === '') continue;
+      if (arg.value.startsWith('-')) {
+        if (cobraTakesNext(current, arg.value)) i++;
+        continue;
+      }
+      const found = findSubcommand(current.subcommands, arg.value);
+      if (!found) {
+        parsed.unknownSubcommand = arg;
+        break search;
+      }
+      parsed.subcommands.push(found[0]);
+      current = found[1];
+      levels.push(current);
+      rest = [...rest.slice(0, i), ...rest.slice(i + 1)];
+      continue search;
+    }
+    break;
+  }
+  const leaf = normalize(rest, { ...current, subcommands: undefined, parse: undefined, finish: undefined });
+  for (const level of levels) for (const effect of level.effects ?? []) leaf.effects.add(effect);
+  Object.assign(parsed, leaf, { subcommands: parsed.subcommands });
+  for (const level of levels) level.finish?.(parsed);
+}
+
+/** Whether cobra, looking for a subcommand, skips the word after this flag as its value. */
+function cobraTakesNext(spec: CommandSpec, flag: string): boolean {
+  if (flag.includes('=') || (!flag.startsWith('--') && flag.length !== 2)) return false;
+  const option = findOption(spec, flag);
+  return !option || (option.value === true && (!option.valued || option.valued.includes(flag)));
+}
+
 /** The spec at `subcommands` below `spec`, for reading option names in a policy with the right level's spellings. */
 export function specAt(spec: CommandSpec | undefined, subcommands: string[]): CommandSpec | undefined {
   let current = spec;

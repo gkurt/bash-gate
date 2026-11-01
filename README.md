@@ -42,13 +42,16 @@ analyze('sudo -u root rm -rf "$dir"').invocations.map((i) => [i.shape, i.via, i.
    function body as they were when it was defined. Subshells, pipelines and substitutions get copies of the state.
 4. **Dispatch** as Bash does: alias, then function, then builtin, then program. `command`, `builtin` and `exec` change
    that order. `eval`, `trap`, `mapfile -C`, `compgen -C`, `bash -c`, `ssh host cmd`, `watch`, git aliases, git config
-   commands, prompt strings (`PS4`) and `PROMPT_COMMAND` parse their strings and walk them as code. Once set, a trap
-   action or prompt string may run between any two commands (a signal, a failing command, `set -x`), so it's walked
-   at each of those points with the state there, until `trap -` resets it, and what it changes carries on. Code for
-   other shells (`zsh -c`, `fish -c`, `pwsh`) is never parsed as Bash: it's code the analysis can't see into.
+   commands, gh aliases and config, prompt strings (`PS4`) and `PROMPT_COMMAND` parse their strings and walk them as
+   code. Once set, a trap action or prompt string may run between any two commands (a signal, a failing command,
+   `set -x`), so it's walked at each of those points with the state there, until `trap -` resets it, and what it
+   changes carries on. Code for other shells (`zsh -c`, `fish -c`, `pwsh`) is never parsed as Bash: it's code the
+   analysis can't see into.
 5. **Read argv with a spec** (`src/specs.ts`, `src/argv.ts`): options under canonical names (`-f`, `--forc`, `-fu` →
    `--force`), clusters, attached values, `--`, POSIX vs GNU ordering, subcommands, paths read and written, and the
-   command lines that wrappers run (`sudo`, `env`, `timeout`, `xargs`, `find -exec`, `git bisect run`…).
+   command lines that wrappers run (`sudo`, `env`, `timeout`, `xargs`, `find -exec`, `git bisect run`…). `gh` is read
+   as cobra reads it: a flag before a subcommand takes the next word unless it's a known boolean, so
+   `gh -R o/r pr merge` is `pr merge`, and a first word gh doesn't know is an alias or extension (`exec:arbitrary`).
 6. **Decide** (`src/policy.ts`). Every condition has three outcomes: it matches, it doesn't, or it may (a dynamic word
    could match it). Deny beats ask, and ask beats allow. A deny rule that only may match asks, or denies with
    `strict: true`.
@@ -199,9 +202,9 @@ result.execs; // [{ path: '/usr/bin/ls', argv: ['ls'], via: [], covered: true, r
 bun run checks   # tsc, then bun test
 ```
 
-- `test/escapes.test.ts`: about 130 commands and the decision `recommended` must reach. They cover quoting, braces,
+- `test/escapes.test.ts`: about 200 commands and the decision `recommended` must reach. They cover quoting, braces,
   variables, substitutions in odd places, wrappers, strings run as code, functions, aliases, `hash -p`, loops, prompt
-  strings, `~` paths, other shells, git refspecs and config. A few more run with a filesystem: hooks walked, and
+  strings, `~` paths, other shells, git refspecs and config, gh. A few more run with a filesystem: hooks walked, and
   written before or while git reads them.
 - `test/analyze.test.ts`: word resolution, option parsing, shapes, spans and state; with a filesystem, which reads and
   real paths the script's writes make unknown, needs, and `checkAsync`.

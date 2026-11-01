@@ -35,7 +35,8 @@ Out of scope:
 
 - **What programs do with their input.** `cat` reading a file, a compiler running build scripts, and file-based
   configuration when no `fs` is supplied. With it, repository Git config (and includes), Git hooks, SSH config passed
-  with `-F`, and npm lifecycle scripts are followed. Specs describe other known argument behavior, writes included: a
+  with `-F`, and npm lifecycle scripts are followed. gh's stored aliases and config are never read: a first word gh
+  doesn't know is code unseen (`exec:arbitrary`), and its pager, editor and browser are what they were. Specs describe other known argument behavior, writes included: a
   specified program that writes a file its spec doesn't name can change what a later read sees.
 - **What the filesystem holds.** Globs and which files exist. `$HOME` too, unless the script sets it or the integration
   passes it in `env`. Symlink targets are considered only when `fs` is supplied and the invocation's `cwd` is

@@ -187,18 +187,18 @@ function matchCommand(pattern: string, invocation: Invocation): Tri {
     .split(/\s+/)
     .map((token) => token.split('|'));
   if (!program.includes('*') && !program.includes(invocation.program)) return 0;
-  let result: Tri = 2;
   for (const [k, alternatives] of subcommands.entries()) {
     const actual = invocation.subcommands[k];
     if (actual !== undefined) {
       if (!alternatives.includes('*') && !alternatives.includes(actual)) return 0;
       continue;
     }
+    // A subcommand only known at run time may be any, and so may every level under it.
     const unknown = k === invocation.subcommands.length ? invocation.unknownSubcommand : undefined;
-    if (unknown?.kind === 'dynamic') result = 1;
-    else if (!unknown || !(alternatives.includes('*') || alternatives.includes(unknown.value)) || k < subcommands.length - 1) return 0;
+    if (unknown?.kind === 'dynamic') return 1;
+    if (!unknown || !(alternatives.includes('*') || alternatives.includes(unknown.value)) || k < subcommands.length - 1) return 0;
   }
-  return result;
+  return 2;
 }
 
 /** Any of `names` is given (`all`: every option given is one of `names`). */
