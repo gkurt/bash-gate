@@ -6,7 +6,8 @@ analysis stands on its own: highlighting, auditing, explaining commands.
 
 Prototype. Parsing is [unbash](https://github.com/webpro-nl/unbash); everything else is here. The analysis runs
 anywhere JavaScript does: no Node APIs, no native code. [`bash-gate/trace`](#running-under-the-supervisor) runs the
-command and holds it to the analysis, on Linux.
+command and holds it to the analysis, on Linux. [The site](https://gkurt.com/bash-gate/) runs it live, and
+[the tutorial](https://gkurt.com/bash-gate/tutorial.html) walks through it a lesson at a time.
 
 ```sh
 npm install bash-gate

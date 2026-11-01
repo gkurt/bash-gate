@@ -1,0 +1,11 @@
+{
+  // The site runs the library in the browser: DOM types here, and Vite's for the config.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": ["node", "vite/client"],
+    "resolveJsonModule": true
+  },
+  "include": ["./**/*.ts"],
+  "exclude": ["./dist"]
+}

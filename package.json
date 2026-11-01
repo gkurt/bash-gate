@@ -16,7 +16,7 @@
     "shell",
     "static-analysis"
   ],
-  "homepage": "https://github.com/gkurt/bash-gate",
+  "homepage": "https://gkurt.com/bash-gate/",
   "bugs": {
     "url": "https://github.com/gkurt/bash-gate/issues"
   },
@@ -59,7 +59,9 @@
   },
   "scripts": {
     "build": "tsdown",
-    "typecheck": "tsc && tsc -p src",
+    "dev": "vite site",
+    "site:build": "vite build site",
+    "typecheck": "tsc && tsc -p src && tsc -p site",
     "lint": "oxlint",
     "format": "oxfmt",
     "check": "oxlint && oxfmt --check",
@@ -84,7 +86,8 @@
     "oxlint-tsgolint": "^7.0.2005",
     "tegami": "^1.5.0",
     "tsdown": "^0.23.4",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
   },
   "lint-staged": {
     "*": [

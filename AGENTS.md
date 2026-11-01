@@ -12,6 +12,8 @@ bun run format     # Oxfmt
 bun run fix        # Lint + format + autofix
 bun run checks     # Everything: check + typecheck + test
 bun run build      # dist/ via tsdown (ESM and .d.ts), what npm gets
+bun dev            # The website (site/) in Vite, at localhost:4194
+bun run site:build # site/dist, what GitHub Pages gets
 ```
 
 Prefer these scripts over ad-hoc commands. Do not prefix them with `bun run` when a bare alias exists (`bun check`,
@@ -40,6 +42,9 @@ runs everything on Linux, then builds and loads `dist/` in Node.
   Linux) and checks each exec against the analysis: refused in `enforce` mode, reported in `trace` mode. The only code
   that uses Node APIs, so `src/tsconfig.json` leaves it out.
 - `THREAT_MODEL.md`: the assumptions and promises (S1–S5), and which test checks each.
+- `site/`: the website (Vite, no framework), deployed to GitHub Pages by `pages.yml`. It runs the library in the
+  browser: the home page's playground and the tutorial's lessons (`site/src/tutorial.ts`) are live, and `site/tsconfig.json`
+  adds the DOM types.
 
 ## Rules for changes
 
@@ -71,7 +76,7 @@ runs everything on Linux, then builds and loads `dist/` in Node.
 ## Documentation
 
 When changing user-facing APIs, update all relevant docs in the same change:
-README.md, THREAT_MODEL.md, AGENTS.md. Documentation must not go stale.
+README.md, THREAT_MODEL.md, AGENTS.md, and the site's pages (`site/`). Documentation must not go stale.
 
 Every change that ships in the package needs a Tegami changelog entry (`.tegami/<slug>.md`); see the `changelog`
 skill.

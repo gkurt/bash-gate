@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="A hands-on tour of bash-gate: checks, invocations, dynamic words, shell state, your own policy, paths and filesystems, with the library running live at every step."
+    />
+    <title>Tutorial · bash-gate</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230a0d0b'/%3E%3Cpath d='M3 4l4 4-4 4' stroke='%236ee7a0' stroke-width='2' fill='none'/%3E%3Cpath d='M8 12h5' stroke='%236ee7a0' stroke-width='2'/%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400..800;1,400&display=swap" />
+    <script>
+      try {
+        const t = localStorage.getItem('bash-gate-theme');
+        if (t) document.documentElement.dataset.theme = t;
+      } catch {}
+    </script>
+  </head>
+  <body>
+    <div class="tutorial" id="top">
+      <nav class="toc" aria-labelledby="toc-title">
+        <p id="toc-title">$ ls lessons/</p>
+        <ol></ol>
+      </nav>
+      <main class="lessons">
+        <header>
+          <h1>man bash-gate</h1>
+          <p class="lede">
+            A tour in ten lessons, each with a terminal running the library in your browser. Edit any command, policy or file and the
+            verdict follows. The colours under the command mark which part of it each decision is about.
+          </p>
+        </header>
+
+        <section class="lesson" id="check">
+          <h2><span class="num">01</span>One check</h2>
+          <p>
+            <code>check(source, policy)</code> reads a command line and returns a verdict: <span class="allow">allow</span>,
+            <span class="ask">ask</span> or <span class="deny">deny</span>. Every program the line may run is judged on its own, and the
+            most severe decision wins: deny beats ask, ask beats allow.
+          </p>
+          <pre class="code" data-lang="ts">
+import { check, recommended } from 'bash-gate';
+
+check('git status', recommended).decision; // 'allow'</pre>
+          <p>
+            <code>recommended</code> is the policy the library ships as a starting point: reading and everyday git run, destructive forms
+            are denied, and deleting, the network, privilege and code it can't see ask. Try chaining something onto <code>git status</code>.
+          </p>
+          <div data-lesson="check"></div>
+        </section>
+
+        <section class="lesson" id="invocations">
+          <h2><span class="num">02</span>Everything that runs</h2>
+          <p>
+            Under the verdict is an <code>analyze</code> pass, which you can call on its own. It finds each <em>invocation</em>: every
+            program the line may start, including the ones a wrapper starts for it. <code>sudo</code> runs <code>env</code>, which runs
+            <code>bash -c</code>, whose string is parsed and walked as Bash.
+          </p>
+          <ul>
+            <li><b>shape</b>: the command in canonical form, values elided: <code>rm --force --recursive &lt;arg&gt;</code>.</li>
+            <li><b>via</b>: the wrappers it runs under, outermost first.</li>
+            <li><b>in</b>: how it's reached from the top: <code>$(…)</code>, <code>bash -c</code>, <code>eval</code>, a trap.</li>
+            <li>
+              <b>effects</b>: what running it can do beyond printing: <code>fs:delete</code>, <code>network</code>, <code>privilege</code>…
+            </li>
+          </ul>
+          <div data-lesson="invocations"></div>
+        </section>
+
+        <section class="lesson" id="options">
+          <h2><span class="num">03</span>Options, however they're spelled</h2>
+          <p>
+            Each known program has a spec, read the way the program reads its own argv: clusters (<code>-fr</code>), attached values, unique
+            prefixes of long options, <code>--</code>, and GNU or POSIX ordering. Options come out under one canonical name, so a rule that
+            names <code>--recursive</code> catches <code>-r</code>, <code>-R</code> and <code>-fr</code>.
+          </p>
+          <p>
+            Some meaning isn't in an option at all: a <code>+</code> in a git refspec forces the push, so it's read as <code>--force</code>.
+          </p>
+          <p class="tip">
+            A prefix that fits several options isn't guessed. <code>git push --forc</code> could be any of three
+            <code>--force…</code> options, so it stays an unknown option, as git itself would refuse it.
+          </p>
+          <div data-lesson="options"></div>
+        </section>
+
+        <section class="lesson" id="dynamic">
+          <h2><span class="num">04</span>What only the run knows</h2>
+          <p>
+            A word the analysis can't settle, like a variable it never saw set, is kept as a <em>dynamic</em> argument with a reason. Rules
+            then have three outcomes: they match, they don't, or they <em>may</em>. A deny rule that only may match asks.
+          </p>
+          <p>
+            Set <code>dir</code> first and the word is known. Or set <code>strict: true</code> in the policy below, and a deny rule that may
+            match denies.
+          </p>
+          <div data-lesson="dynamic"></div>
+        </section>
+
+        <section class="lesson" id="state">
+          <h2><span class="num">05</span>Shell state</h2>
+          <p>
+            The walk keeps the state Bash keeps: variables (across branches, and through loops until they settle), functions, aliases,
+            <code>hash -p</code>, <code>enable</code> and the working directory. Then it dispatches as Bash does: alias, function, builtin,
+            program.
+          </p>
+          <p>
+            Aliases expand only where Bash would expand them: with <code>expand_aliases</code>, from the next line on. Try the alias example
+            with the <code>alias</code> and its use on one line.
+          </p>
+          <div data-lesson="state"></div>
+        </section>
+
+        <section class="lesson" id="strings">
+          <h2><span class="num">06</span>Code inside strings</h2>
+          <p>
+            <code>eval</code>, <code>trap</code>, <code>bash -c</code>, <code>ssh host cmd</code>, <code>watch</code>, git aliases and
+            prompt strings like <code>PS4</code> all run a string as code, so the string is parsed and walked too. A trap action may run
+            between any two commands, so it's walked at each of those points.
+          </p>
+          <p>
+            When the string itself is only known at run time, there's nothing to walk: that's a <em>finding</em>, which asks. So is code for
+            another shell: <code>zsh -c</code> is never parsed as Bash.
+          </p>
+          <div data-lesson="strings"></div>
+        </section>
+
+        <section class="lesson" id="rules">
+          <h2><span class="num">07</span>Your own policy</h2>
+          <p>A policy is a list of rules and a <code>default</code> for what no rule decides. Each rule has a decision and conditions:</p>
+          <ul>
+            <li><code>command</code>: the program, then subcommands; alternatives after <code>|</code>, <code>*</code> for any.</li>
+            <li><code>options</code>: deny and ask match if <em>any</em> is given; allow matches only if every option given is listed.</li>
+            <li><code>args</code>, <code>writes</code>: globs over positionals and the files written, redirections included.</li>
+            <li>
+              <code>effects</code>: any of <code>fs:read</code>, <code>fs:write</code>, <code>fs:delete</code>, <code>network</code>,
+              <code>privilege</code>, <code>exec:*</code>, <code>shell-state</code>.
+            </li>
+          </ul>
+          <p>
+            The policy below is plain JavaScript with <code>allow</code>, <code>ask</code>, <code>deny</code> and
+            <code>recommended</code> in scope. <code>head</code> is allowed; try <code>wc</code>, then allow it.
+          </p>
+          <div data-lesson="rules"></div>
+        </section>
+
+        <section class="lesson" id="paths">
+          <h2><span class="num">08</span>Paths, from where it starts</h2>
+          <p>
+            Path globs match each path as written and as resolved against the working directory the walk tracks, so
+            <code>cd .. &amp;&amp; echo hi &gt; notes.txt</code> writes outside, though <code>notes.txt</code> looks local.
+          </p>
+          <p>
+            The optional <code>Environment</code> says where the script starts and what's in its environment. With an absolute
+            <code>cwd</code>, an absolute path inside it counts as inside; with <code>HOME</code> known, <code>~</code> globs match the
+            absolute paths under it. Delete the <code>cwd</code> and see what changes.
+          </p>
+          <div data-lesson="paths"></div>
+        </section>
+
+        <section class="lesson" id="files">
+          <h2><span class="num">09</span>With a filesystem</h2>
+          <p>
+            Hand the analysis a <code>FileSystem</code> (two callbacks: <code>readFile</code> and <code>realpath</code>) and it reads what
+            the command would run: git hooks, git config and its includes, npm scripts, SSH config. Each is walked as code, under the
+            program that runs it.
+          </p>
+          <p>
+            Below is a small repository at <code>/repo</code>. Its pre-commit hook pipes a download into <code>sh</code>. Change it to
+            <code>echo ok</code>, or add <code>[alias]</code> with <code>st = !rm -rf /</code> to the config and run <code>git st</code>.
+          </p>
+          <div data-lesson="files"></div>
+          <p class="tip">
+            Answers are about the filesystem before the command runs. A file the script may write before it's read is unknown, which is why
+            the hooks after a <code>sh</code> that can write anything become unknown too. Where the filesystem is only reachable
+            asynchronously, <code>checkAsync</code> fetches what the analysis <code>needs</code> and goes again.
+          </p>
+        </section>
+
+        <section class="lesson" id="trace">
+          <h2><span class="num">10</span>Under the supervisor</h2>
+          <p>
+            Static analysis can be wrong, so there's a third layer. <code>bash-gate/trace</code> runs the command with every exec in its
+            process tree stopped by a ptrace and seccomp supervisor, and checks each against the analysis. In <code>enforce</code> mode an
+            exec the analysis didn't predict fails with <code>EPERM</code>; in <code>trace</code> mode it runs and is reported, for tests
+            and red teams. It needs x86_64 Linux and a C compiler, so it can't run here.
+          </p>
+          <pre class="code" data-lang="ts">
+import { analyze } from 'bash-gate';
+import { run } from 'bash-gate/trace';
+
+const result = await run('ls; cat secret', { analysis: analyze('ls'), cwd: '/repo' });
+result.stderr; // 'bash: line 1: /usr/bin/cat: Operation not permitted'
+result.execs;
+// [{ path: '/usr/bin/ls', argv: ['ls'], via: [], covered: true, refused: false },
+//  { path: '/usr/bin/cat', …, covered: false, refused: true }]</pre>
+          <p>
+            Pass the analysis you checked, so the run is held to what the policy saw. Where the promises end, and which test checks each, is
+            in the <a href="https://github.com/gkurt/bash-gate/blob/main/THREAT_MODEL.md">threat model</a>.
+          </p>
+          <pre class="code"><span class="dim">$</span> npm install bash-gate</pre>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="/src/tutorial.ts"></script>
+  </body>
+</html>

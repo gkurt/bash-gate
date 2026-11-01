@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Static analysis of Bash commands: every program a command line may run, with its options, paths and effects, and a policy that allows, asks about or denies it."
+    />
+    <title>bash-gate</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230a0d0b'/%3E%3Cpath d='M3 4l4 4-4 4' stroke='%236ee7a0' stroke-width='2' fill='none'/%3E%3Cpath d='M8 12h5' stroke='%236ee7a0' stroke-width='2'/%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400..800;1,400&display=swap" />
+    <script>
+      try {
+        const t = localStorage.getItem('bash-gate-theme');
+        if (t) document.documentElement.dataset.theme = t;
+      } catch {}
+    </script>
+  </head>
+  <body>
+    <main id="top">
+      <header class="hero">
+        <p class="cmd"><span class="path">~/bash-gate</span> <span class="dim">$</span> cat README.md | head -4</p>
+        <h1 aria-label="bash-gate">
+          <pre class="logo" aria-hidden="true">
+┌┐ ┌─┐┌─┐┬ ┬   ┌─┐┌─┐┌┬┐┌─┐
+├┴┐├─┤└─┐├─┤───│ ┬├─┤ │ ├┤
+└─┘┴ ┴└─┘┴ ┴   └─┘┴ ┴ ┴ └─┘</pre>
+        </h1>
+        <p class="tagline">
+          Static analysis of Bash commands: every program a command line may run, with its subcommands, options, paths and effects, and a
+          policy that <span class="allow">allows</span>, <span class="ask">asks about</span> or <span class="deny">denies</span> it.
+        </p>
+        <p class="sub">
+          Built for gating the commands an AI agent runs. No Node APIs, no native code: the analysis below is the library itself, running in
+          your browser.
+        </p>
+        <div class="cta">
+          <button type="button" class="install" data-copy="npm install bash-gate">
+            <span class="dim">$</span> npm install bash-gate <span class="copy-hint" aria-hidden="true"></span>
+          </button>
+          <a class="button" href="tutorial.html">./tutorial <span class="dim">--start</span> →</a>
+        </div>
+      </header>
+
+      <section class="try" aria-labelledby="try-title">
+        <h2 id="try-title" class="visually-hidden">Try it</h2>
+        <div id="hero-playground"></div>
+        <p class="examples" id="hero-examples"><span class="dim">try:</span></p>
+      </section>
+
+      <section aria-labelledby="catches-title">
+        <h2 id="catches-title"><span class="hash">#</span> what it sees through</h2>
+        <p class="lede">Each row is checked live against the <code>recommended</code> policy. Click one to open it above.</p>
+        <div class="listing" id="catches" role="list"></div>
+      </section>
+
+      <section aria-labelledby="how-title">
+        <h2 id="how-title"><span class="hash">#</span> how it works</h2>
+        <ol class="log">
+          <li>
+            <span class="step">[1/6]</span> <b>parse</b>
+            <p>
+              With <a href="https://github.com/webpro-nl/unbash">unbash</a>, pinned. Any parse error, nested ones included, is a finding, so
+              the command can't be allowed.
+            </p>
+          </li>
+          <li>
+            <span class="step">[2/6]</span> <b>resolve words</b>
+            <p>
+              Quotes and escapes removed, braces expanded, known variables substituted, unquoted expansions split. A word is static text, or
+              one dynamic argument that says why it's dynamic and whether it may become several words.
+            </p>
+          </li>
+          <li>
+            <span class="step">[3/6]</span> <b>walk with shell state</b>
+            <p>
+              Variables, functions, aliases, <code>hash -p</code>, <code>enable</code>, <code>cd</code>, exports into child shells. Loops
+              are walked until they settle; subshells, pipelines and substitutions get copies of the state.
+            </p>
+          </li>
+          <li>
+            <span class="step">[4/6]</span> <b>dispatch</b>
+            <p>
+              As Bash does: alias, function, builtin, program. <code>eval</code>, <code>trap</code>, <code>bash -c</code>,
+              <code>ssh host cmd</code>, git aliases and prompt strings are parsed and walked as code.
+            </p>
+          </li>
+          <li>
+            <span class="step">[5/6]</span> <b>read argv with a spec</b>
+            <p>
+              Options under canonical names (<code>-fr</code>, <code>--forc</code> → <code>--force</code>), subcommands, paths read and
+              written, and the command lines wrappers run: <code>sudo</code>, <code>env</code>, <code>xargs</code>, <code>find -exec</code>…
+            </p>
+          </li>
+          <li>
+            <span class="step">[6/6]</span> <b>decide</b>
+            <p>
+              Every condition matches, doesn't, or <em>may</em>: a dynamic word could match it. Deny beats ask, ask beats allow, and a deny
+              rule that only may match asks.
+            </p>
+          </li>
+        </ol>
+      </section>
+
+      <section aria-labelledby="layers-title">
+        <h2 id="layers-title"><span class="hash">#</span> three layers</h2>
+        <div class="layers">
+          <article class="card">
+            <h3><span class="dim">01</span> analyze</h3>
+            <p>What the command runs, without a policy: every invocation with its shape, wrappers, effects, reads and writes.</p>
+            <pre class="code" data-lang="ts">
+analyze('sudo -u root rm -rf "$dir"').invocations
+  .map((i) => [i.shape, i.via, i.effects]);
+// [['sudo --user=&lt;v&gt;', [], ['privilege']],
+//  ['rm --force --recursive &lt;dynamic&gt;', ['sudo'], ['fs:delete']]]</pre>
+          </article>
+          <article class="card">
+            <h3><span class="dim">02</span> check</h3>
+            <p>The analysis under a policy. Hand it a filesystem, and it walks git hooks, git config and npm scripts too.</p>
+            <pre class="code" data-lang="ts">
+check('git push origin +main', recommended).decision;
+// 'deny': a + refspec forces
+check('rg TODO src | head', recommended).decision;
+// 'allow'</pre>
+          </article>
+          <article class="card">
+            <h3><span class="dim">03</span> trace</h3>
+            <p>
+              Static analysis can be wrong. On Linux, run the command under a ptrace supervisor that refuses any exec the analysis didn't
+              predict.
+            </p>
+            <pre class="code" data-lang="ts">
+const result = await run('ls; cat secret',
+  { analysis: analyze('ls'), cwd: '/repo' });
+result.stderr;
+// 'bash: line 1: /usr/bin/cat: Operation not permitted'</pre>
+          </article>
+        </div>
+      </section>
+
+      <section aria-labelledby="rules-title">
+        <h2 id="rules-title"><span class="hash">#</span> your own rules</h2>
+        <p class="lede">
+          A policy is a list of rules and a default. <code>recommended</code> is a starting point; the
+          <a href="tutorial.html#rules">tutorial</a> lets you edit one live.
+        </p>
+        <pre class="code" id="rules-code">
+import { allow, ask, deny, type Policy } from 'bash-gate';
+
+const policy: Policy = {
+  default: 'ask',
+  rules: [
+    allow('git status|log|diff'),
+    deny('git push', { options: ['-f', '--force-with-lease'], reason: 'No force pushes' }),
+    deny('rm', { options: ['-r'], args: ['/', '/*', '~', '~/*'] }),
+    ask({ effects: ['network', 'exec:arbitrary'] }),
+    ask({ writes: ['..', '../**', '~/**'] }),
+  ],
+};</pre>
+      </section>
+    </main>
+    <script type="module" src="/src/home.ts"></script>
+  </body>
+</html>
