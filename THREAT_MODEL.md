@@ -93,7 +93,8 @@ given, as S1 defines it, or fails with EPERM before the program runs. So does on
 threads, whose arguments could change after the check, and one whose arguments can't be read. What a program the
 analysis doesn't follow inside starts (`git`, `make`, a script file) isn't checked: that's its behaviour, out of scope
 above. The supervisor checks execs only: a builtin's write needs none. Under it no exec gains privileges
-(`no_new_privs`), i386 execs kill the process, and so does any x32 system call.
+(`no_new_privs`), no process holds `CAP_SYS_PTRACE` (root included), i386 execs kill the process, and so does any x32
+system call.
 
 ## What is trusted
 
@@ -103,9 +104,13 @@ above. The supervisor checks execs only: a builtin's write needs none. Under it 
 - **The integration.** It must run exactly the string that was analysed, in the shell the assumptions describe, with
   nothing from an earlier command still running. `bash-gate/trace` does that itself, given the analysis that was
   checked.
-- **For S6, the kernel and the supervisor.** ptrace and seccomp stop every `execve` and `execveat` (x86_64 Linux). A
-  process in the tree that writes another's memory (`/proc/<pid>/mem`) can change what an allowed exec runs; only a
-  program the analysis doesn't follow can.
+- **For S6, the kernel and the supervisor.** ptrace and seccomp stop every `execve` and `execveat` (x86_64 Linux). The
+  supervisor reads an exec's arguments before the kernel does, so a process that writes another's memory in between
+  (`/proc/<pid>/mem`, `process_vm_writev`) can change what an allowed exec runs. With Yama's `ptrace_scope` at 1 or
+  more (Ubuntu's default), and no `CAP_SYS_PTRACE` in the tree, a process can write only its descendants' memory.
+  Every process above a checked one is a shell or wrapper the analysis follows, so only a program one of those became
+  with `exec` while checked children of it still run (`ls & exec python3 x`) can. With `ptrace_scope` 0, or without
+  Yama, any program in the tree the analysis doesn't follow can.
 
 ## How each promise is checked
 
@@ -124,5 +129,6 @@ above. The supervisor checks execs only: a builtin's write needs none. Under it 
 | S5      | Deeply nested loops stay cheap and below the budget                                 | `test/analyze.test.ts`     |
 | S5      | Exhaustive `switch`es with a fail-closed `default`                                  | `src/analyze.ts`           |
 | S6      | Execs the analysis didn't predict are refused, from the shell and from wrappers     | `test/trace.test.ts`       |
+| S6      | No process holds `CAP_SYS_PTRACE`, as root too; one can't write its parent's memory | `test/trace.test.ts`       |
 
 Still to come: an LLM red team judged by `trace` mode, and the supervisor on arm64.

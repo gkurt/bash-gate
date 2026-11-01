@@ -196,6 +196,10 @@ result.execs; // [{ path: '/usr/bin/ls', argv: ['ls'], via: [], covered: true, r
   the same check.
 - A finding that hides code (`eval "$x"`, a dynamic command) covers anything, as in S1: the policy asked about it.
 - An exec from a process with several threads is refused: another thread could change its arguments after the check.
+- No process in the tree holds `CAP_SYS_PTRACE`, root included. With Yama's `ptrace_scope` at 1 or more
+  (`/proc/sys/kernel/yama/ptrace_scope`), a process then writes only its descendants' memory, so it can't change the
+  arguments of an exec its parent or a sibling makes. Tools that read other users' processes as root (`lsof`) see
+  less.
 - The supervisor (`src/trace/supervisor.c`) is built with the system's C compiler (`$CC`, else `cc`) into
   `~/.cache/bash-gate` on first use, or ahead of time with `buildSupervisor(directory)` and passed as `supervisor`.
   x86_64 Linux only.
@@ -247,5 +251,7 @@ bun run checks   # tsc, then bun test
   working directory.
 - The walk has a work budget. A script past it gets a `too-deep` finding rather than a full analysis.
 - **The supervisor checks execs, not other effects.** A builtin's write (`echo x > f`) needs no exec, and what a
-  program the analysis doesn't follow starts isn't checked. A process in the tree that writes another's memory
-  (`/proc/<pid>/mem`) can change what an allowed exec runs; only a program the analysis doesn't follow can do that.
+  program the analysis doesn't follow starts isn't checked. A process that writes another's memory
+  (`/proc/<pid>/mem`) can change what an allowed exec runs. With `ptrace_scope` at 1 or more, only a program the shell
+  became with `exec` while checked children of it still run can (`ls & exec python3 x`); at 0, any program in the
+  tree the analysis doesn't follow can.

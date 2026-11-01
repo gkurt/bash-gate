@@ -61,7 +61,7 @@ describe.skipIf(!compatibleBash)('against bash', () => {
     chmodSync(join(bin, name), 0o755);
   }
   // On Windows a process substitution still running holds the directory for a moment (EBUSY).
-  afterAll(() => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  afterAll(() => rmSync(dir, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 }));
 
   /** Runs the script in Bash and returns the argv of every stub that ran. */
   function run(script: string): string[][] {

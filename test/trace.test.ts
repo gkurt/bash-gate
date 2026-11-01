@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as fc from 'fast-check';
@@ -15,6 +15,14 @@ import { scripts } from './scripts.ts';
  */
 const supported = process.platform === 'linux' && process.arch === 'x64' && spawnSync('cc', ['--version']).status === 0;
 const runs = Number(process.env.TRACE_RUNS ?? 50);
+/** Yama's ptrace_scope: from 1, a process may write only its descendants' memory. */
+const ptraceScope = (() => {
+  try {
+    return Number(readFileSync('/proc/sys/kernel/yama/ptrace_scope', 'utf8'));
+  } catch {
+    return 0;
+  }
+})();
 
 describe.skipIf(!supported)('trace', () => {
   const dir = mkdtempSync(join(tmpdir(), 'bash-gate-trace-'));
@@ -103,6 +111,21 @@ describe.skipIf(!supported)('trace', () => {
     const result = await run(script, options());
     expect(result.code).toBe(0);
     expect(readdirSync(work).sort()).toEqual(['nohup', 'setsid']);
+  });
+
+  test('no process in the tree holds CAP_SYS_PTRACE, root included', async () => {
+    const result = await run('cat /proc/self/status', options());
+    const sets = new Map([...result.stdout.matchAll(/^(Cap\w+):\s*([0-9a-f]+)$/gm)].map(([, name, bits]) => [name!, BigInt(`0x${bits}`)]));
+    const ptrace = 1n << 19n;
+    // Only a process with CAP_SETPCAP can drop it from the bounding set; no_new_privs keeps anyone else from gaining it.
+    const names = ['CapInh', 'CapPrm', 'CapEff', 'CapAmb', ...(process.getuid?.() === 0 ? ['CapBnd'] : [])];
+    for (const name of names) expect([name, sets.get(name)! & ptrace]).toEqual([name, 0n]);
+  });
+
+  test.skipIf(ptraceScope < 1)("a process can't write its parent's memory", async () => {
+    // Not the last command, so Bash forks for it and `$$` is its parent.
+    const result = await run('dd if=/dev/null of=/proc/$$/mem conv=notrunc; :', options({ mode: 'trace' }));
+    expect(result.stderr).toContain('Permission denied');
   });
 
   test('a wrapper starting what the analysis did not predict is refused', async () => {

@@ -21,6 +21,8 @@ jobs:
           PROPERTY_RUNS: 5000
           BASH_RUNS: 1000
           TRACE_RUNS: 500
+      # Layer 3 as root too: the supervisor must take CAP_SYS_PTRACE from the tree, which a user never has.
+      - run: sudo "$(command -v bun)" test test/trace.test.ts
       - run: bun typecheck
       - run: bun run build
       # The built package, as Node loads it.

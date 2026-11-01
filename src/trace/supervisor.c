@@ -21,6 +21,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <linux/audit.h>
+#include <linux/capability.h>
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 #include <signal.h>
@@ -116,6 +117,26 @@ static int install_filter(void) {
   struct sock_fprog program = {.len = sizeof filter / sizeof filter[0], .filter = filter};
   if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) return -1;
   return prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program);
+}
+
+/*
+ * Takes CAP_SYS_PTRACE from the tree, root included; no_new_privs keeps it from coming back. Without it, Yama's
+ * ptrace_scope 1 lets a process write only its descendants' memory (/proc/<pid>/mem, process_vm_writev), so a process
+ * can't change the arguments of an exec its parent or sibling makes after the check.
+ */
+static int drop_ptrace(void) {
+  /* Without CAP_SETPCAP the bounding set can't change (EPERM): then no_new_privs alone keeps it from coming back. */
+  if (prctl(PR_CAPBSET_DROP, CAP_SYS_PTRACE, 0, 0, 0) != 0 && errno != EPERM && errno != EINVAL) return -1;
+  struct __user_cap_header_struct header = {.version = _LINUX_CAPABILITY_VERSION_3};
+  struct __user_cap_data_struct data[_LINUX_CAPABILITY_U32S_3];
+  if (syscall(SYS_capget, &header, data) != 0) return -1;
+  unsigned int mask = CAP_TO_MASK(CAP_SYS_PTRACE);
+  struct __user_cap_data_struct *word = &data[CAP_TO_INDEX(CAP_SYS_PTRACE)];
+  /* Inheritable too: ambient capabilities can't outlive it. */
+  word->effective &= ~mask;
+  word->permitted &= ~mask;
+  word->inheritable &= ~mask;
+  return (int)syscall(SYS_capset, &header, data);
 }
 
 /* Reads a NUL-terminated string from the tracee into `buffer`; its length, or -1. */
@@ -253,7 +274,7 @@ int main(int argc, char **argv) {
   if (root == 0) {
     if (ptrace(PTRACE_TRACEME, 0, 0, 0) != 0) _exit(126);
     raise(SIGSTOP);
-    if (install_filter() != 0) _exit(126);
+    if (drop_ptrace() != 0 || install_filter() != 0) _exit(126);
     execvp(argv[2], argv + 2);
     _exit(127);
   }
