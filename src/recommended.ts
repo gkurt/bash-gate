@@ -14,7 +14,7 @@ export const recommended: Policy = {
     // Wrappers: what they run is judged on its own. Aliases are followed, so defining them is harmless.
     allow('env|xargs|timeout|nice|nohup|time|stdbuf|watch|alias|unalias|shopt'),
     allow(
-      'git status|log|show|diff|blame|describe|rev-parse|rev-list|ls-files|ls-tree|show-ref|cat-file|shortlog|reflog|grep|merge-base|help|version',
+      'git status|log|show|diff|blame|annotate|describe|rev-parse|rev-list|ls-files|ls-tree|ls-remote|show-ref|cat-file|shortlog|reflog|whatchanged|grep|merge-base|name-rev|count-objects|var|check-ignore|check-attr|for-each-ref|help|version',
     ),
     allow('git add|commit|switch|checkout|restore|stash|merge|rebase|cherry-pick|revert|branch|tag|mv|rm|fetch|pull|push|remote|config'),
     deny('git push', {

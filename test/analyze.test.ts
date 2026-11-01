@@ -74,6 +74,21 @@ describe('options', () => {
     expect(unknown.effects).toContain('exec:arbitrary');
   });
 
+  test('each subcommand is named as itself, and an alias as its subcommand', () => {
+    for (const [source, subcommands] of [
+      ['git revert HEAD', ['revert']],
+      ['git annotate f', ['annotate']],
+      ['git stash clear', ['stash', 'clear']],
+      ['git stash save x', ['stash', 'save']],
+      ['git remote rm o', ['remote', 'remove']],
+      ['npm unpublish x', ['unpublish']],
+      ['npm clean-install', ['ci']],
+      ['npm tst', ['test']],
+      ['npm add x', ['install']],
+    ] satisfies [string, string[]][])
+      expect([source, only(source).subcommands]).toEqual([source, subcommands]);
+  });
+
   test('gh reads files given to it, writes where it downloads, and runs git clone with the flags after --', () => {
     expect(values(only('gh api repos/o/r -F a=@notes.md -F b=c -F c=@-').reads)).toEqual(['notes.md']);
     expect(values(only('gh release create v1 a.zip b.zip --notes-file notes.md').reads)).toEqual(['notes.md', 'a.zip', 'b.zip']);
@@ -191,6 +206,21 @@ describe('invocations', () => {
     const ssh = analyze('ssh -F ssh.conf host', { cwd: '/repo', fs });
     expect(ssh.invocations.some((invocation) => invocation.program === 'cat' && values(invocation.argv).includes('match'))).toBe(true);
   });
+
+  test('npm runs the scripts of its verb under any alias, and restart may run stop and start', () => {
+    const scripts = { pretest: 'cat before', test: 'cat test', stop: 'cat stop', start: 'cat start' };
+    const fs = {
+      readFile: (path: string) => (path === '/repo/package.json' ? JSON.stringify({ scripts }) : null),
+      realpath: (path: string) => path,
+    };
+    const cats = (source: string) =>
+      analyze(source, { cwd: '/repo', fs })
+        .invocations.filter((invocation) => invocation.program === 'cat')
+        .map((invocation) => values(invocation.argv)[1]);
+    for (const source of ['npm test', 'npm tst', 'npm run test', 'npm rum test', 'npm run-script test'])
+      expect([source, cats(source)]).toEqual([source, ['before', 'test']]);
+    expect(cats('npm restart')).toEqual(['stop', 'start']);
+  });
 });
 
 describe('arithmetic', () => {
@@ -239,6 +269,14 @@ describe('policy', () => {
   test('a subcommand only known at run time may be any, at every level under it', () => {
     expect(check('git $x stash drop', { rules: [deny('git stash drop')], default: 'allow' }).decision).toBe('ask');
     expect(check('gh $x pr merge', { rules: [deny('gh pr merge')], default: 'allow' }).decision).toBe('ask');
+  });
+
+  test('a rule names one subcommand, not the others read alike', () => {
+    const policy = { rules: [deny('git revert'), deny('npm unpublish')], default: 'allow' as const };
+    expect(check('git revert HEAD', policy).decision).toBe('deny');
+    expect(check('npm unpublish x', policy).decision).toBe('deny');
+    expect(check('git cherry-pick x', policy).decision).toBe('allow');
+    expect(check('npm publish', policy).decision).toBe('allow');
   });
 
   test('gh rules match wherever the flags are, as gh reads them', () => {
@@ -368,7 +406,13 @@ describe('filesystem', () => {
     };
     const fs = { readFile: (path: string) => project[path] ?? null, realpath: (path: string) => path };
     const changed = (source: string) => analyze(source, { cwd: '/repo', fs }).findings.some((finding) => finding.kind === 'unknown-file');
-    for (const source of ['git checkout main && git commit -m x', 'git reset --hard && npm test', 'git stash pop && npm test'])
+    for (const source of [
+      'git checkout main && git commit -m x',
+      'git reset --hard && npm test',
+      'git stash pop && npm test',
+      'git stash apply && npm test',
+      'git revert HEAD && npm test',
+    ])
       expect([source, changed(source)]).toEqual([source, true]);
     for (const source of ['git commit -m x && npm test', 'git stash list && npm test', 'npm test && git commit -m x'])
       expect([source, changed(source)]).toEqual([source, false]);

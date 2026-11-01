@@ -212,6 +212,10 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['gh cs ssh -- -o ProxyCommand=evil', 'ask', 'an ssh option gh passes on runs a local command'],
   ['gh some-alias', 'ask', 'a gh alias or extension'],
 
+  // Subcommands read alike are each themselves.
+  ['git stash clear', 'ask', 'git stash clear deletes stashed work'],
+  ['git ls-remote origin', 'ask', 'git ls-remote reaches the network'],
+
   // Writes.
   ['echo hi > out.txt', 'allow', 'writing inside the project'],
   ['echo hi > /etc/passwd', 'ask', 'writing outside the project'],

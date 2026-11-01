@@ -29,6 +29,14 @@ function opts(...specs: (string | OptionSpec)[]): OptionSpec[] {
   return specs.map((spec) => (typeof spec === 'string' ? o(spec) : spec));
 }
 
+/**
+ * Subcommands read alike, space-separated, each its own entry so a policy names it as itself (`git revert`, not
+ * `git cherry-pick`). `|` joins aliases of one subcommand: `ls|list`.
+ */
+function each(names: string, spec: CommandSpec): Record<string, CommandSpec> {
+  return Object.fromEntries(names.split(' ').map((name) => [name, spec]));
+}
+
 const staticValue = (arg: Arg | undefined) => (arg?.kind === 'static' ? arg.value : undefined);
 
 /** A shell: `-c` runs its first positional as code, a positional alone runs that file, nothing at all runs stdin. */
@@ -210,8 +218,11 @@ const git: CommandSpec = {
         o('--output=', { role: 'write' }),
       ),
     },
-    'blame|annotate|shortlog|reflog|describe|rev-parse|rev-list|ls-files|ls-tree|ls-remote|show-ref|cat-file|whatchanged|merge-base|name-rev|count-objects|var|check-ignore|check-attr|for-each-ref|help|version':
+    ...each(
+      'blame annotate shortlog reflog describe rev-parse rev-list ls-files ls-tree show-ref cat-file whatchanged merge-base name-rev count-objects var check-ignore check-attr for-each-ref help version',
       { abbreviations: true },
+    ),
+    'ls-remote': { abbreviations: true, effects: ['network'] },
     grep: { abbreviations: true, options: opts('-e=', '-f=', o('-O --open-files-in-pager=?', { effects: ['exec:arbitrary'] })) },
     'add|stage': {
       abbreviations: true,
@@ -418,32 +429,31 @@ const git: CommandSpec = {
         '--update-refs',
       ),
     },
-    'cherry-pick|revert': {
+    ...each('cherry-pick revert', {
       abbreviations: true,
       effects: hooks,
       options: opts('-n --no-commit', '-e --edit', '-m= --mainline=', '--continue', '--abort', '-x'),
-    },
+    }),
     stash: {
       abbreviations: true,
       effects: ['fs:write'],
       subcommands: {
-        'push|save': {
+        ...each('push save', {
           abbreviations: true,
           effects: ['fs:write'],
           options: opts('-m= --message=', '-u --include-untracked', '-a --all', '-k --keep-index', '-p --patch'),
-        },
-        'pop|apply': { effects: ['fs:write'] },
-        'drop|clear': { effects: ['fs:delete'] },
-        'list|show': {},
-        branch: { effects: ['fs:write'] },
+        }),
+        ...each('pop apply branch', { effects: ['fs:write'] }),
+        ...each('drop clear', { effects: ['fs:delete'] }),
+        ...each('list show', {}),
       },
     },
     remote: {
       options: opts('-v --verbose'),
       subcommands: {
-        'add|remove|rm|rename|set-url|set-head|set-branches': { effects: ['fs:write'] },
+        ...each('add remove|rm rename set-url set-head set-branches', { effects: ['fs:write'] }),
         'get-url': {},
-        'show|prune|update': { effects: ['network'] },
+        ...each('show prune update', { effects: ['network'] }),
       },
     },
     config: {
@@ -477,7 +487,7 @@ const git: CommandSpec = {
       options: opts('-r', '-f --force', '--cached', '-n --dry-run', '-q --quiet'),
     },
     mv: { abbreviations: true, effects: ['fs:write'], options: opts('-f --force', '-k', '-n --dry-run', '-v --verbose') },
-    'apply|am': { abbreviations: true, effects: hooks },
+    ...each('apply am', { abbreviations: true, effects: hooks }),
     submodule: { effects: ['network', ...hooks] },
     worktree: { effects: ['fs:write'] },
     init: {
@@ -487,13 +497,16 @@ const git: CommandSpec = {
     },
     bisect: {
       effects: ['fs:write'],
-      subcommands: { run: { command: {} }, 'start|bad|good|new|old|skip|reset|log|replay|visualize|view|terms': { effects: ['fs:write'] } },
+      subcommands: {
+        run: { command: {} },
+        ...each('start bad good new old skip reset log replay visualize|view terms', { effects: ['fs:write'] }),
+      },
     },
-    'difftool|mergetool': {
+    ...each('difftool mergetool', {
       abbreviations: true,
       effects: ['exec:project'],
       options: opts(o('-x= --extcmd=', { role: 'script' }), '-t= --tool=', '-y --no-prompt', '-g --gui'),
-    },
+    }),
     'filter-branch': {
       effects: ['fs:write'],
       options: [
@@ -520,7 +533,9 @@ const git: CommandSpec = {
       ),
     },
     'format-patch': { abbreviations: true, effects: ['fs:write'], options: opts(o('-o= --output-directory=', { role: 'write' })) },
-    'gc|prune|repack|fsck|maintenance|notes|update-ref|update-index|symbolic-ref|replace|sparse-checkout|lfs': { effects: ['fs:write'] },
+    ...each('gc prune repack fsck maintenance notes update-ref update-index symbolic-ref replace sparse-checkout lfs', {
+      effects: ['fs:write'],
+    }),
   },
 };
 
@@ -2072,14 +2087,18 @@ const programs: Record<string, CommandSpec> = {
   npm: {
     options: opts(o('--prefix= -C', { role: 'cwd' }), '-w= --workspace=', '-g --global', '-s --silent', '-y --yes'),
     subcommands: {
-      'run|run-script|rum|urn|test|t|tst|start|stop|restart': { effects: ['exec:project'] },
-      'install|i|in|ins|inst|insta|instal|isnt|isnta|isntal|isntall|add|ci|clean-install|ic|install-clean|isntall-clean|update|up|upgrade|rebuild|rb':
+      ...each('run|run-script|rum|urn test|t|tst start stop restart', { effects: ['exec:project'] }),
+      ...each(
+        'install|i|in|ins|inst|insta|instal|isnt|isnta|isntal|isntall|add ci|clean-install|ic|install-clean|isntall-clean update|up|upgrade|udpate rebuild|rb',
         { effects: ['network', 'fs:write', 'exec:project'] },
-      'exec|x|init|create|innit': { effects: ['network', 'exec:arbitrary'] },
+      ),
+      ...each('exec|x init|create|innit', { effects: ['network', 'exec:arbitrary'] }),
       'uninstall|unlink|remove|rm|r|un': { effects: ['fs:write'] },
-      'publish|unpublish|deprecate|dist-tag|owner|access|team|login|logout|adduser': { effects: ['network'] },
-      'audit|outdated|view|info|show|v|search': { effects: ['network'] },
-      'ls|list|la|ll|config|get|set|pkg|prefix|root|bin|help|version|explain|why|doctor': {},
+      ...each('publish unpublish deprecate dist-tag|dist-tags owner|author access team login logout adduser|add-user', {
+        effects: ['network'],
+      }),
+      ...each('audit outdated view|info|show|v search|find|s|se', { effects: ['network'] }),
+      ...each('ls|list ll|la config|c get set pkg prefix root bin help|hlep version|verison explain|why doctor', {}),
     },
   },
   npx: {

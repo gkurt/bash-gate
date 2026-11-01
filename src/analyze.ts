@@ -216,7 +216,7 @@ function writeKind(program: string): 'none' | 'contents' | 'links' {
 
 /** Git subcommands (by canonical name) that may rewrite files in the work tree. */
 const gitWritesTree =
-  /^(checkout|switch|restore|reset|merge|rebase|cherry-pick|pull|apply|mv|clean|submodule|filter-branch|gc|bisect( \S+)?|stash( (push|pop|branch))?)$/;
+  /^(checkout|switch|restore|reset|merge|rebase|cherry-pick|revert|pull|apply|am|mv|clean|submodule|filter-branch|gc|sparse-checkout|lfs|bisect( \S+)?|stash( (push|save|pop|apply|branch))?)$/;
 
 /**
  * Whether a program may write files the analysis can't name: one without a spec, one running code that isn't followed,
@@ -1157,7 +1157,7 @@ class Walker {
       for (const config of parsed.configs) this.gitConfigEntry(config, state, ctx, call);
       followed = this.gitProject(cwd, parsed, state, ctx, call);
     } else if (program === 'npm') {
-      followed = this.npmScripts(cwd, argv, parsed, state, ctx, call);
+      followed = this.npmScripts(cwd, parsed, state, ctx, call);
     } else if (program === 'ssh') {
       for (const value of parsed.options['-o'] ?? []) {
         if (value === true || value.kind === 'dynamic') {
@@ -1311,9 +1311,9 @@ class Walker {
       rebase: ['pre-rebase', 'post-rewrite'],
       'cherry-pick': ['pre-commit', 'prepare-commit-msg', 'post-commit'],
       revert: ['pre-commit', 'prepare-commit-msg', 'post-commit'],
-      'apply|am': ['applypatch-msg', 'pre-applypatch', 'post-applypatch'],
+      am: ['applypatch-msg', 'pre-applypatch', 'post-applypatch'],
     };
-    const names = hooks[subcommand] ?? (subcommand === 'apply' || subcommand === 'am' ? hooks['apply|am'] : undefined);
+    const names = hooks[subcommand];
     if (!names) return true;
     const directory = hooksPath ? (resolvePath(repoRoot, hooksPath) ?? hooksPath) : `${commonDir ?? gitDir}/hooks`;
     for (const name of names) {
@@ -1326,7 +1326,7 @@ class Walker {
   }
 
   /** The package.json scripts `npm run` and the like run: `false` when they weren't followed. */
-  npmScripts(cwd: string | undefined, argv: Arg[], parsed: Parsed, state: State, ctx: Context, call: Call): boolean {
+  npmScripts(cwd: string | undefined, parsed: Parsed, state: State, ctx: Context, call: Call): boolean {
     if (!this.files || !cwd) return false;
     const manifest = this.read(`${cwd}/package.json`, ctx, call);
     if (manifest === undefined) return false;
@@ -1350,31 +1350,20 @@ class Walker {
       return false;
     }
 
-    if (parsed.subcommands[0] !== 'run') return false;
-    const verbs = new Set(['run', 'run-script', 'test', 't', 'start', 'stop', 'restart']);
-    let verb: string | undefined;
-    for (let i = 1; i < argv.length; i++) {
-      const arg = argv[i]!;
-      if (arg.kind !== 'static') continue;
-      if (['--prefix', '-C', '-w', '--workspace'].includes(arg.value)) {
-        i++;
-        continue;
-      }
-      if (arg.value.startsWith('-')) continue;
-      if (verbs.has(arg.value)) verb = arg.value;
-      break;
-    }
-    const name =
-      verb === 'run' || verb === 'run-script'
-        ? parsed.positionals[0]?.kind === 'static'
-          ? parsed.positionals[0].value
-          : undefined
-        : verb === 't'
-          ? 'test'
-          : verb;
-    if (!name) return false;
+    const verb = parsed.subcommands[0];
+    const name = verb === 'run' ? parsed.positionals[0] : undefined;
+    if (name?.kind === 'dynamic') return false;
+    // Without a restart script, `npm restart` runs stop and start: each of them may.
+    const names = name
+      ? [name.value]
+      : verb === 'restart'
+        ? ['restart', 'stop', 'start']
+        : verb === 'test' || verb === 'start' || verb === 'stop'
+          ? [verb]
+          : [];
+    if (names.length === 0) return false;
     const scripts = packageJson.scripts as Record<string, unknown>;
-    for (const scriptName of [`pre${name}`, name, `post${name}`]) {
+    for (const scriptName of names.flatMap((name) => [`pre${name}`, name, `post${name}`])) {
       const script = scripts[scriptName];
       if (typeof script !== 'string') {
         if (script !== undefined) this.finding(ctx, 'exec-config', `npm script ${scriptName} is not a string`, call.span);
