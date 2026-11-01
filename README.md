@@ -194,7 +194,8 @@ result.execs; // [{ path: '/usr/bin/ls', argv: ['ls'], via: [], covered: true, r
   inside (`git`, `make`, `npm`, `python3`, a script file) runs its own children unchecked (`via: null`): what it does
   is its behaviour, judged by the policy when it was asked about. `covers(analysis, argv, via)` in the main entry is
   the same check.
-- A finding that hides code (`eval "$x"`, a dynamic command) covers anything, as in S1: the policy asked about it.
+- A finding that hides code (`eval "$x"`, a dynamic command, an alias whose text is only known at run time) covers
+  anything, as in S1: the policy asked about it.
 - While an exec is checked, every other process and thread in the tree is stopped, until the kernel has copied its
   arguments or failed it: nothing in the tree can change what it runs after the check. A clone with `CLONE_UNTRACED`,
   whose child nothing would stop or wait for, fails with EPERM.
@@ -222,8 +223,9 @@ bun run checks   # tsc, then bun test
   hide values, checked under strict and non-strict policies. Set `METAMORPHIC_RUNS` to change the number of cases.
 - `test/bash.test.ts`: runs scripts (the hand-written ones are in `test/scripts.ts`, the generator in `test/generated.ts`) in real Bash with a `PATH` of
   logging stubs. Every program that ran must be one
-  the analysis predicted, with those arguments. This is the check that keeps the analysis honest. Extend it before
-  trusting a new construct. Besides the hand-written scripts, it generates scripts that mix variables, functions,
+  the analysis predicted, with those arguments, or one a finding hides (the `hiding` scripts and generated ones).
+  This is the check that keeps the analysis honest. Extend it before trusting a new construct. Besides the
+  hand-written scripts, it generates scripts that mix variables, functions,
   aliases, `hash -p`, loops, substitutions, `eval`, `bash -c` and traps over a few shared names. Set `BASH_RUNS` to
   change the number of generated scripts.
 - `test/trace.test.ts`: on x86_64 Linux with a C compiler, the hand-written and generated scripts again, with real

@@ -17,7 +17,7 @@ import { delimiter, join } from 'node:path';
 import * as fc from 'fast-check';
 import { analyze, covers } from '#src/index.ts';
 import { generatedScript } from './generated.ts';
-import { scripts } from './scripts.ts';
+import { hiding, scripts } from './scripts.ts';
 
 /**
  * The analysis against real Bash: each script runs with a `PATH` of stubs that only log their arguments, and every
@@ -105,6 +105,14 @@ describe.skipIf(!compatibleBash)('against bash', () => {
       const ran = run(script);
       expect(ran.length).toBeGreaterThan(0);
       expect(missed(script, ran, false)).toEqual([]);
+    });
+  }
+
+  for (const script of hiding) {
+    test(`hiding ${JSON.stringify(script)}`, () => {
+      const ran = run(script);
+      expect(ran.length).toBeGreaterThan(0);
+      expect(missed(script, ran, true)).toEqual([]);
     });
   }
 

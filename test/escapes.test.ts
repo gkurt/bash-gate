@@ -127,6 +127,7 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ],
   ["shopt -s expand_aliases\nalias s='sudo '\nalias l='rm -rf /'\ns l", 'deny', 'an alias ending in a blank expands the next word too'],
   ["shopt -s expand_aliases\nalias e='echo '\nalias q='; rm -rf /'\ne q", 'deny', 'a next-word alias that adds a command'],
+  ['shopt -s expand_aliases\nread -r v <<< x\nalias q="$v"\nq', 'ask', 'an alias whose text is only known at run time'],
   ['shopt -s expand_aliases\neval $\'alias ls="rm -rf /"\\nls\'', 'deny', 'eval parses its string a line at a time'],
   ['sh -c \'alias ls="rm -rf /"\nls\'', 'deny', 'sh expands aliases without being asked'],
   ['bash -O expand_aliases -c \'alias ls="rm -rf /"\nls\'', 'deny', 'bash -O expand_aliases'],

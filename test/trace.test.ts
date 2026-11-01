@@ -7,7 +7,7 @@ import * as fc from 'fast-check';
 import { analyze } from '#src/index.ts';
 import { buildSupervisor, run, type RunOptions } from '#src/trace/index.ts';
 import { generatedScript } from './generated.ts';
-import { scripts } from './scripts.ts';
+import { hiding, scripts } from './scripts.ts';
 
 /**
  * Layer 3 against the kernel: every exec in the process tree is seen, not only programs on a stub `PATH`, so this is
@@ -42,7 +42,7 @@ describe.skipIf(!supported)('trace', () => {
     return run(script, options({ mode: 'trace', env: { PATH: '/usr/bin:/bin', FUNCNEST: funcnest } }));
   };
 
-  for (const script of scripts) {
+  for (const script of [...scripts, ...hiding]) {
     test(`covers ${JSON.stringify(script)}`, async () => {
       const result = await traced(script);
       expect(result.timedOut).toBe(false);

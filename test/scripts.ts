@@ -69,3 +69,6 @@ export const scripts = [
   'f() { cat body; }; $unset f; $unset ls x',
   'x=a; local x=b; cat $x; f() { local x=c; cat $x; }; f; cat $x',
 ];
+
+/** Scripts that run what the analysis can't see, behind a finding: the finding must account for it. */
+export const hiding = ['shopt -s expand_aliases\nread -r v <<< \'env cat a; ls b\'\nalias q="$v"\nq c'];

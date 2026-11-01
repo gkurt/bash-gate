@@ -1,9 +1,17 @@
 import type { Analysis, Arg, FindingKind, Invocation } from './types.ts';
 
 /** Findings that leave code unseen, such as a script only known at run time: any process is accounted for. */
-const unseen = new Set<FindingKind>(['parse-error', 'too-deep', 'unknown-syntax', 'dynamic-script', 'exec-config', 'dynamic-command']);
+const unseen = new Set<FindingKind>([
+  'parse-error',
+  'too-deep',
+  'unknown-syntax',
+  'dynamic-script',
+  'exec-config',
+  'dynamic-command',
+  'unknown-alias',
+]);
 /** Findings that leave one call's program unknown: that invocation may be any program. */
-const unsure = new Set<FindingKind>(['loads-code', 'unknown-alias']);
+const unsure = new Set<FindingKind>(['loads-code']);
 const shells = new Set(['bash', 'sh']);
 
 /** The wrappers an invocation runs under, outermost first, without the shells between them. */
