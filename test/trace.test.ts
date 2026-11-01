@@ -15,6 +15,7 @@ import { scripts } from './scripts.ts';
  */
 const supported = process.platform === 'linux' && process.arch === 'x64' && spawnSync('cc', ['--version']).status === 0;
 const runs = Number(process.env.TRACE_RUNS ?? 50);
+const python = supported && spawnSync('python3', ['--version']).status === 0;
 /** Yama's ptrace_scope: from 1, a process may write only its descendants' memory. */
 const ptraceScope = (() => {
   try {
@@ -126,6 +127,64 @@ describe.skipIf(!supported)('trace', () => {
     // Not the last command, so Bash forks for it and `$$` is its parent.
     const result = await run('dd if=/dev/null of=/proc/$$/mem conv=notrunc; :', options({ mode: 'trace' }));
     expect(result.stderr).toContain('Permission denied');
+  });
+
+  test.skipIf(!python)("an exec's arguments can't change after the check", async () => {
+    fresh();
+    // Python, which the shell became, flips the path each child of its subshell is about to exec from true to date and
+    // back, as fast as it can. Without the tree stopped, the check sometimes reads true and the kernel date.
+    writeFileSync(
+      join(work, 'flip.py'),
+      `import os
+me = os.getpid()
+def children(pid):
+    try: return [int(c) for c in open(f'/proc/{pid}/task/{pid}/children').read().split()]
+    except OSError: return []
+while not children(me): pass
+sub = children(me)[0]
+seen = set()
+while os.waitpid(sub, os.WNOHANG) == (0, 0):
+    for pid in set(children(sub)) - seen:
+        seen.add(pid)
+        try:
+            mem = os.open(f'/proc/{pid}/mem', os.O_RDWR)
+            while (call := open(f'/proc/{pid}/syscall').read().split())[0] != '59': pass
+            path = int(call[1], 16)
+            if os.pread(mem, 14, path) == b'/usr/bin/true\\0':
+                for _ in range(20000):
+                    os.pwrite(mem, b'date', path + 9)
+                    os.pwrite(mem, b'true', path + 9)
+            os.close(mem)
+        except (OSError, IndexError):
+            pass
+`,
+    );
+    const script = '(sleep 0.3; for i in $(seq 30); do /usr/bin/true; sleep 0.02; done) & exec python3 flip.py';
+    const result = await run(script, options({ timeout: 30_000 }));
+    expect(result.timedOut).toBe(false);
+    expect(result.execs.filter((exec) => exec.path === '/usr/bin/true' && !exec.refused).length).toBeGreaterThan(0);
+    // What date would print. A date the check read was refused.
+    expect(result.stdout).toBe('');
+  });
+
+  test.skipIf(!python)('a process started with CLONE_UNTRACED, which nothing would stop or wait for, is refused', async () => {
+    const clone = 'import ctypes, os; pid = ctypes.CDLL(None, use_errno=True).syscall(56, 0x00800000 | 17, 0, 0, 0, 0)';
+    const result = await run(`python3 -c '${clone}; print(os.strerror(ctypes.get_errno()) if pid < 0 else pid)'`, options());
+    expect(result.stdout).toBe('Operation not permitted\n');
+  });
+
+  test.skipIf(!python)('threads, vfork and an exec from a thread still run', async () => {
+    const code = [
+      'import os, subprocess, threading',
+      't = threading.Thread(target=print, args=("thread",))',
+      't.start()',
+      't.join()',
+      'print(subprocess.run(["echo", "vfork"], capture_output=True, text=True).stdout, end="")',
+      'threading.Thread(target=os.execv, args=("/bin/echo", ["echo", "exec"])).start()',
+      'threading.Event().wait()',
+    ].join('\n');
+    const result = await run(`python3 -u -c '${code}'`, options());
+    expect(result.stdout).toBe('thread\nvfork\nexec\n');
   });
 
   test('a wrapper starting what the analysis did not predict is refused', async () => {

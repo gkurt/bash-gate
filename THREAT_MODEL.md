@@ -89,12 +89,13 @@ The parser version is pinned. Errors thrown by caller-supplied filesystem callba
 **S6. Under enforcement, an exec the analysis doesn't cover doesn't run.** With `bash-gate/trace` in `enforce` mode,
 every exec the shell makes, or a wrapper it follows makes (`env`, `xargs`, `find -exec`: a program without
 subcommands that the analysis predicts commands under, run on this machine), either is covered by the analysis it was
-given, as S1 defines it, or fails with EPERM before the program runs. So does one from a process with several
-threads, whose arguments could change after the check, and one whose arguments can't be read. What a program the
-analysis doesn't follow inside starts (`git`, `make`, a script file) isn't checked: that's its behaviour, out of scope
-above. The supervisor checks execs only: a builtin's write needs none. Under it no exec gains privileges
-(`no_new_privs`), no process holds `CAP_SYS_PTRACE` (root included), i386 execs kill the process, and so does any x32
-system call.
+given, as S1 defines it, or fails with EPERM before the program runs. So does one whose arguments can't be read. From
+the moment an exec stops until the kernel has copied its arguments or failed it, every other process and thread in the
+tree is stopped, so nothing in it can change what the exec runs after the check. What a program the analysis doesn't
+follow inside starts (`git`, `make`, a script file) isn't checked: that's its behaviour, out of scope above. The
+supervisor checks execs only: a builtin's write needs none. Under it no exec gains privileges (`no_new_privs`), no
+process holds `CAP_SYS_PTRACE` (root included), no process leaves the tree (a clone with `CLONE_UNTRACED` fails), i386
+execs kill the process, and so does any x32 system call.
 
 ## What is trusted
 
@@ -104,13 +105,13 @@ system call.
 - **The integration.** It must run exactly the string that was analysed, in the shell the assumptions describe, with
   nothing from an earlier command still running. `bash-gate/trace` does that itself, given the analysis that was
   checked.
-- **For S6, the kernel and the supervisor.** ptrace and seccomp stop every `execve` and `execveat` (x86_64 Linux). The
-  supervisor reads an exec's arguments before the kernel does, so a process that writes another's memory in between
-  (`/proc/<pid>/mem`, `process_vm_writev`) can change what an allowed exec runs. With Yama's `ptrace_scope` at 1 or
-  more (Ubuntu's default), and no `CAP_SYS_PTRACE` in the tree, a process can write only its descendants' memory.
-  Every process above a checked one is a shell or wrapper the analysis follows, so only a program one of those became
-  with `exec` while checked children of it still run (`ls & exec python3 x`) can. With `ptrace_scope` 0, or without
-  Yama, any program in the tree the analysis doesn't follow can.
+- **For S6, the kernel and the supervisor.** ptrace and seccomp stop every `execve` and `execveat` (x86_64 Linux), and
+  ptrace stops the rest of the tree while one is checked. Memory the kernel writes on its own, rather than for a
+  process it's running, can still change an exec's arguments after the check: asynchronous I/O (`io_uring`, AIO), and
+  the words it clears or marks when a process that shares the memory dies (`set_tid_address`, robust futexes). Only a
+  program running code of its own can arrange that, and such a program can already exec anything: what it starts
+  isn't checked. So can a process outside the tree that may write the tree's memory: root's, or with Yama's
+  `ptrace_scope` at 0, any of the same user's.
 
 ## How each promise is checked
 
@@ -129,6 +130,8 @@ system call.
 | S5      | Deeply nested loops stay cheap and below the budget                                 | `test/analyze.test.ts`     |
 | S5      | Exhaustive `switch`es with a fail-closed `default`                                  | `src/analyze.ts`           |
 | S6      | Execs the analysis didn't predict are refused, from the shell and from wrappers     | `test/trace.test.ts`       |
+| S6      | An ancestor flipping a checked exec's path as fast as it can: what runs was checked | `test/trace.test.ts`       |
 | S6      | No process holds `CAP_SYS_PTRACE`, as root too; one can't write its parent's memory | `test/trace.test.ts`       |
+| S6      | A clone with `CLONE_UNTRACED` fails; threads, vfork and an exec from a thread run   | `test/trace.test.ts`       |
 
 Still to come: an LLM red team judged by `trace` mode, and the supervisor on arm64.

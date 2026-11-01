@@ -9,10 +9,13 @@
  *
  *   R pid                              the program's process, before it runs
  *   F parent child                     a process (or thread) started another
- *   X pid threads path argc argv...    an exec is about to happen; the caller answers one byte, 'y' or 'n'
+ *   X pid path argc argv...            an exec is about to happen; the caller answers one byte, 'y' or 'n'
  *   E pid former                       an exec happened in pid (from thread `former`, when it wasn't the leader)
  *   Z code signal                      everything exited; the program's exit code, or the signal that ended it
  *   ! message                          the supervisor failed
+ *
+ * From the moment an exec stops until the kernel has copied its arguments or failed it, every other process and thread
+ * in the tree is stopped too, so none of them can change what the exec runs after it was read.
  *
  * x86_64 Linux only. Other system-call ABIs (i386, x32) can't exec: the filter kills a process that tries.
  */
@@ -24,6 +27,7 @@
 #include <linux/capability.h>
 #include <linux/filter.h>
 #include <linux/seccomp.h>
+#include <sched.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -44,7 +48,9 @@
 
 #define X32 0x40000000
 #define I386_EXECVE 11
+#define I386_CLONE 120
 #define I386_EXECVEAT 358
+#define I386_CLONE3 435
 /* What the kernel accepts for argv and the strings in it (MAX_ARG_STRLEN), with room to spare. */
 #define MAX_ARGS (1 << 20)
 #define MAX_STRING (32 * 4096)
@@ -95,24 +101,40 @@ static void flush(void) {
   out.used = 0;
 }
 
+/*
+ * Execs stop for the supervisor. A clone with CLONE_UNTRACED fails with EPERM: its child would be no tracee, so nothing
+ * would stop it or wait for it. clone3 hides its flags from the filter, so it fails with ENOSYS and libc falls back to
+ * clone.
+ */
 static int install_filter(void) {
   struct sock_filter filter[] = {
-    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
-    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 2, 0),
-    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_I386, 7, 0),
-    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+    /* 0 */ BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
+    /* 1 */ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
+    /* 2 */ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_I386, 9, 19),
+    /* 3: x86_64 and x32 */
     BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
-    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_execve, 0, 1),
-    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRACE | 0),
-    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_execveat, 0, 1),
-    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRACE | 1),
-    /* x32 system calls kill the process. */
-    BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, X32, 3, 4),
+    /* 4 */ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_execve, 0, 1),
+    /* 5 */ BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRACE | 0),
+    /* 6 */ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_execveat, 0, 1),
+    /* 7 */ BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRACE | 1),
+    /* 8: x32 system calls kill the process. */
+    BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, X32, 13, 0),
+    /* 9 */ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_clone, 7, 0),
+    /* 10 */ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_clone3, 10, 0),
+    /* 11 */ BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    /* 12: i386 */
     BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
-    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, I386_EXECVE, 1, 0),
-    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, I386_EXECVEAT, 0, 1),
-    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
-    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    /* 13 */ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, I386_EXECVE, 8, 0),
+    /* 14 */ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, I386_EXECVEAT, 7, 0),
+    /* 15 */ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, I386_CLONE, 1, 0),
+    /* 16 */ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, I386_CLONE3, 4, 2),
+    /* 17: clone's flags, the low half of its first argument */
+    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[0])),
+    /* 18 */ BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, CLONE_UNTRACED, 1, 0),
+    /* 19 */ BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    /* 20 */ BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+    /* 21 */ BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOSYS),
+    /* 22 */ BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
   };
   struct sock_fprog program = {.len = sizeof filter / sizeof filter[0], .filter = filter};
   if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) return -1;
@@ -121,8 +143,7 @@ static int install_filter(void) {
 
 /*
  * Takes CAP_SYS_PTRACE from the tree, root included; no_new_privs keeps it from coming back. Without it, Yama's
- * ptrace_scope 1 lets a process write only its descendants' memory (/proc/<pid>/mem, process_vm_writev), so a process
- * can't change the arguments of an exec its parent or sibling makes after the check.
+ * ptrace_scope 1 lets a process write only its descendants' memory (/proc/<pid>/mem, process_vm_writev).
  */
 static int drop_ptrace(void) {
   /* Without CAP_SETPCAP the bounding set can't change (EPERM): then no_new_privs alone keeps it from coming back. */
@@ -152,18 +173,6 @@ static ssize_t read_string(int mem, unsigned long address, char *buffer, size_t 
     length += (size_t)n;
   }
   return -1;
-}
-
-static long threads_of(pid_t pid) {
-  char path[64], line[256];
-  snprintf(path, sizeof path, "/proc/%d/status", pid);
-  FILE *status = fopen(path, "r");
-  if (!status) return -1;
-  long threads = -1;
-  while (fgets(line, sizeof line, status))
-    if (sscanf(line, "Threads: %ld", &threads) == 1) break;
-  fclose(status);
-  return threads;
 }
 
 static void deny(pid_t pid, struct user_regs_struct *regs) {
@@ -223,7 +232,6 @@ static int ask(pid_t pid, struct user_regs_struct *regs, int at) {
 
   put_string("X");
   put_number(pid);
-  put_number(threads_of(pid));
   put_string(path);
   put_number(argc);
   /* The arguments as one field holding their own separators: `put` adds the last one. */
@@ -245,8 +253,244 @@ static int ask(pid_t pid, struct user_regs_struct *regs, int at) {
 enum { UNSEEN, ANNOUNCED, WAITING, RUNNING };
 static unsigned char *state;
 
+/*
+ * HELD: stopped, its stop set aside until the exec the tree is stopped for is over. INTERRUPTED: asked to stop for it,
+ * not stopped yet. VFORKING: waiting for a vfork child, so it can't run until it stops at PTRACE_EVENT_VFORK_DONE.
+ */
+enum { HELD = 1, INTERRUPTED = 2, VFORKING = 4 };
+static unsigned char *marks;
+static size_t interrupted;
+
+/* The tracees that run, so they can be stopped. */
+static pid_t *running;
+static unsigned *slot;
+static size_t running_count;
+
+static void start(pid_t pid) {
+  state[pid] = RUNNING;
+  if (slot[pid]) return;
+  running[running_count++] = pid;
+  slot[pid] = (unsigned)running_count;
+}
+
+static void forget(pid_t pid) {
+  state[pid] = UNSEEN;
+  if (marks[pid] & INTERRUPTED) interrupted--;
+  marks[pid] = 0;
+  if (!slot[pid]) return;
+  pid_t last = running[--running_count];
+  running[slot[pid] - 1] = last;
+  slot[last] = slot[pid];
+  slot[pid] = 0;
+}
+
+/* The stops set aside while the tree is stopped for an exec, in the order they came. */
+struct stop {
+  pid_t pid;
+  int status;
+};
+static struct stop *held;
+static size_t held_first, held_count, held_capacity;
+
+static void hold(pid_t pid, int status) {
+  if (held_count == held_capacity) {
+    held_capacity = held_capacity ? held_capacity * 2 : 64;
+    held = realloc(held, held_capacity * sizeof *held);
+    if (!held) fail("realloc");
+  }
+  held[held_count++] = (struct stop){pid, status};
+  marks[pid] |= HELD;
+}
+
+static void unhold(pid_t pid) {
+  for (size_t i = held_first; i < held_count; i++)
+    if (held[i].pid == pid) held[i].pid = 0;
+  marks[pid] &= (unsigned char)~HELD;
+}
+
+/* The exec the tree is stopped for: its process, and where it is. */
+static pid_t window;
+static enum { GATHERING, EXECUTING } phase;
+static struct user_regs_struct window_regs;
+static int window_at;
+
 static void cont(pid_t pid, int signal) {
   if (ptrace(PTRACE_CONT, pid, 0, signal) != 0 && errno != ESRCH) fail("PTRACE_CONT");
+}
+
+/* Stops every running tracee but the one about to exec. */
+static void freeze(pid_t except) {
+  for (size_t i = 0; i < running_count; i++) {
+    pid_t pid = running[i];
+    if (pid == except || marks[pid]) continue;
+    if (ptrace(PTRACE_INTERRUPT, pid, 0, 0) != 0) {
+      if (errno == ESRCH) continue;
+      fail("PTRACE_INTERRUPT");
+    }
+    marks[pid] |= INTERRUPTED;
+    interrupted++;
+  }
+}
+
+/* Once everything else has stopped: asks about the exec, and lets it go ahead or fails it. */
+static void decide(void) {
+  if (ask(window, &window_regs, window_at)) {
+    phase = EXECUTING;
+    /* To stop again when the exec fails: the arguments are copied by then. */
+    if (ptrace(PTRACE_SYSCALL, window, 0, 0) != 0 && errno != ESRCH) fail("PTRACE_SYSCALL");
+    return;
+  }
+  deny(window, &window_regs);
+  cont(window, 0);
+  window = 0;
+}
+
+static pid_t root;
+static int started, code = -1, ended_by;
+
+static void exited(pid_t pid, int status) {
+  if (pid == root) {
+    code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    ended_by = WIFSIGNALED(status) ? WTERMSIG(status) : 0;
+  }
+  if (marks[pid] & HELD) unhold(pid);
+  forget(pid);
+  if (pid == window) window = 0;
+}
+
+static void exec_stopped(pid_t pid, int at) {
+  if (ptrace(PTRACE_GETREGS, pid, 0, &window_regs) != 0) {
+    if (errno == ESRCH) return;
+    fail("PTRACE_GETREGS");
+  }
+  /* The program's own exec, and execvp's tries along PATH, go ahead unasked: the caller chose the program. */
+  if (pid == root && !started) {
+    cont(pid, 0);
+    return;
+  }
+  window = pid;
+  window_at = at;
+  phase = GATHERING;
+  freeze(pid);
+  if (interrupted == 0) decide();
+}
+
+/* A stop of the process whose exec the tree is stopped for, once it has been let go ahead. */
+static void executing(pid_t pid, int status) {
+  int signal = WSTOPSIG(status);
+  if (signal == (SIGTRAP | 0x80)) {
+    struct __ptrace_syscall_info info;
+    if (ptrace(PTRACE_GET_SYSCALL_INFO, pid, sizeof info, &info) <= 0) {
+      if (errno == ESRCH) return;
+      fail("PTRACE_GET_SYSCALL_INFO");
+    }
+    if (info.op != PTRACE_SYSCALL_INFO_EXIT) {
+      if (ptrace(PTRACE_SYSCALL, pid, 0, 0) != 0 && errno != ESRCH) fail("PTRACE_SYSCALL");
+      return;
+    }
+    /* The exec failed. */
+    window = 0;
+    cont(pid, 0);
+    return;
+  }
+  if (ptrace(PTRACE_SYSCALL, pid, 0, (status >> 16) ? 0 : signal) != 0 && errno != ESRCH) fail("PTRACE_SYSCALL");
+}
+
+static void stopped(pid_t pid, int status) {
+  int signal = WSTOPSIG(status);
+  int event = (unsigned)status >> 16;
+  if (marks[pid] & INTERRUPTED) {
+    marks[pid] &= (unsigned char)~INTERRUPTED;
+    interrupted--;
+  }
+
+  if (event == PTRACE_EVENT_STOP) {
+    if (state[pid] == RUNNING) {
+      /* A stop the supervisor asked for, or a group stop (SIGSTOP, SIGTSTP…): it carries on rather than stopping. */
+      cont(pid, 0);
+      return;
+    }
+    /* A new process's first stop. It waits until its parent's fork event has been reported. */
+    if (state[pid] == ANNOUNCED) {
+      start(pid);
+      cont(pid, 0);
+    } else state[pid] = WAITING;
+    return;
+  }
+
+  if (event) {
+    unsigned long message = 0;
+    if (ptrace(PTRACE_GETEVENTMSG, pid, 0, &message) != 0) {
+      if (errno == ESRCH) return;
+      fail("PTRACE_GETEVENTMSG");
+    }
+    if (event == PTRACE_EVENT_FORK || event == PTRACE_EVENT_VFORK || event == PTRACE_EVENT_CLONE) {
+      pid_t child = (pid_t)message;
+      if (child <= 0 || child > MAX_PID) {
+        errno = ERANGE;
+        fail("child pid");
+      }
+      put_string("F");
+      put_number(pid);
+      put_number(child);
+      flush();
+      if (state[child] == WAITING) {
+        start(child);
+        cont(child, 0);
+      } else state[child] = ANNOUNCED;
+      if (event == PTRACE_EVENT_VFORK) marks[pid] |= VFORKING;
+    } else if (event == PTRACE_EVENT_VFORK_DONE) {
+      marks[pid] &= (unsigned char)~VFORKING;
+    } else if (event == PTRACE_EVENT_SECCOMP) {
+      exec_stopped(pid, message == 1);
+      return;
+    } else if (event == PTRACE_EVENT_EXEC) {
+      if (pid == root && !started) started = 1;
+      else {
+        put_string("E");
+        put_number(pid);
+        put_number((long long)message);
+        flush();
+      }
+      if ((pid_t)message != pid && message <= MAX_PID) forget((pid_t)message);
+    }
+    cont(pid, 0);
+    return;
+  }
+
+  siginfo_t info;
+  if (ptrace(PTRACE_GETSIGINFO, pid, 0, &info) != 0) {
+    if (errno == ESRCH) return;
+    cont(pid, 0);
+    return;
+  }
+  cont(pid, signal);
+}
+
+/* While the tree is stopped for an exec: whatever stops is set aside, until the exec is over. */
+static void during_window(pid_t pid, int status) {
+  int event = (unsigned)status >> 16;
+  if (event == PTRACE_EVENT_EXEC) {
+    unsigned long former = 0;
+    if (ptrace(PTRACE_GETEVENTMSG, pid, 0, &former) != 0 && errno != ESRCH) fail("PTRACE_GETEVENTMSG");
+    if ((pid_t)former == window) {
+      /* The arguments are copied. A thread that wasn't the leader took the leader's pid, whose stop is gone. */
+      window = 0;
+      if (pid != (pid_t)former) unhold(pid);
+      stopped(pid, status);
+      return;
+    }
+  }
+  if (pid == window) {
+    if (phase == EXECUTING) executing(pid, status);
+    return;
+  }
+  hold(pid, status);
+  if (marks[pid] & INTERRUPTED) {
+    marks[pid] &= (unsigned char)~INTERRUPTED;
+    interrupted--;
+  }
+  if (phase == GATHERING && interrupted == 0) decide();
 }
 
 int main(int argc, char **argv) {
@@ -267,33 +511,45 @@ int main(int argc, char **argv) {
   if (connect(sock, (struct sockaddr *)&address, sizeof address) != 0) fail("connect");
 
   state = calloc(MAX_PID + 1, 1);
-  if (!state) fail("calloc");
+  marks = calloc(MAX_PID + 1, 1);
+  slot = calloc(MAX_PID + 1, sizeof *slot);
+  running = calloc(MAX_PID + 1, sizeof *running);
+  if (!state || !marks || !slot || !running) fail("calloc");
 
-  pid_t root = fork();
+  /* The program waits to be seized: PTRACE_SEIZE, unlike PTRACE_TRACEME, lets the supervisor stop a tracee. */
+  int ready[2];
+  if (pipe2(ready, O_CLOEXEC) != 0) fail("pipe");
+  root = fork();
   if (root < 0) fail("fork");
   if (root == 0) {
-    if (ptrace(PTRACE_TRACEME, 0, 0, 0) != 0) _exit(126);
-    raise(SIGSTOP);
+    char byte;
+    close(ready[1]);
+    if (read(ready[0], &byte, 1) != 1) _exit(126);
     if (drop_ptrace() != 0 || install_filter() != 0) _exit(126);
     execvp(argv[2], argv + 2);
     _exit(127);
   }
-
-  int status;
-  if (waitpid(root, &status, 0) != root || !WIFSTOPPED(status)) fail("waitpid");
+  close(ready[0]);
   long options = PTRACE_O_TRACESECCOMP | PTRACE_O_TRACEFORK | PTRACE_O_TRACEVFORK | PTRACE_O_TRACECLONE |
-                 PTRACE_O_TRACEEXEC | PTRACE_O_EXITKILL;
-  if (ptrace(PTRACE_SETOPTIONS, root, 0, options) != 0) fail("PTRACE_SETOPTIONS");
+                 PTRACE_O_TRACEEXEC | PTRACE_O_TRACEVFORKDONE | PTRACE_O_TRACESYSGOOD | PTRACE_O_EXITKILL;
+  if (ptrace(PTRACE_SEIZE, root, 0, options) != 0) fail("PTRACE_SEIZE");
   put_string("R");
   put_number(root);
   flush();
-  state[root] = RUNNING;
-  cont(root, 0);
+  start(root);
+  if (write(ready[1], "", 1) != 1) fail("write");
+  close(ready[1]);
 
-  /* The program's own exec, and execvp's tries along PATH, go ahead unasked: the caller chose the program. */
-  int started = 0;
-  int code = -1, ended_by = 0;
   for (;;) {
+    if (!window && held_first < held_count) {
+      struct stop next = held[held_first++];
+      if (held_first == held_count) held_first = held_count = 0;
+      if (next.pid == 0) continue;
+      marks[next.pid] &= (unsigned char)~HELD;
+      stopped(next.pid, next.status);
+      continue;
+    }
+    int status;
     pid_t pid = waitpid(-1, &status, __WALL);
     if (pid < 0) {
       if (errno == EINTR) continue;
@@ -305,75 +561,13 @@ int main(int argc, char **argv) {
       fail("pid");
     }
     if (WIFEXITED(status) || WIFSIGNALED(status)) {
-      if (pid == root) {
-        code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-        ended_by = WIFSIGNALED(status) ? WTERMSIG(status) : 0;
-      }
-      state[pid] = UNSEEN;
+      exited(pid, status);
+      if (window && phase == GATHERING && interrupted == 0) decide();
       continue;
     }
     if (!WIFSTOPPED(status)) continue;
-
-    int signal = WSTOPSIG(status);
-    int event = (unsigned)status >> 16;
-    if (signal == SIGTRAP && event) {
-      unsigned long message = 0;
-      if (ptrace(PTRACE_GETEVENTMSG, pid, 0, &message) != 0) {
-        if (errno == ESRCH) continue;
-        fail("PTRACE_GETEVENTMSG");
-      }
-      if (event == PTRACE_EVENT_FORK || event == PTRACE_EVENT_VFORK || event == PTRACE_EVENT_CLONE) {
-        pid_t child = (pid_t)message;
-        if (child <= 0 || child > MAX_PID) {
-          errno = ERANGE;
-          fail("child pid");
-        }
-        put_string("F");
-        put_number(pid);
-        put_number(child);
-        flush();
-        if (state[child] == WAITING) {
-          state[child] = RUNNING;
-          cont(child, 0);
-        } else state[child] = ANNOUNCED;
-      } else if (event == PTRACE_EVENT_SECCOMP) {
-        struct user_regs_struct regs;
-        if (ptrace(PTRACE_GETREGS, pid, 0, &regs) != 0) {
-          if (errno == ESRCH) continue;
-          fail("PTRACE_GETREGS");
-        }
-        if (!(pid == root && !started) && !ask(pid, &regs, message == 1)) deny(pid, &regs);
-      } else if (event == PTRACE_EVENT_EXEC) {
-        if (pid == root && !started) started = 1;
-        else {
-          put_string("E");
-          put_number(pid);
-          put_number((long long)message);
-          flush();
-        }
-        if ((pid_t)message != pid && message <= MAX_PID) state[message] = UNSEEN;
-      }
-      cont(pid, 0);
-      continue;
-    }
-
-    if (signal == SIGSTOP && state[pid] != RUNNING) {
-      /* A new process's first stop. It waits until its parent's fork event has been reported. */
-      if (state[pid] == ANNOUNCED) {
-        state[pid] = RUNNING;
-        cont(pid, 0);
-      } else state[pid] = WAITING;
-      continue;
-    }
-
-    siginfo_t info;
-    if (ptrace(PTRACE_GETSIGINFO, pid, 0, &info) != 0) {
-      if (errno == ESRCH) continue;
-      /* A group stop (SIGSTOP, SIGTSTP…) without PTRACE_SEIZE: it carries on rather than stopping. */
-      cont(pid, 0);
-      continue;
-    }
-    cont(pid, signal);
+    if (window) during_window(pid, status);
+    else stopped(pid, status);
   }
 
   put_string("Z");

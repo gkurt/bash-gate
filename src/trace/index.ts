@@ -45,7 +45,7 @@ export interface Exec {
   via: string[] | null;
   /** Whether the analysis covers it; `null` when it isn't checked. */
   covered: boolean | null;
-  /** Whether it was refused: not covered, or made by a process with several threads, which could change its arguments after the check. */
+  /** Whether it was refused: in `enforce` mode, when the analysis doesn't cover it. */
   refused: boolean;
 }
 
@@ -161,7 +161,7 @@ class Session {
   /** How many fields the first record has, when all of them are here. */
   private complete(): number {
     const [kind] = this.fields;
-    const size = kind === 'X' ? 5 + Number(this.fields[4] ?? Infinity) : kind === 'R' || kind === '!' ? 2 : 3;
+    const size = kind === 'X' ? 4 + Number(this.fields[3] ?? Infinity) : kind === 'R' || kind === '!' ? 2 : 3;
     return kind !== undefined && this.fields.length >= size ? size : 0;
   }
 
@@ -187,7 +187,7 @@ class Session {
         this.failure = a;
         return;
       case 'X':
-        socket.write(this.exec(Number(a), Number(b), fields[2]!, fields.slice(4)));
+        socket.write(this.exec(Number(a), b, fields.slice(3)));
         return;
       default:
         this.failure = `unknown record ${kind}`;
@@ -199,7 +199,7 @@ class Session {
     return this.roles.has(pid) ? this.roles.get(pid)! : [];
   }
 
-  private exec(pid: number, threads: number, path: string, argv: string[]): 'y' | 'n' {
+  private exec(pid: number, path: string, argv: string[]): 'y' | 'n' {
     const via = this.role(pid);
     if (via === null) {
       this.execs.push({ pid, path, argv, via, covered: null, refused: false });
@@ -207,7 +207,7 @@ class Session {
       return 'y';
     }
     const { covered, next } = judge(this.analysis, via, [basename(path), ...argv.slice(1)]);
-    const refused = this.mode === 'enforce' && (!covered || threads > 1);
+    const refused = this.mode === 'enforce' && !covered;
     this.execs.push({ pid, path, argv, via, covered, refused });
     if (!refused) this.pending.set(pid, next);
     return refused ? 'n' : 'y';
