@@ -36,6 +36,7 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['[[ -n $(rm -rf /) ]]', 'deny', 'a substitution in [[ ]]'],
   ['(( a[$(rm -rf /)] ))', 'deny', 'a substitution in an arithmetic subscript'],
   ["x=$(( '$(rm -rf /)' ))", 'deny', 'single quotes in arithmetic, which are only text'],
+  ["a=(['$'('rm -rf /)']=1)", 'deny', 'an array subscript Bash expands again once its quotes are gone'],
   ["x=$(( '$('r'm -rf /)' ))", 'deny', 'single quotes in arithmetic, around a substitution with quotes of its own'],
   ["cat <<EOF\n${y:-'$(rm -rf /)'}\nEOF", 'deny', 'single quotes in ${…} in a here-document, which are only text'],
   ['echo "${a[\'$(rm -rf /)\']}"', 'deny', 'single quotes in a subscript, which are only text'],

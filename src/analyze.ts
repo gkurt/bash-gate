@@ -606,6 +606,10 @@ class Walker {
         );
         this.expansions(text.join(''), state, ctx, this.at(ctx, state, node), 'here-document', true);
       }
+      if ((node.type === 'Literal' || (node.type === 'Word' && !node.parts)) && /\$\\\n/.test(node.text)) {
+        const where = this.span(ctx, node.pos, node.end);
+        this.finding(ctx, 'parse-error', 'A `$` before a line continuation, which Bash joins to what follows', where);
+      }
       if (node.type === 'ParameterExpansion' && node.operation?.type === 'Unknown')
         this.finding(ctx, 'parse-error', `An expansion the parser couldn't read: ${node.text}`, this.span(ctx, node.pos, node.end));
       if (node.type === 'ParameterExpansion') {
@@ -638,6 +642,9 @@ class Walker {
           const subscript = /^\[([\s\S]*?)\]\+?=/.exec(element.text)?.[1];
           if (subscript === undefined) continue;
           this.unquoted(subscript, state, ctx, element);
+          // Bash removes the quotes first and expands what's left again: `['$'('ls')]=1` runs `ls`.
+          const bare = unquote(subscript);
+          if (bare !== subscript && /[$`]/.test(bare)) this.expansions(bare, state, ctx, this.at(ctx, state, element), 'subscript');
           this.arithmeticText(subscript, state, ctx, element.text, this.span(ctx, element.pos, element.end));
         }
       }
@@ -2064,6 +2071,15 @@ function getopt(
     }
   }
   return { options, rest: i, dynamic: false, bad: false };
+}
+
+/** `text` with its quotes and backslashes removed, as Bash removes them from a word. */
+function unquote(text: string): string {
+  return text.replaceAll(
+    /'([^']*)'|"((?:\\[\s\S]|[^"\\])*)"|\\([\s\S])/g,
+    (_, single?: string, double?: string, escaped?: string) =>
+      single ?? (double === undefined ? escaped! : double.replaceAll(/\\([$`"\\\n])/g, '$1')),
+  );
 }
 
 /** Whether `node` has a here-document the parser found no end for. */
