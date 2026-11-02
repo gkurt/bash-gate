@@ -46,6 +46,7 @@ export const scripts = [
   "a['$(cat index)']=1\na=(['$(ls literal)']=1 [0]='$(rm value)')\nx=$(( ${y:-'$(sort default)'} ))",
   `s=abc\necho "\${s:'$(cat offset)'}" \${s:1:'$(ls length)'} "\${a['$(sort subscript)']}"\n[[ 1 -eq '$(rm test)' ]]`,
   'mapfile -C cat -c 1 arr <<< "line"',
+  "mapfile -tC' cat' -c1 a <<< x; mapfile a -C ls <<< y; compgen -Csort z",
   "cat <<< <(ls here); cat > $'' <<< $''; ls after",
   "cat $'a\\\nb' $'c\\\\\nd' \"e\\\nf\"",
   "compgen -C 'ls -1' x",

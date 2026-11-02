@@ -1167,10 +1167,10 @@ class Walker {
         break;
       case 'compgen':
       case 'complete': {
-        const callback = values.indexOf('-C');
-        const code = callback < 0 ? undefined : args[callback + 1];
-        if (code?.kind === 'static') this.code(code.value, clone(state), ctx, call, `${name} -C`, true);
-        else if (code) this.finding(ctx, 'dynamic-script', `${name} -C runs a string only known at run time`, call.span);
+        const { options, dynamic } = getopt(values, 'abcdefgjksuvpDEIo:A:G:W:F:C:X:P:S:V:r');
+        if (dynamic)
+          this.finding(ctx, 'dynamic-script', `${name} has an option only known at run time, which may be a callback`, call.span);
+        for (const [letter, value] of options) if (letter === 'C') this.callback(value, state, ctx, call, name);
         break;
       }
     }
@@ -1196,26 +1196,24 @@ class Walker {
       if (values.includes('-v')) set(named(values.indexOf('-v') + 1));
       return;
     }
-    const positionals: (string | null | undefined)[] = [];
-    for (let i = 0; i < values.length; i++) {
-      const value = values[i];
-      if (value?.startsWith('-') && name !== 'getopts') {
-        if (/^-[adinNptuCcOs]$/.test(value) && !(name === 'read' && /^-[rs]$/.test(value))) {
-          if ((name === 'mapfile' || name === 'readarray') && value === '-C') {
-            const code = args[i + 1];
-            if (code?.kind === 'static') this.code(code.value, clone(state), ctx, call, `${name} -C`, true);
-            else if (code) this.finding(ctx, 'dynamic-script', `${name} -C runs a string only known at run time`, call.span);
-          }
-          if (name === 'read' && value === '-a') set(named(i + 1));
-          i++;
-        }
-        continue;
-      }
-      positionals.push(named(i));
+    if (name === 'getopts') return set(named(1));
+    const { options, rest, dynamic, bad } = getopt(values, name === 'read' ? 'ersa:d:i:n:N:p:t:u:' : 'd:u:n:O:tC:c:s:');
+    if (bad) return;
+    if (dynamic && name !== 'read')
+      this.finding(ctx, 'dynamic-script', `${name} has an option only known at run time, which may be a callback`, call.span);
+    for (const [letter, value] of options) {
+      if (letter === 'C') this.callback(value, state, ctx, call, name);
+      if (letter === 'a') set(value ?? null);
     }
-    if (name === 'getopts') set(positionals[1]);
-    else if (name === 'read') (positionals.length > 0 ? positionals : ['REPLY']).forEach(set);
+    const positionals = values.slice(rest).map((_, i) => named(rest + i));
+    if (name === 'read') (positionals.length > 0 ? positionals : ['REPLY']).forEach(set);
     else set(positionals[0] === undefined ? 'MAPFILE' : positionals[0]);
+  }
+
+  /** The code `-C` gives `mapfile`, `compgen` or `complete`, run with arguments appended. */
+  callback(code: string | undefined, state: State, ctx: Context, call: Call, name: string): void {
+    if (code === undefined) this.finding(ctx, 'dynamic-script', `${name} -C runs a string only known at run time`, call.span);
+    else this.code(code, clone(state), ctx, call, `${name} -C`, true);
   }
 
   /**
@@ -2033,6 +2031,39 @@ function equal(a: State, b: State): boolean {
     a.cwd === b.cwd &&
     sameMap(a.later, b.later, (x, y) => sameSet(new Set(x.map((later) => later.key)), new Set(y.map((later) => later.key))))
   );
+}
+
+/**
+ * A builtin's options as Bash's getopt reads them: letters together (`-tC cmd`), a value in the rest of the word or the
+ * next one, and none after `--` or the first word that isn't one. `spec` lists the letters, each followed by `:` when it
+ * takes a value. A value only known at run time is `undefined`; `dynamic` when an option word is (it stops there), and
+ * `bad` when Bash would refuse them all.
+ */
+function getopt(
+  values: (string | undefined)[],
+  spec: string,
+): { options: [string, string | undefined][]; rest: number; dynamic: boolean; bad: boolean } {
+  const options: [string, string | undefined][] = [];
+  let i = 0;
+  for (; i < values.length; i++) {
+    const value = values[i];
+    if (value === undefined) return { options, rest: i, dynamic: true, bad: false };
+    if (value === '--') return { options, rest: i + 1, dynamic: false, bad: false };
+    if (!value.startsWith('-') || value === '-') break;
+    for (let j = 1; j < value.length; j++) {
+      const at = spec.indexOf(value[j]!);
+      if (at === -1 || value[j] === ':') return { options, rest: i, dynamic: false, bad: true };
+      if (spec[at + 1] !== ':') {
+        options.push([value[j]!, '']);
+        continue;
+      }
+      if (j + 1 < value.length) options.push([value[j]!, value.slice(j + 1)]);
+      else if (i + 1 < values.length) options.push([value[j]!, values[++i]]);
+      else return { options, rest: i, dynamic: false, bad: true };
+      break;
+    }
+  }
+  return { options, rest: i, dynamic: false, bad: false };
 }
 
 /** Whether `node` has a here-document the parser found no end for. */
