@@ -67,6 +67,7 @@ export const scripts = [
   'shopt -s expand_aliases\nif :; then\nalias rm=cat\nrm -rf x\nfi\nrm y',
   'shopt -s expand_aliases\nf() { ls a; }\nalias ls=cat\nf; ls b; x=$(ls c)',
   'shopt -s expand_aliases\nalias s="sudo "\nalias l="ls -la"\ns l x',
+  "shopt -s expand_aliases\nalias s='sudo ' x='cat'\ns \\x x\nsh - <<< 'sort -'",
   'shopt -s expand_aliases\nalias s="sudo "\nalias q="; cat q"\ns q',
   "shopt -s expand_aliases\neval $'alias ls=cat\\nls a'; eval 'alias rm=cat; rm b'",
   'shopt -s expand_aliases\nif [ -n "$x" ]; then alias rm=cat; fi\nrm a',

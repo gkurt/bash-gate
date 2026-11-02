@@ -925,7 +925,9 @@ class Walker {
     let last = value;
     const values = [value];
     for (const item of command.suffix) {
-      if (!/[ \t]$/.test(last) || item.type !== 'Word' || !plain(item)) break;
+      // A quoted word isn't expanded, and the next one is still checked.
+      if (item.type === 'Word' && !plain(item)) continue;
+      if (!/[ \t]$/.test(last) || item.type !== 'Word') break;
       if (!table.has(item.value)) {
         if (unknown) this.finding(ctx, 'unknown-alias', `\`${item.value}\` may be an alias defined at run time`, call.span);
         break;

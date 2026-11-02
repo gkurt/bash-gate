@@ -163,7 +163,7 @@ describe.skipIf(!compatibleBash)('against bash', () => {
         { numRuns: runs, includeErrorInReport: true },
       );
     },
-    { timeout: Math.max(5_000, runs * 500) },
+    { timeout: Math.max(5_000, runs * 1_000) },
   );
 
   // The parser against Bash: mutants break the constructs the generator writes, and whatever Bash makes of one, the

@@ -55,6 +55,11 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['set -eo posix\nalias ls="rm -rf /"\nls', 'deny', 'POSIX mode set with other options in one word'],
   ['shopt -so posix\nalias ls="rm -rf /"\nls', 'deny', 'POSIX mode set by shopt -o'],
   ['set -o -o posix\nalias ls="rm -rf /"\nls', 'deny', 'set -o before an option lists them, and the next -o sets POSIX mode'],
+  [
+    "shopt -s expand_aliases\nalias s='sudo ' r='rm -rf /'\ns \\env r",
+    'deny',
+    'an alias after a quoted word, which a blank-ending alias still reaches',
+  ],
   ['shopt -s expand_aliases\nalias c=cat{,\\ /x\\;rm\\ -rf\\ /}\nc', 'deny', 'braces in an alias definition, the last one of which wins'],
   ["x=$(cat <<E )\ncat <<'EOF'\n$(rm -rf /)\nEOF", 'ask', 'a here-document opened in a substitution and never closed'],
   ['declare -l v; v=RM; $v -rf /', 'deny', 'a variable that lowercases what it is assigned'],

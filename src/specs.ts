@@ -67,15 +67,17 @@ const shell: CommandSpec = {
   ),
   finish(parsed) {
     const [first] = parsed.positionals;
+    // A lone `-` ends the options, like `--`: the script file is the word after it, if any.
+    const [file] = first?.kind === 'static' && first.value === '-' ? parsed.positionals.slice(1) : parsed.positionals;
     if (parsed.options['-c']) {
       if (first) parsed.scripts.push(first);
     } else if (parsed.maybeOptions) {
       // A word only known at run time may be -c, which makes the first positional after it code.
       parsed.scripts.push(...parsed.positionals);
       parsed.effects.add('exec:arbitrary');
-    } else if (first && !parsed.options['-s']) {
+    } else if (file && !parsed.options['-s']) {
       parsed.effects.add('exec:file');
-      parsed.reads.push(first);
+      parsed.reads.push(file);
     } else if (!parsed.options['-n'] && !parsed.options['--version'] && !parsed.options['--help']) {
       parsed.effects.add('exec:arbitrary');
       parsed.stdinScript = true;
