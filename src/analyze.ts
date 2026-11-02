@@ -360,6 +360,8 @@ class Walker {
   script(script: ParsedScript, state: State, ctx: Context, first?: Aliases): void {
     for (const error of script.errors ?? []) this.finding(ctx, 'parse-error', `Parse error: ${error.message}`, [error.pos, error.pos]);
     this.carriageReturn(ctx.source, ctx);
+    // An alias's text leaves out a here-document's body, which is after the command.
+    if (!first && unclosed(script)) this.finding(ctx, 'parse-error', 'A here-document is never closed', this.span(ctx, 0, 0));
     let unit = first ? { aliases: first, expanding: ctx.expanding } : undefined;
     let previous: number | undefined;
     for (const statement of script.commands) {
@@ -603,6 +605,11 @@ class Walker {
           this.arithmeticWord(node.operation.offset, state, ctx, true);
           if (node.operation.length) this.arithmeticWord(node.operation.length, state, ctx, true);
         }
+      }
+      if (node.type === 'Assignment' && node.value.type === 'Word' && !node.value.parts && /^\(.*[$`<>]/s.test(node.value.text)) {
+        // `v=(…)x`: no array, but a string Bash expands, parentheses and all. The parser read it as plain text.
+        const where = this.span(ctx, node.pos, node.end);
+        this.finding(ctx, 'parse-error', 'An array assignment with text after it, which Bash expands as a string', where);
       }
       if (node.type === 'Assignment' && node.index) this.arithmeticWord(node.index, state, ctx, true);
       if (node.type === 'Assignment' && node.value.type === 'ArrayValue') {
@@ -926,13 +933,8 @@ class Walker {
     };
     // A here-document the alias's text opens has the lines after the command as its body, which the parser read as
     // commands: a `<<` among them can hide the rest of the script.
-    let opens = false;
-    const visit = (node: SyntaxNode) => {
-      if (node.type === 'HereDoc' && !node.closing) opens = true;
-      else forEachChild(node, visit);
-    };
-    for (const text of values) visit(this.parse(text));
-    if (opens) this.finding(ctx, 'parse-error', `An alias opens a here-document, whose body the parser read as commands`, call.span);
+    if (values.some((text) => unclosed(this.parse(text))))
+      this.finding(ctx, 'parse-error', `An alias opens a here-document, whose body the parser read as commands`, call.span);
     this.script(this.parse(text), state, inner, ctx.aliases);
   }
 
@@ -1243,11 +1245,22 @@ class Walker {
   /** A program run from `PATH`, a path, or what `hash -p` gave the name. */
   program(argv: Arg[], state: State, ctx: Context, call: Call): void {
     const name = (argv[0] as Extract<Arg, { kind: 'static' }>).value;
-    let path = name.includes('/') ? name : undefined;
-    if (!path && state.hashed.has(name)) {
-      path = state.hashed.get(name);
-      if (path === undefined) this.finding(ctx, 'loads-code', `\`${name}\` was given a path only known at run time`, call.span);
+    if (name.includes('/') || !state.hashed.has(name)) return this.run(argv, state, ctx, call, name.includes('/') ? name : undefined);
+    const path = state.hashed.get(name);
+    if (path === undefined) {
+      this.finding(ctx, 'loads-code', `\`${name}\` was given a path only known at run time`, call.span);
+      return this.run(argv, state, ctx, call, undefined);
     }
+    // The path runs only when it's there: otherwise Bash looks the name up on `PATH`.
+    settle(state, [
+      this.branch(state, ctx, (s, c) => this.run(argv, s, c, call, path)),
+      this.branch(state, ctx, (s, c) => this.run(argv, s, c, call, undefined)),
+    ]);
+  }
+
+  /** `argv` run as a program, from `path` or else found on `PATH`. */
+  run(argv: Arg[], state: State, ctx: Context, call: Call, path: string | undefined): void {
+    const name = (argv[0] as Extract<Arg, { kind: 'static' }>).value;
     const program = path ? basename(path) : name;
     const parsed = normalize(argv.slice(1), specFor(program));
     if (path && !isSystemPath(path)) parsed.effects.add('exec:file');
@@ -1952,6 +1965,17 @@ function equal(a: State, b: State): boolean {
     a.cwd === b.cwd &&
     sameMap(a.later, b.later, (x, y) => sameSet(new Set(x.map((later) => later.key)), new Set(y.map((later) => later.key))))
   );
+}
+
+/** Whether `node` has a here-document the parser found no end for. */
+function unclosed(node: SyntaxNode): boolean {
+  let found = false;
+  const visit = (child: SyntaxNode) => {
+    if (child.type === 'HereDoc' && !child.closing) found = true;
+    else if (!found) forEachChild(child, visit);
+  };
+  visit(node);
+  return found;
 }
 
 /** How `declare` changes a value's case: `-u` upper, `-l` lower, `-c` capitalized. */
