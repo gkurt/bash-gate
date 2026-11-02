@@ -606,6 +606,8 @@ class Walker {
         );
         this.expansions(text.join(''), state, ctx, this.at(ctx, state, node), 'here-document', true);
       }
+      if (node.type === 'ParameterExpansion' && node.operation?.type === 'Unknown')
+        this.finding(ctx, 'parse-error', `An expansion the parser couldn't read: ${node.text}`, this.span(ctx, node.pos, node.end));
       if (node.type === 'ParameterExpansion') {
         if (node.index && node.index.value !== '@' && node.index.value !== '*') this.arithmeticWord(node.index, state, ctx, true);
         if (node.operation?.type === 'Slice') {
@@ -1308,6 +1310,10 @@ class Walker {
     const program = path ? basename(path) : name;
     const parsed = normalize(argv.slice(1), specFor(program));
     if (path && !isSystemPath(path)) parsed.effects.add('exec:file');
+    // An interactive shell reads ~/.bashrc, a login shell /etc/profile and ~/.profile: code the analysis doesn't see.
+    const { options } = parsed;
+    if (specFor(program) === specFor('bash') && ((options['-i'] && !options['--norc']) || (options['--login'] && !options['--noprofile'])))
+      this.finding(ctx, 'exec-config', `${program} runs its startup files, which the analysis doesn't see`, call.span);
     for (const entry of parsed.env) {
       if (entry.kind !== 'static') continue;
       const equals = entry.value.indexOf('=');

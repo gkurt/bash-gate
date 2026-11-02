@@ -79,6 +79,9 @@ describe.skipIf(!compatibleBash)('against bash', () => {
   const dir = mkdtempSync(join(tmpdir(), 'bash-gate-'));
   // The script's working directory, with the stubs in it: a script may write anywhere below it, stubs included.
   const work = join(dir, 'work');
+  // A home of its own: an interactive or login shell a script starts reads its startup files from there.
+  const home = join(dir, 'home');
+  mkdirSync(home);
   const bin = join(work, 'bin');
   mkdirSync(bin, { recursive: true });
   writeFileSync(join(dir, 'harness.sh'), harness);
@@ -114,7 +117,7 @@ describe.skipIf(!compatibleBash)('against bash', () => {
     // FUNCNEST only stops runaway recursion: it can make Bash run less than the analysis predicts, never more.
     const result = spawnSync(bash!, ['--noprofile', '--norc', '../harness.sh', String(seconds)], {
       cwd: work,
-      env: { PATH: [bin, process.env.PATH].join(delimiter), BASH_GATE_LOGS: logs, FUNCNEST: '8' },
+      env: { PATH: [bin, process.env.PATH].join(delimiter), HOME: home, BASH_GATE_LOGS: logs, FUNCNEST: '8' },
       stdio: 'ignore',
       timeout: (seconds + 10) * 1000,
     });

@@ -94,6 +94,7 @@ export const scripts = [
 /** Scripts that run what the analysis can't see, behind a finding: the finding must account for it. */
 export const hiding = [
   'v=($(cat array))x',
+  'echo "${a[$(cat brace)}]}"; bash -ic \'ls interactive\'',
   'cat a 2>(ls x)ull 3<(sort y)',
   'shopt -s $(cat a\nc <<E )\nEOF\nls <<"EOF"\n$(ls body)\nEOF',
   "shopt -s expand_aliases\nalias c='cat <<EOF'\nc\n<<D\nEOF\nls after",
