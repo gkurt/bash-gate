@@ -887,6 +887,7 @@ class Walker {
     let text = ctx.source.slice(command.pos, command.name!.pos) + value;
     let rest = command.name!.end;
     let last = value;
+    const values = [value];
     for (const item of command.suffix) {
       if (!/[ \t]$/.test(last) || item.type !== 'Word' || !plain(item)) break;
       if (!table.has(item.value)) {
@@ -901,6 +902,7 @@ class Walker {
       text += ctx.source.slice(rest, item.pos) + next;
       rest = item.end;
       last = next;
+      values.push(next);
     }
     text += ctx.source.slice(rest, command.end);
     const inner = {
@@ -911,6 +913,15 @@ class Walker {
       depth: ctx.depth + 1,
       expanding: [...ctx.expanding, name],
     };
+    // A here-document the alias's text opens has the lines after the command as its body, which the parser read as
+    // commands: a `<<` among them can hide the rest of the script.
+    let opens = false;
+    const visit = (node: SyntaxNode) => {
+      if (node.type === 'HereDoc' && !node.closing) opens = true;
+      else forEachChild(node, visit);
+    };
+    for (const text of values) visit(this.parse(text));
+    if (opens) this.finding(ctx, 'parse-error', `An alias opens a here-document, whose body the parser read as commands`, call.span);
     this.script(this.parse(text), state, inner, ctx.aliases);
   }
 

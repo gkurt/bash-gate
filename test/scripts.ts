@@ -83,4 +83,7 @@ export const scripts = [
 ];
 
 /** Scripts that run what the analysis can't see, behind a finding: the finding must account for it. */
-export const hiding = ['shopt -s expand_aliases\nread -r v <<< \'env cat a; ls b\'\nalias q="$v"\nq c'];
+export const hiding = [
+  "shopt -s expand_aliases\nalias c='cat <<EOF'\nc\n<<D\nEOF\nls after",
+  'shopt -s expand_aliases\nread -r v <<< \'env cat a; ls b\'\nalias q="$v"\nq c',
+];

@@ -250,6 +250,12 @@ const cases: [source: string, decision: Decision, what: string][] = [
 
   // What the analysis can't follow.
   ['echo "unterminated', 'ask', 'a parse error'],
+  [
+    "shopt -s expand_aliases\nalias c='cat <<EOF'\nc\n<<D\nEOF\nrm -rf /",
+    'ask',
+    'an alias opening a here-document, whose body the parser read as commands',
+  ],
+  ['shopt -s expand_aliases\nalias c=cat\nc <<EOF\n<<D\nEOF\nls', 'allow', 'an aliased command with a here-document of its own'],
   ["cat <<'EOF'\nEOF\r\nrm -rf /\nEOF", 'ask', 'a carriage return, which ends the here-document only in Git Bash'],
   ['cowsay hi', 'ask', 'a program no rule covers'],
 ];
