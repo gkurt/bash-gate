@@ -72,6 +72,7 @@ export const scripts = [
   "/bin/sh -c 'alias ls=cat\nls a'",
   "/bin/bash --posix -c 'alias ls=cat\nls a'; /bin/bash -O expand_aliases -c 'alias rm=cat\nrm b'",
   'set -o posix\nalias ls=cat\nls a',
+  'shopt -s expand_aliases\nalias ls=cat <missing\nls b\nx=ls; { x=sort; } <missing; $x c; hash -p /bin/cat rm <missing; rm d',
   "PS4='+$(ls ps4) '; set -x; cat a",
   'x=<(sort s) y=1 cat a<(ls l)b',
   'x=a; x=<(sort s); cat $x',
@@ -79,6 +80,7 @@ export const scripts = [
   'x=a; local x=b; cat $x; f() { local x=c; cat $x; }; f; cat $x',
   'x=a; y=b; f() { local x=c; declare y=d; declare -g z=e; cat $x $y; }; f; ls $x $y $z',
   'z=b; f() { declare x -g z=e; }; f; ls "$z"',
+  'z=b; declare -e z=c; ls "$z"; declare -l v; v=CAT; $v a; declare -u -l w=cAt; $w b; f() { local -c x=sORT; $x c; }; f',
   `export x=a; f() { local x; /bin/bash -c 'ls "$x"'; cat "[$x]"; }; f`,
 ];
 

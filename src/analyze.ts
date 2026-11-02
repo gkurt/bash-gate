@@ -59,6 +59,11 @@ interface State {
   disabled: Set<string>;
   /** Variables with the integer attribute (`declare -i`): what they're assigned is evaluated as arithmetic. */
   integers: Set<string>;
+  /**
+   * Variables whose case Bash changes when they're assigned (`declare -u`, `-l`, `-c`): `undefined` when it may or may
+   * not, or differently.
+   */
+  cases: Map<string, Case | undefined>;
   cwd: string | undefined;
   /**
    * Code that may run between any two commands from now on (a trap action, a prompt string), by where it's set (a
@@ -169,6 +174,7 @@ export function analyze(source: string, environment: Environment = {}): Analysis
       hashed: new Map(),
       disabled: new Set(),
       integers: new Set(),
+      cases: new Map(),
       cwd: environment.cwd ?? '.',
       later: new Map(),
     };
@@ -446,9 +452,11 @@ class Walker {
       case 'Redirected': {
         this.substitutions(node.redirects, state, ctx);
         const files = redirections(node.redirects, lookupIn(state));
-        // Bash opens the files before it runs what's in the group.
+        // Bash opens the files before it runs what's in the group, and runs none of it when one can't be opened.
         this.wrote(files.writes, this.at(ctx, state, node), 'contents');
-        return this.node(node.command, state, { ...ctx, writes: [...ctx.writes, ...files.writes], reads: [...ctx.reads, ...files.reads] });
+        const inner = { ...ctx, writes: [...ctx.writes, ...files.writes], reads: [...ctx.reads, ...files.reads] };
+        if (files.writes.length === 0 && files.reads.length === 0) return this.node(node.command, state, inner);
+        return settle(state, [clone(state), this.branch(state, inner, (s, c) => this.node(node.command, s, c))]);
       }
       case 'Function':
         state.functions.set(node.name.value, { bodies: [this.body(node, ctx.aliases)], maybeUndefined: false });
@@ -527,6 +535,7 @@ class Walker {
       sorted(state.hashed).map(([name, path]) => [name, path ?? null]),
       [...state.disabled].sort(),
       [...state.integers].sort(),
+      sorted(state.cases).map(([name, how]) => [name, how ?? null]),
       state.cwd ?? null,
       sorted(state.later).map(([slot, code]) => [slot, code.map((later) => later.key).sort()]),
     ]);
@@ -800,9 +809,11 @@ class Walker {
       if (argv.length === 0) state.vars.set(assignment.name, stored);
     }
     this.wrote(files.writes, call, 'contents');
+    const opens = files.writes.length > 0 || files.reads.length > 0;
+    // A file Bash can't open stops the command before it runs, along with what it would change (`alias x=y <nofile`).
+    if (argv.length > 0 && opens) return settle(state, [clone(state), this.branch(state, ctx, (s, c) => this.dispatch(argv, s, c, call))]);
     if (argv.length > 0) return this.dispatch(argv, state, ctx, call);
-    if (files.writes.length > 0 || files.reads.length > 0)
-      this.emit(ctx, call, ':', 'builtin', [{ kind: 'static', value: ':' }], emptyParsed());
+    if (opens) this.emit(ctx, call, ':', 'builtin', [{ kind: 'static', value: ':' }], emptyParsed());
   }
 
   /** Runs `argv` as the shell would: an alias, a function, a builtin, or a program. */
@@ -1066,9 +1077,12 @@ class Walker {
       case 'readonly': {
         // Outside a function, `local` is an error that changes nothing.
         if (name === 'local' && ctx.calls.length === 0) break;
-        // Options end at the first name, as getopt reads them.
+        // Options end at the first name, as getopt reads them, and one Bash doesn't know changes nothing.
         const end = values.findIndex((value) => value === undefined || value === '--' || !/^[-+]./.test(value));
-        const flags = (end === -1 ? values : values.slice(0, end)).filter((value) => value?.startsWith('-')).join('');
+        const options = end === -1 ? values : values.slice(0, end);
+        const known = name === 'export' || name === 'readonly' ? /^[-+][aAfnp]+$/ : /^[-+][aAfFgiIlnprtuxc]+$/;
+        if (!options.every((option) => known.test(option!))) break;
+        const flags = options.filter((value) => value?.startsWith('-')).join('');
         // In a function, `local`, and `declare` without -g, make a variable of the call's own, unset until assigned.
         const locals = ctx.calls.length > 0 && (name === 'local' || (name !== 'export' && name !== 'readonly' && !flags.includes('g')));
         for (const arg of args) {
@@ -1086,9 +1100,15 @@ class Walker {
             // Unset in the shell, while what it starts still sees an exported value from outside.
             state.vars.set(variable, state.exported.has(variable) ? { kind: 'dynamic' } : { kind: 'static', value: '' });
             state.integers.delete(variable);
+            state.cases.delete(variable);
           }
           if (name === 'export' || flags.includes('x')) state.exported.add(variable);
           if (flags.includes('i')) state.integers.add(variable);
+          // One of -u, -l and -c sets it; two of them together, or +u, +l or +c, turn it off.
+          const cases = new Set((['u', 'l', 'c'] as const).filter((flag) => flags.includes(flag)));
+          if (cases.size === 1) state.cases.set(variable, [...cases][0]);
+          else if (cases.size > 1 || options.some((option) => option?.startsWith('+') && /[ulc]/.test(option)))
+            state.cases.delete(variable);
           const value: Value =
             flags.includes('n') || match[2] === '+=' || arg.kind === 'dynamic'
               ? { kind: 'dynamic' }
@@ -1604,6 +1624,7 @@ class Walker {
     } else if (prompt || variable === 'PROMPT_COMMAND' || sensitive.test(variable)) {
       this.finding(ctx, 'sensitive-variable', `Setting ${variable} changes what runs or how`, call.span);
     }
+    if (bash && state.cases.has(variable)) value = cased(value, state.cases.get(variable));
     if (!bash || !state.integers.has(variable)) return value;
     // An integer variable evaluates what it's assigned as arithmetic, so that's what it holds.
     if (value.kind === 'static')
@@ -1927,9 +1948,23 @@ function equal(a: State, b: State): boolean {
     sameMap(a.hashed, b.hashed) &&
     sameSet(a.disabled, b.disabled) &&
     sameSet(a.integers, b.integers) &&
+    sameMap(a.cases, b.cases) &&
     a.cwd === b.cwd &&
     sameMap(a.later, b.later, (x, y) => sameSet(new Set(x.map((later) => later.key)), new Set(y.map((later) => later.key))))
   );
+}
+
+/** How `declare` changes a value's case: `-u` upper, `-l` lower, `-c` capitalized. */
+type Case = 'u' | 'l' | 'c';
+
+/** A value assigned to a variable with a case attribute, as Bash stores it (ASCII only: others follow the locale). */
+function cased(value: Value, how: Case | undefined): Value {
+  if (value.kind === 'dynamic') return value;
+  if (!how || /[^\t\n -~]/.test(value.value)) return { kind: 'dynamic' };
+  const text = value.value;
+  if (how === 'u') return { kind: 'static', value: text.toUpperCase() };
+  if (how === 'l') return { kind: 'static', value: text.toLowerCase() };
+  return { kind: 'static', value: text.slice(0, 1).toUpperCase() + text.slice(1).toLowerCase() };
 }
 
 /** Puts back the variables a function call made local, as they were before it (`outside`). */
@@ -1942,6 +1977,8 @@ function restore(state: State, outside: State, locals: Set<string>): void {
       if (outside[set].has(variable)) state[set].add(variable);
       else state[set].delete(variable);
     }
+    if (outside.cases.has(variable)) state.cases.set(variable, outside.cases.get(variable));
+    else state.cases.delete(variable);
   }
 }
 
@@ -1957,6 +1994,7 @@ function clone(state: State): State {
     hashed: new Map(state.hashed),
     disabled: new Set(state.disabled),
     integers: new Set(state.integers),
+    cases: new Map(state.cases),
     cwd: state.cwd,
     later: new Map([...state.later].map(([slot, code]) => [slot, [...code]])),
   };
@@ -2000,6 +2038,7 @@ function freshState(cwd: string | undefined): State {
     hashed: new Map(),
     disabled: new Set(),
     integers: new Set(),
+    cases: new Map(),
     cwd,
     later: new Map(),
   };
@@ -2023,6 +2062,9 @@ function join(state: State, other: State): void {
   }
   for (const name of other.exported) state.exported.add(name);
   for (const name of other.integers) state.integers.add(name);
+  for (const name of new Set([...state.cases.keys(), ...other.cases.keys()]))
+    if (state.cases.get(name) !== other.cases.get(name)) state.cases.set(name, undefined);
+
   for (const name of new Set([...state.functions.keys(), ...other.functions.keys()])) {
     const a = state.functions.get(name);
     const b = other.functions.get(name);
