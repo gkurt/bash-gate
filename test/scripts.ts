@@ -53,6 +53,7 @@ export const scripts = [
   "compgen -C 'ls -1' x",
   'echo `ls y`',
   'enable -n echo; echo hi',
+  'enable -ns echo; echo b; enable echo -n; echo c',
   'x=$(cat a) y=$(ls b); cat "$x"',
   'case a in a) cat 1;; b) ls 2;; esac',
   'git -C . status --short',
@@ -97,6 +98,7 @@ export const scripts = [
 export const hiding = [
   'v=($(cat array))x',
   'x=cat; $\\\nx y',
+  'enable "$@"-n echo; echo hi',
   'echo "${a[$(cat brace)}]}"; bash -ic \'ls interactive\'',
   'cat a 2>(ls x)ull 3<(sort y)',
   'shopt -s $(cat a\nc <<E )\nEOF\nls <<"EOF"\n$(ls body)\nEOF',

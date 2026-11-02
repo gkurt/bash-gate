@@ -1076,13 +1076,20 @@ class Walker {
         break;
       case 'enable': {
         effects.push('shell-state');
-        const disabling = values.includes('-n');
-        if (values.includes('-f')) {
+        const { options, rest, dynamic, bad } = getopt(values, 'adnpsf:');
+        if (bad) break;
+        if (options.some(([letter]) => letter === 'f')) {
           effects.push('exec:file');
           this.finding(ctx, 'loads-code', '`enable -f` loads a builtin from a shared object', call.span);
         }
-        for (const value of values) {
-          if (value === undefined || value.startsWith('-') || !builtins.has(value)) continue;
+        const names = values.slice(rest);
+        // A word only known at run time may be -n, or the name of any builtin, which then runs a program instead.
+        if (dynamic || names.includes(undefined))
+          this.finding(ctx, 'dynamic-command', '`enable` has arguments only known at run time: a builtin may run a program', call.span);
+
+        const disabling = options.some(([letter]) => letter === 'n');
+        for (const value of names) {
+          if (value === undefined || !builtins.has(value)) continue;
           if (disabling) state.disabled.add(value);
           else state.disabled.delete(value);
         }
