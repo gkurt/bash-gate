@@ -99,6 +99,7 @@ export const hiding = [
   'v=($(cat array))x',
   'x=cat; $\\\nx y',
   'enable "$@"-n echo; echo hi',
+  `PS4="+$(cat x)"'$(ls ps4) '; set -x; cat a`,
   'echo "${a[$(cat brace)}]}"; bash -ic \'ls interactive\'',
   'cat a 2>(ls x)ull 3<(sort y)',
   'shopt -s $(cat a\nc <<E )\nEOF\nls <<"EOF"\n$(ls body)\nEOF',

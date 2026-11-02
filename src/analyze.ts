@@ -1696,7 +1696,9 @@ class Walker {
         prompt ? this.expansions(text, s, { ...ctx, silent }, call, variable) : this.code(text, s, { ...ctx, silent }, call, variable);
       if (shell) this.later(state, [variable], variable, text, call, walk);
       else walk(clone(state), ctx.silent);
-    } else if (prompt || variable === 'PROMPT_COMMAND' || sensitive.test(variable)) {
+    } else if (prompt || variable === 'PROMPT_COMMAND') {
+      this.finding(ctx, 'dynamic-script', `${variable} is set to code only known at run time`, call.span);
+    } else if (sensitive.test(variable)) {
       this.finding(ctx, 'sensitive-variable', `Setting ${variable} changes what runs or how`, call.span);
     }
     if (bash && state.cases.has(variable)) value = cased(value, state.cases.get(variable));
