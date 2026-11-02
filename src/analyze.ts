@@ -606,6 +606,17 @@ class Walker {
           if (node.operation.length) this.arithmeticWord(node.operation.length, state, ctx, true);
         }
       }
+      if (
+        node.type === 'Word' &&
+        (node.parts?.filter((part) => part.type === 'Literal') ?? [node]).some((part) => /[<>]\(/.test(part.text))
+      ) {
+        // `2>(…)`: one word to Bash, with a process substitution after the digits. The parser read it as plain text.
+        const span = this.span(ctx, node.pos, node.end);
+        this.finding(ctx, 'parse-error', 'A process substitution after other text in a word, which the parser read as text', span);
+        const source = `: ${node.text.slice(node.text.search(/[<>]\(/))}`;
+        const inner = { ...ctx, source, outer: span, nesting: [...ctx.nesting, '<(…)'], depth: ctx.depth + 1, concurrent: true };
+        if (ctx.depth < this.maxDepth) this.substitutions(this.parse(source).commands, state, inner);
+      }
       if (node.type === 'Assignment' && node.value.type === 'Word' && !node.value.parts && /^\(.*[$`<>]/s.test(node.value.text)) {
         // `v=(…)x`: no array, but a string Bash expands, parentheses and all. The parser read it as plain text.
         const where = this.span(ctx, node.pos, node.end);

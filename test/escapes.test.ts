@@ -50,6 +50,7 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['hash -p /bin/true rm; hash rm; rm -rf /', 'deny', 'hash looking a name up again forgets its path'],
   ['hash -p ./missing rm; rm -rf /', 'deny', 'a path hash -p gave, which Bash passes over when it is not there'],
   ['v=($(rm -rf /))x', 'ask', 'an array assignment with text after it, which Bash expands as a string'],
+  ['cat a 2>(rm -rf /)', 'deny', 'a process substitution after digits, which is no redirection'],
   ["x=$(cat <<E )\ncat <<'EOF'\n$(rm -rf /)\nEOF", 'ask', 'a here-document opened in a substitution and never closed'],
   ['declare -l v; v=RM; $v -rf /', 'deny', 'a variable that lowercases what it is assigned'],
   ['x=/; declare -e x=./build; rm -rf $x', 'deny', 'declare with an option Bash rejects changes nothing'],
