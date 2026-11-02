@@ -69,6 +69,10 @@ const shell: CommandSpec = {
     const [first] = parsed.positionals;
     if (parsed.options['-c']) {
       if (first) parsed.scripts.push(first);
+    } else if (parsed.maybeOptions) {
+      // A word only known at run time may be -c, which makes the first positional after it code.
+      parsed.scripts.push(...parsed.positionals);
+      parsed.effects.add('exec:arbitrary');
     } else if (first && !parsed.options['-s']) {
       parsed.effects.add('exec:file');
       parsed.reads.push(first);

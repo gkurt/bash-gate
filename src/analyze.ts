@@ -1043,13 +1043,15 @@ class Walker {
         break;
       }
       case 'set':
-        // POSIX mode turns expand_aliases on; leaving it puts back what was there before.
+        // POSIX mode turns expand_aliases on; leaving it puts back what was there before. Options end at the first
+        // word that isn't one, which starts the positional parameters.
         for (let i = 0; i < args.length && values[i] !== '--' && values[i] !== '-'; i++) {
-          const option = values[i] === '-o' || values[i] === '+o' ? args[i + 1] : undefined;
+          if (values[i] !== undefined && !/^[-+]/.test(values[i]!)) break;
+          const option = /^[-+]\w*o$/.test(values[i] ?? '') ? args[i + 1] : undefined;
           if (args[i]!.kind === 'dynamic' || option?.kind === 'dynamic')
             state.expandAliases = state.expandAliases === true ? true : undefined;
           else if (option?.kind === 'static' && option.value === 'posix')
-            state.expandAliases = values[i] === '-o' ? true : state.expandAliases === false ? false : undefined;
+            state.expandAliases = values[i]!.startsWith('-') ? true : state.expandAliases === false ? false : undefined;
           if (option) i++;
         }
         break;
@@ -1893,6 +1895,9 @@ function asAssignment(word: Word): Assignment | undefined {
 function argument(item: Command['suffix'][number], lookup: Lookup): Arg[] {
   if (item.type === 'Word') return resolveWord(item, lookup);
   if (item.type !== 'Assignment') return [];
+  // As an argument (`alias`, `declare`), Bash expands its braces: `declare v=a{b,c}` declares v twice.
+  const word = item.value.type === 'Word' && item.value.parts?.some((part) => part.type === 'BraceExpansion') ? asWord(item) : undefined;
+  if (word) return resolveWord(word, lookup);
   const value = assignmentValue(item, lookup);
   const prefix = `${item.name}${item.append ? '+=' : '='}`;
   return [value.kind === 'static' ? { kind: 'static', value: prefix + value.value } : dynamicArg(item.text, 'variable', false, prefix)];
