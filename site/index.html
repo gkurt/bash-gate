@@ -67,7 +67,7 @@
             <span class="step">[1/6]</span> <b>parse</b>
             <p>
               With <a href="https://github.com/webpro-nl/unbash">unbash</a>, pinned. Any parse error, nested ones included, is a finding, so
-              the command can't be allowed.
+              the command can't be allowed. So is a carriage return in code, which Git Bash on Windows drops and Bash on Linux keeps.
             </p>
           </li>
           <li>
@@ -88,7 +88,7 @@
             <span class="step">[4/6]</span> <b>dispatch</b>
             <p>
               As Bash does: alias, function, builtin, program. <code>eval</code>, <code>trap</code>, <code>bash -c</code>,
-              <code>ssh host cmd</code>, git aliases and prompt strings are parsed and walked as code.
+              <code>bash &lt;&lt;EOF</code>, <code>ssh host cmd</code>, git aliases and prompt strings are parsed and walked as code.
             </p>
           </li>
           <li>

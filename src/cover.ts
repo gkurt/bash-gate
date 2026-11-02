@@ -1,7 +1,7 @@
 import type { Analysis, Arg, FindingKind, Invocation } from './types.ts';
 
 /** Findings that leave code unseen, such as a script only known at run time: any process is accounted for. */
-const unseen = new Set<FindingKind>([
+export const unseen = new Set<FindingKind>([
   'parse-error',
   'too-deep',
   'unknown-syntax',

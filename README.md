@@ -33,7 +33,8 @@ analyze('sudo -u root rm -rf "$dir"').invocations.map((i) => [i.shape, i.via, i.
 
 ## How it works
 
-1. **Parse** with unbash. Any parse error, nested ones included, is a finding, so the command can't be allowed.
+1. **Parse** with unbash. Any parse error, nested ones included, is a finding, so the command can't be allowed. So is
+   a carriage return in code, which Git Bash on Windows drops and Bash on Linux keeps.
 2. **Resolve words** (`src/words.ts`): quotes and escapes removed, braces expanded, known variables substituted, unquoted
    expansions split. A word is either static strings or one dynamic argument that says why (`variable`, `glob`,
    `substitution`…) and whether it may become several words.
@@ -42,9 +43,9 @@ analyze('sudo -u root rm -rf "$dir"').invocations.map((i) => [i.shape, i.via, i.
    as Bash parses: with `expand_aliases`, POSIX mode, `sh` or an interactive shell, from the next line, and in a
    function body as they were when it was defined. Subshells, pipelines and substitutions get copies of the state.
 4. **Dispatch** as Bash does: alias, then function, then builtin, then program. `command`, `builtin` and `exec` change
-   that order. `eval`, `trap`, `mapfile -C`, `compgen -C`, `bash -c`, `ssh host cmd`, `watch`, git aliases, git config
-   commands, gh aliases and config, prompt strings (`PS4`) and `PROMPT_COMMAND` parse their strings and walk them as
-   code. Once set, a trap action or prompt string may run between any two commands (a signal, a failing command,
+   that order. `eval`, `trap`, `mapfile -C`, `compgen -C`, `bash -c`, a shell's here-document or here-string, `ssh host
+   cmd`, `watch`, git aliases, git config commands, gh aliases and config, prompt strings (`PS4`) and `PROMPT_COMMAND`
+   parse their strings and walk them as code. Once set, a trap action or prompt string may run between any two commands (a signal, a failing command,
    `set -x`), so it's walked at each of those points with the state there, until `trap -` resets it, and what it
    changes carries on. Code for other shells (`zsh -c`, `fish -c`, `pwsh`) is never parsed as Bash: it's code the
    analysis can't see into.
@@ -228,6 +229,12 @@ bun run checks   # tsc, then bun test
   hand-written scripts, it generates scripts that mix variables, functions,
   aliases, `hash -p`, loops, substitutions, `eval`, `bash -c` and traps over a few shared names. Set `BASH_RUNS` to
   change the number of generated scripts.
+  The generator only writes what the analysis already follows, so the parser is fuzzed apart from it: mutants
+  (`test/mutated.ts`) of the hand-written and generated scripts, changed a few characters or tokens at a time
+  (quotes, `$'…'`, here-documents and their delimiters, case patterns, extglob, comments, line continuations, lines
+  of other scripts). Any the analysis claims to see through, with no finding that leaves code unseen, runs in Bash,
+  and everything it starts must be covered. Mutants may loop forever: each runs in a process group that's killed
+  after a few seconds. Set `MUTATION_RUNS` to change their number.
 - `test/trace.test.ts`: on x86_64 Linux with a C compiler, the hand-written and generated scripts again, with real
   programs under the supervisor: every exec the kernel sees, by any path, must be covered. Plus what enforcement
   refuses and what it leaves to the programs it doesn't follow. Set `TRACE_RUNS` to change the number of generated

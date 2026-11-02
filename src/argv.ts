@@ -50,6 +50,8 @@ export interface Parsed {
   nested: { argv: Arg[]; open: boolean }[];
   /** Shell code it runs (`bash -c`, `trap`, `git rebase -x`). */
   scripts: Arg[];
+  /** Whether it runs its standard input as shell code (`bash`, `sh -s`). */
+  stdinScript?: boolean;
   /** Strings of shell words it runs as a command line (`env -S`). */
   argvStrings: Arg[];
   /** `NAME=value` it sets in the environment of what it runs. */

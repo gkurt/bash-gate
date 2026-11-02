@@ -59,7 +59,7 @@ Out of scope:
 **S1. The analysis over-approximates execution.** For every command line `c`, and every run of `c` in a clean Bash,
 every process the shell starts, with its program and argv, is _covered_ by an invocation in `analyze(c)`. Covered
 means the same program, with each static argument equal and each dynamic argument standing for any words. Code the
-shell runs from strings (`eval`, `trap`, `bash -c`, aliases, git config) counts. A construct the analysis can't follow
+shell runs from strings (`eval`, `trap`, `bash -c`, a shell's here-document, aliases, git config) counts. A construct the analysis can't follow
 must become a finding, or a dynamic argument, command, option or `open` invocation. It must never disappear.
 
 **S2. The policy is monotone in what it's unsure of.** Making an invocation more capable never lowers its decision
@@ -100,7 +100,9 @@ execs kill the process, and so does any x32 system call.
 ## What is trusted
 
 - **[unbash](https://github.com/webpro-nl/unbash) 6.0.3 parsing like Bash 5.3.** A parser that disagrees with Bash is
-  the classic bypass, so S1 is tested against Bash itself, not against the parser.
+  the classic bypass, so S1 is tested against Bash itself, not against the parser, with scripts no generator would
+  write too: mutants of the others, broken a few characters at a time. Builds of Bash disagree as well: Git Bash drops
+  a carriage return from code it parses, where Bash on Linux and the parser keep it in a word, so one is a parse error.
 - **The specs.** A wrong spec, such as a missed option that takes a value or runs code, breaks S1 for that program.
 - **The integration.** It must run exactly the string that was analysed, in the shell the assumptions describe, with
   nothing from an earlier command still running. `bash-gate/trace` does that itself, given the analysis that was
@@ -119,6 +121,7 @@ execs kill the process, and so does any x32 system call.
 | ------- | ----------------------------------------------------------------------------------- | -------------------------- |
 | S1      | Scripts run in real Bash with logging stubs: everything that ran must be covered    | `test/bash.test.ts`        |
 | S1      | The same, for generated scripts mixing the constructs the analysis follows          | `test/bash.test.ts`        |
+| S1      | The same, for mutants of both the parser accepts: a parser that disagrees with Bash | `test/bash.test.ts`        |
 | S1      | Known escapes, one per construct                                                    | `test/escapes.test.ts`     |
 | S1      | The hand-written scripts with real programs: every exec the kernel sees is covered  | `test/trace.test.ts`       |
 | S1      | The same, for the generated scripts                                                 | `test/trace.test.ts`       |

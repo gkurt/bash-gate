@@ -1,4 +1,4 @@
-import { parse, type DoubleQuotedChild, type Word, type WordPart } from 'unbash';
+import { parse, type AnsiCQuotedPart, type DoubleQuotedChild, type Word, type WordPart } from 'unbash';
 import type { Arg, DynamicReason } from './types.ts';
 
 /** A variable as the analysis knows it: its value, or only that it has one at run time. */
@@ -97,8 +97,9 @@ function resolvePart(part: WordPart | DoubleQuotedChild, lookup: Lookup, quoted:
   switch (part.type) {
     case 'Literal':
     case 'SingleQuoted':
-    case 'AnsiCQuoted':
       return [[{ kind: 'text', value: part.value, split: false }]];
+    case 'AnsiCQuoted':
+      return [[{ kind: 'text', value: ansiC(part), split: false }]];
     case 'DoubleQuoted':
     case 'LocaleString': {
       const segments: Segment[] = [{ kind: 'text', value: '', split: false }];
@@ -169,6 +170,29 @@ function expandBraces(text: string, lookup: Lookup): Alternative[] | undefined {
     if (result.length > maxAlternatives) return undefined;
   }
   return result;
+}
+
+/** What `$'…'` stands for. unbash drops a backslash and newline in it, which Bash keeps: they're no escape there. */
+function ansiC(part: AnsiCQuotedPart): string {
+  const inner = part.text.slice(2, -1);
+  const pieces: string[] = [];
+  let start = 0;
+  for (let i = 0; i < inner.length; i++) {
+    if (inner[i] !== '\\') continue;
+    if (inner[i + 1] === '\n') {
+      pieces.push(inner.slice(start, i));
+      start = i + 2;
+    }
+    i++;
+  }
+  if (pieces.length === 0) return part.value;
+  pieces.push(inner.slice(start));
+  return pieces
+    .map((piece) => {
+      const [decoded] = parseWord(`$'${piece}'`)?.parts ?? [];
+      return decoded?.type === 'AnsiCQuoted' ? decoded.value : piece;
+    })
+    .join('\\\n');
 }
 
 function parseWord(text: string): Word | undefined {

@@ -35,6 +35,10 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['x=$(rm -rf /)', 'deny', 'a substitution in an assignment'],
   ['[[ -n $(rm -rf /) ]]', 'deny', 'a substitution in [[ ]]'],
   ['(( a[$(rm -rf /)] ))', 'deny', 'a substitution in an arithmetic subscript'],
+  ["x=$(( '$(rm -rf /)' ))", 'deny', 'single quotes in arithmetic, which are only text'],
+  ["x=$(( '$('r'm -rf /)' ))", 'deny', 'single quotes in arithmetic, around a substitution with quotes of its own'],
+  ["cat <<EOF\n${y:-'$(rm -rf /)'}\nEOF", 'deny', 'single quotes in ${…} in a here-document, which are only text'],
+  ['echo "${a[\'$(rm -rf /)\']}"', 'deny', 'single quotes in a subscript, which are only text'],
   ['echo hi > >(rm -rf /)', 'deny', 'a process substitution as a redirect target'],
   ['cat <<< <(rm -rf /)', 'deny', 'a process substitution as a here-string'],
   ['x=<(:) rm -rf /', 'deny', 'a process substitution in an assignment before the command'],
@@ -42,10 +46,15 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['x=ls; x=<(:); $x', 'ask', 'a process substitution assigned over a known value'],
   ['$x rm -rf /', 'deny', 'a command word that may expand to nothing'],
   ['x=-rf; local x=; rm $x /', 'deny', 'local outside a function changes nothing'],
+  ['x=/; f() { local x=./build; }; f; rm -rf $x', 'deny', 'a local is put back when the function returns'],
+  ['hash -p /bin/true rm; hash rm; rm -rf /', 'deny', 'hash looking a name up again forgets its path'],
+  ['hash x -p /bin/true rm; rm -rf /', 'deny', "hash's options end at its first name"],
   ['f() { rm -rf /; }; $x f', 'deny', 'a function called after an empty command word'],
   ['cat <<EOF\n$(rm -rf /)\nEOF', 'deny', 'a substitution in an unquoted heredoc'],
   ["cat <<'EOF'\n$(rm -rf /)\nEOF", 'allow', 'a quoted heredoc is only text'],
   ['echo `rm -rf /`', 'deny', 'backticks'],
+  ["bash <<'EOF'\nrm -rf /\nEOF", 'deny', 'a shell reading its script from a here-document'],
+  ["sh -s x <<< 'rm -rf /'", 'deny', 'a shell reading its script from a here-string, with arguments'],
 
   // Wrappers and programs that run programs.
   ['sudo rm -rf /', 'deny', 'sudo'],
@@ -241,6 +250,7 @@ const cases: [source: string, decision: Decision, what: string][] = [
 
   // What the analysis can't follow.
   ['echo "unterminated', 'ask', 'a parse error'],
+  ["cat <<'EOF'\nEOF\r\nrm -rf /\nEOF", 'ask', 'a carriage return, which ends the here-document only in Git Bash'],
   ['cowsay hi', 'ask', 'a program no rule covers'],
 ];
 

@@ -111,6 +111,8 @@ interface Context {
   depth: number;
   /** Function bodies being called, so recursion stops even when a name is redefined. */
   calls: FunctionNode[];
+  /** The variables the innermost of those calls made local: they're put back when it returns. */
+  locals?: Set<string>;
   /** Reached through `env`, `sudo`, `xargs`, `exec`…: no aliases, functions or builtins, only programs. */
   externalOnly: boolean;
   /** Files a compound command's redirections write and read, for each command in it. */
@@ -351,6 +353,7 @@ class Walker {
    */
   script(script: ParsedScript, state: State, ctx: Context, first?: Aliases): void {
     for (const error of script.errors ?? []) this.finding(ctx, 'parse-error', `Parse error: ${error.message}`, [error.pos, error.pos]);
+    this.carriageReturn(ctx.source, ctx);
     let unit = first ? { aliases: first, expanding: ctx.expanding } : undefined;
     let previous: number | undefined;
     for (const statement of script.commands) {
@@ -577,19 +580,29 @@ class Walker {
         if (node.expression) this.arithmetic(node.expression, state, ctx);
         return;
       }
+      if (node.type === 'HereDocBody' && node.parts?.some((part) => part.type === 'ParameterExpansion' && part.text.includes("'"))) {
+        // Bash expands the body as if it were in double quotes, so `'` in `${y:-'$(ls)'}` is only text, and `ls` runs.
+        // The parser reads it as quoting, but not in a double-quoted string: the body is walked again as one.
+        const text = node.parts.map((part) =>
+          part.type === 'Literal' ? part.text.replaceAll(/\\[\s\S]|"/g, (m) => (m === '"' ? '\\"' : m)) : part.text,
+        );
+        this.expansions(text.join(''), state, ctx, this.at(ctx, state, node), 'here-document', true);
+      }
       if (node.type === 'ParameterExpansion') {
-        if (node.index && node.index.value !== '@' && node.index.value !== '*') this.arithmeticWord(node.index, state, ctx);
+        if (node.index && node.index.value !== '@' && node.index.value !== '*') this.arithmeticWord(node.index, state, ctx, true);
         if (node.operation?.type === 'Slice') {
-          this.arithmeticWord(node.operation.offset, state, ctx);
-          if (node.operation.length) this.arithmeticWord(node.operation.length, state, ctx);
+          this.arithmeticWord(node.operation.offset, state, ctx, true);
+          if (node.operation.length) this.arithmeticWord(node.operation.length, state, ctx, true);
         }
       }
-      if (node.type === 'Assignment' && node.index) this.arithmeticWord(node.index, state, ctx);
+      if (node.type === 'Assignment' && node.index) this.arithmeticWord(node.index, state, ctx, true);
       if (node.type === 'Assignment' && node.value.type === 'ArrayValue') {
         // `a=([i]=v)`: the subscript is arithmetic, as in `a[i]=v`.
         for (const element of node.value.elements) {
           const subscript = /^\[([\s\S]*?)\]\+?=/.exec(element.text)?.[1];
-          if (subscript !== undefined) this.arithmeticText(subscript, state, ctx, element.text, this.span(ctx, element.pos, element.end));
+          if (subscript === undefined) continue;
+          this.unquoted(subscript, state, ctx, element);
+          this.arithmeticText(subscript, state, ctx, element.text, this.span(ctx, element.pos, element.end));
         }
       }
       if (node.type === 'TestBinary' && ['-eq', '-ne', '-lt', '-le', '-gt', '-ge'].includes(node.operator)) {
@@ -601,14 +614,27 @@ class Walker {
     for (const node of nodes) visit(node, ctx);
   }
 
-  /** A word Bash evaluates as arithmetic (`[[ x -eq y ]]`, an index, an offset): an expression, after expansion. */
-  arithmeticWord(word: Word, state: State, ctx: Context): void {
+  /**
+   * A word Bash evaluates as arithmetic (`[[ x -eq y ]]`, an index, an offset): an expression, after expansion. When it's
+   * `expanded` as arithmetic is (not `[[`'s operands), quotes in it quote nothing.
+   */
+  arithmeticWord(word: Word, state: State, ctx: Context, expanded = false): void {
+    if (expanded) this.unquoted(word.text, state, ctx, word);
     const span = this.span(ctx, word.pos, word.end);
     const item = operand(word.value, word.parts, lookupIn(state));
     if (item.kind === 'name') this.arithmeticText(word.value, state, ctx, word.text, span);
     else if (item.kind === 'text') this.arithmeticText(item.text, state, ctx, word.text, span);
     else if (item.kind === 'dynamic')
       this.finding(ctx, 'dynamic-arithmetic', `Arithmetic operand is only known at run time: ${word.text}`, span);
+  }
+
+  /**
+   * Bash expands arithmetic `text` (`node`'s) as if it were in double quotes, where single quotes are only text:
+   * `$(( '$(ls)' ))` runs `ls`, and so does `$(( '$('l's)' ))`. With one in it, all of it is walked as a
+   * here-document's body, where they're text too.
+   */
+  unquoted(text: string, state: State, ctx: Context, node: { pos: number; end: number }): void {
+    if (text.includes("'") && /[$`]/.test(text)) this.expansions(text, state, ctx, this.at(ctx, state, node), 'arithmetic');
   }
 
   /**
@@ -638,7 +664,10 @@ class Walker {
    * expression is in the source and the substitutions in it run first.
    */
   arithmetic(expression: ArithmeticExpression, state: State, ctx: Context, seen = new Set<string>(), span?: [number, number]): void {
-    if (!span) this.substitutions([expression], state, ctx);
+    if (!span) {
+      this.substitutions([expression], state, ctx);
+      this.unquoted(ctx.source.slice(expression.pos, expression.end), state, ctx, expression);
+    }
     const where = (node: SyntaxNode) => span ?? this.span(ctx, node.pos, node.end);
     const lookup = lookupIn(state);
     const reads = new Map<SyntaxNode, boolean>();
@@ -807,7 +836,11 @@ class Walker {
           return clone(state);
         }
         // The body was parsed, aliases and all, when it was defined.
-        return this.branch(state, { ...ctx, calls: [...ctx.calls, node], aliases, expanding: [] }, (s, c) => this.node(node.body, s, c));
+        const locals = new Set<string>();
+        return this.branch(state, { ...ctx, calls: [...ctx.calls, node], locals, aliases, expanding: [] }, (s, c) => {
+          this.node(node.body, s, c);
+          restore(s, state, locals);
+        });
       });
       settle(state, fn.maybeUndefined ? [...outcomes, clone(state)] : outcomes);
       if (!fn.maybeUndefined) return;
@@ -987,19 +1020,7 @@ class Walker {
         break;
       case 'hash':
         effects.push('shell-state');
-        for (let i = 0; i < args.length; i++) {
-          if (values[i] === '-r') {
-            state.hashed.clear();
-          } else if (values[i] === '-d') {
-            state.hashed.delete(values[++i] ?? '');
-          } else if (values[i] === '-p') {
-            const path = values[i + 1];
-            const target = values[i + 2];
-            if (target !== undefined) state.hashed.set(target, path);
-            else this.finding(ctx, 'loads-code', '`hash -p` gives a command a path only known at run time', call.span);
-            i += 2;
-          }
-        }
+        this.hash(values, state, ctx, call);
         break;
       case 'enable': {
         effects.push('shell-state');
@@ -1034,7 +1055,11 @@ class Walker {
       case 'readonly': {
         // Outside a function, `local` is an error that changes nothing.
         if (name === 'local' && ctx.calls.length === 0) break;
-        const flags = values.filter((value) => value?.startsWith('-')).join('');
+        // Options end at the first name, as getopt reads them.
+        const end = values.findIndex((value) => value === undefined || value === '--' || !/^[-+]./.test(value));
+        const flags = (end === -1 ? values : values.slice(0, end)).filter((value) => value?.startsWith('-')).join('');
+        // In a function, `local`, and `declare` without -g, make a variable of the call's own, unset until assigned.
+        const locals = ctx.calls.length > 0 && (name === 'local' || (name !== 'export' && name !== 'readonly' && !flags.includes('g')));
         for (const arg of args) {
           const text = arg.kind === 'static' ? arg.value : arg.prefix;
           if (text.startsWith('-')) continue;
@@ -1044,6 +1069,12 @@ class Walker {
           if (flags.includes('f')) {
             if (name === 'export') state.exportedFunctions.add(variable);
             continue;
+          }
+          if (locals && !ctx.locals?.has(variable)) {
+            ctx.locals?.add(variable);
+            // Unset in the shell, while what it starts still sees an exported value from outside.
+            state.vars.set(variable, state.exported.has(variable) ? { kind: 'dynamic' } : { kind: 'static', value: '' });
+            state.integers.delete(variable);
           }
           if (name === 'export' || flags.includes('x')) state.exported.add(variable);
           if (flags.includes('i')) state.integers.add(variable);
@@ -1133,6 +1164,51 @@ class Walker {
     else set(positionals[0] === undefined ? 'MAPFILE' : positionals[0]);
   }
 
+  /**
+   * `hash [-lrt] [-p path] [-d] [name…]`: options up to the first name, as getopt reads them. `-r` empties the table
+   * first; then `-p` gives each name the path, and otherwise a name is looked up on `PATH` again (`-d`: forgotten),
+   * either way leaving the table. A name with a `/` is skipped, `-t` only prints, and a bad option changes nothing.
+   * Words only known at run time leave unknown which names change: with a path, any command may run it.
+   */
+  hash(values: (string | undefined)[], state: State, ctx: Context, call: Call): void {
+    const flags = new Set<string>();
+    let path: string | undefined;
+    let i = 0;
+    for (; i < values.length; i++) {
+      const value = values[i];
+      if (value === undefined) return this.finding(ctx, 'dynamic-command', '`hash` has options only known at run time', call.span);
+      if (value === '--') {
+        i++;
+        break;
+      }
+      if (!value.startsWith('-') || value === '-') break;
+      for (let j = 1; j < value.length; j++) {
+        const flag = value[j]!;
+        if (!'lrtpd'.includes(flag)) return;
+        flags.add(flag);
+        if (flag !== 'p') continue;
+        if (j + 1 < value.length) path = value.slice(j + 1);
+        else if (i + 1 < values.length) path = values[++i];
+        else return;
+        break;
+      }
+    }
+    const names = values.slice(i);
+    if (flags.has('t')) return;
+    if (flags.has('r')) state.hashed.clear();
+    for (const name of names) {
+      if (name === undefined) {
+        if (flags.has('p'))
+          return this.finding(ctx, 'dynamic-command', '`hash -p` gives a path to a command named only at run time', call.span);
+        for (const known of state.hashed.keys()) state.hashed.set(known, undefined);
+        continue;
+      }
+      if (name.includes('/')) continue;
+      if (flags.has('p')) state.hashed.set(name, path);
+      else state.hashed.delete(name);
+    }
+  }
+
   /** A program run from `PATH`, a path, or what `hash -p` gave the name. */
   program(argv: Arg[], state: State, ctx: Context, call: Call): void {
     const name = (argv[0] as Extract<Arg, { kind: 'static' }>).value;
@@ -1191,7 +1267,9 @@ class Walker {
       if (words) this.dispatch(words, unhashed(), inner, innerCall(false));
       else this.finding(ctx, 'dynamic-script', `${program} runs a command line only known at run time`, call.span);
     }
-    for (const script of parsed.scripts) {
+    const stdin = parsed.stdinScript ? this.stdinScript(call, state) : undefined;
+    if (parsed.stdinScript && !stdin) this.finding(ctx, 'dynamic-script', `${program} runs code from its standard input`, call.span);
+    for (const script of stdin ? [...parsed.scripts, stdin] : parsed.scripts) {
       if (script.kind === 'dynamic') {
         this.finding(ctx, 'dynamic-script', `${program} runs code only known at run time: ${script.text}`, call.span);
         continue;
@@ -1204,12 +1282,40 @@ class Walker {
         shell,
         { ...ctx, via: [...ctx.via, program], externalOnly: false, calls: [] },
         call,
-        remote ? `${program} (remote)` : `${program} -c`,
+        remote ? `${program} (remote)` : script === stdin ? `${program} <<` : `${program} -c`,
       );
     }
     // After what it reads first: `git config k v` reads the config, then writes it.
     this.wrote(parsed.writes, call, writeKind(program));
     if (writesUnknown(program, parsed, followed)) this.wroteAnything();
+  }
+
+  /**
+   * The code a shell reads from its standard input, when the command's last redirection of it is a here-document or a
+   * here-string. Other input (a file, a pipe, the caller's) isn't followed, which is a finding.
+   */
+  stdinScript(call: Call, state: State): Arg | undefined {
+    const input = call.command?.redirects.findLast((redirection) => {
+      const fd = redirection.descriptor?.type === 'FileDescriptor' ? redirection.descriptor.value : undefined;
+      return fd === undefined ? redirection.type !== 'Redirect' || /^<(&|>)?$/.test(redirection.operator) : fd === 0;
+    });
+    if (input?.type === 'HereString' && input.target) {
+      const [word, ...more] = resolveWord(input.target, lookupIn(state));
+      if (word?.kind === 'static' && more.length === 0) return { kind: 'static', value: `${word.value}\n` };
+      return dynamicArg(input.target.text, 'substitution', false, '');
+    }
+    if (input?.type !== 'HereDoc') return undefined;
+    const { body, delimiter, operator } = input;
+    // Unquoted, a backslash quotes only `$`, `` ` ``, `\` and a newline.
+    const text = delimiter?.quoted
+      ? body.text
+      : !body.parts
+        ? body.text.replaceAll(/\\([$`\\\n])/g, (_, char: string) => (char === '\n' ? '' : char))
+        : body.parts.every((part) => part.type === 'Literal')
+          ? body.parts.map((part) => part.value).join('')
+          : undefined;
+    if (text === undefined) return dynamicArg(body.text, 'substitution', false, '');
+    return { kind: 'static', value: operator === '<<-' ? text.replaceAll(/^\t+/gm, '') : text };
   }
 
   /** `git -c key=value`: entries that make git run commands, which are followed when they're shell code. */
@@ -1502,17 +1608,30 @@ class Walker {
     return { kind: 'dynamic' };
   }
 
-  /** Text expanded like a here-document's body (a prompt string): the substitutions in it run. */
-  expansions(text: string, state: State, ctx: Context, call: Call, label: string): void {
+  /**
+   * Text expanded like a here-document's body (a prompt string): the substitutions in it run. `doubleQuoted`: as a
+   * double-quoted string's, which is the same but for `"`, and how the parser reads `'` in `${…}`.
+   */
+  expansions(text: string, state: State, ctx: Context, call: Call, label: string, doubleQuoted = false): void {
     if (ctx.depth >= this.maxDepth)
       return this.finding(ctx, 'too-deep', `Code nests deeper than the analysis follows (${label})`, call.span);
     let delimiter = 'BASH_GATE_EOF';
     while (text.split('\n').includes(delimiter)) delimiter += '_';
-    const source = `: <<${delimiter}\n${text}\n${delimiter}\n`;
+    const source = doubleQuoted ? `: "${text}"\n` : `: <<${delimiter}\n${text}\n${delimiter}\n`;
     const script = this.parse(source);
     const inner = { ...ctx, source, outer: call.span, nesting: [...ctx.nesting, label], depth: ctx.depth + 1, writes: [], reads: [] };
     for (const error of script.errors ?? []) this.finding(inner, 'parse-error', `Parse error: ${error.message}`, call.span);
+    this.carriageReturn(source, inner);
     this.substitutions(script.commands, state, inner);
+  }
+
+  /**
+   * Git Bash (Bash on Windows) drops a carriage return from code it parses, where the parser reads it as Bash on Linux
+   * does: part of a word.
+   */
+  carriageReturn(code: string, ctx: Context): void {
+    const at = code.indexOf('\r');
+    if (at !== -1) this.finding(ctx, 'parse-error', 'A carriage return in code: Git Bash drops it, Bash on Linux keeps it', [at, at + 1]);
   }
 
   emit(ctx: Context, call: Call, program: string | null, kind: Invocation['kind'], argv: Arg[], parsed: Parsed, path?: string): void {
@@ -1800,6 +1919,19 @@ function equal(a: State, b: State): boolean {
     a.cwd === b.cwd &&
     sameMap(a.later, b.later, (x, y) => sameSet(new Set(x.map((later) => later.key)), new Set(y.map((later) => later.key))))
   );
+}
+
+/** Puts back the variables a function call made local, as they were before it (`outside`). */
+function restore(state: State, outside: State, locals: Set<string>): void {
+  for (const variable of locals) {
+    const value = outside.vars.get(variable);
+    if (value) state.vars.set(variable, value);
+    else state.vars.delete(variable);
+    for (const set of ['exported', 'integers'] as const) {
+      if (outside[set].has(variable)) state[set].add(variable);
+      else state[set].delete(variable);
+    }
+  }
 }
 
 function clone(state: State): State {

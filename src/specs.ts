@@ -39,7 +39,7 @@ function each(names: string, spec: CommandSpec): Record<string, CommandSpec> {
 
 const staticValue = (arg: Arg | undefined) => (arg?.kind === 'static' ? arg.value : undefined);
 
-/** A shell: `-c` runs its first positional as code, a positional alone runs that file, nothing at all runs stdin. */
+/** A shell: `-c` runs its first positional as code, a positional alone runs that file, `-s` or nothing at all runs stdin. */
 const shell: CommandSpec = {
   posix: true,
   options: opts(
@@ -69,11 +69,12 @@ const shell: CommandSpec = {
     const [first] = parsed.positionals;
     if (parsed.options['-c']) {
       if (first) parsed.scripts.push(first);
-    } else if (first) {
+    } else if (first && !parsed.options['-s']) {
       parsed.effects.add('exec:file');
       parsed.reads.push(first);
     } else if (!parsed.options['-n'] && !parsed.options['--version'] && !parsed.options['--help']) {
       parsed.effects.add('exec:arbitrary');
+      parsed.stdinScript = true;
     }
   },
 };
