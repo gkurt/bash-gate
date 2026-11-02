@@ -1033,13 +1033,20 @@ class Walker {
         for (const value of values) if (value) state.aliases.delete(value);
         break;
       case 'shopt': {
-        const names = values.filter((value) => value !== undefined && !value.startsWith('-'));
         if (args.some((arg) => arg.kind === 'dynamic')) {
           state.expandAliases = state.expandAliases === true ? true : undefined;
-        } else if (names.includes('expand_aliases')) {
-          if (values.includes('-s')) state.expandAliases = true;
-          if (values.includes('-u')) state.expandAliases = false;
+          break;
         }
+        // Options end at the first name; a bad one, or -s with -u, changes nothing. With -o, the names are `set -o`'s.
+        let end = values.findIndex((value) => !value!.startsWith('-') || value === '--');
+        if (end === -1) end = values.length;
+        const flags = values.slice(0, end).join('');
+        const names = values.slice(values[end] === '--' ? end + 1 : end);
+        if (/[^-psuoq]/.test(flags) || (flags.includes('s') && flags.includes('u'))) break;
+        if (!names.includes(flags.includes('o') ? 'posix' : 'expand_aliases')) break;
+        if (flags.includes('s')) state.expandAliases = true;
+        else if (flags.includes('u'))
+          state.expandAliases = flags.includes('o') ? (state.expandAliases === false ? false : undefined) : false;
         break;
       }
       case 'set':
@@ -1782,8 +1789,8 @@ function parseGitConfig(text: string): { key: string; value: string }[] {
 }
 
 /**
- * unbash ends a word at a process substitution (`x=<(f) rm`, `a<(f)b`), where Bash keeps one word going: rejoins
- * the words and assignments that touch, then finds the command word again.
+ * unbash ends a word at a process substitution (`x=<(f) rm`, `a<(f)b`, `<<< <(f)b`), where Bash keeps one word going:
+ * rejoins the words, assignments and redirection targets that touch, then finds the command word again.
  */
 function rejoined(command: Command): Command {
   const items = [...command.prefix, ...(command.name ? [command.name] : []), ...command.suffix];
@@ -1792,18 +1799,21 @@ function rejoined(command: Command): Command {
     const previous = joined.at(-1);
     const tail = previous?.type === 'Assignment' ? previous.value : previous;
     const next = item.type === 'Assignment' ? asWord(item) : item.type === 'Word' ? item : undefined;
+    if (next && previous?.end === item.pos && (previous.type === 'Redirect' || previous.type === 'HereString') && previous.target) {
+      // Field by field, as below.
+      const { pos, descriptor } = previous;
+      const target = touching(previous.target, next);
+      joined[joined.length - 1] =
+        previous.type === 'Redirect'
+          ? { type: 'Redirect', pos, end: next.end, operator: previous.operator, descriptor, target }
+          : { type: 'HereString', pos, end: next.end, operator: '<<<', descriptor, target };
+      continue;
+    }
     if (!previous || tail?.type !== 'Word' || !next || previous.end !== item.pos) {
       joined.push(item);
       continue;
     }
-    const value: Word = {
-      type: 'Word',
-      text: tail.text + next.text,
-      value: tail.value + next.value,
-      pos: tail.pos,
-      end: next.end,
-      parts: [...wordParts(tail), ...wordParts(next)],
-    };
+    const value = touching(tail, next);
     // Field by field: unbash's nodes keep `name`, `append` and `index` in getters, which a spread drops.
     joined[joined.length - 1] =
       previous.type === 'Assignment'
@@ -1840,7 +1850,19 @@ function rejoined(command: Command): Command {
     prefix,
     suffix,
     args: suffix.filter((item) => item.type === 'Word' || item.type === 'Assignment'),
-    redirects: command.redirects,
+    redirects: [...prefix, ...suffix].filter((item): item is Redirection => item.type !== 'Word' && item.type !== 'Assignment'),
+  };
+}
+
+/** Two words that touch, as the one word Bash reads. */
+function touching(first: Word, second: Word): Word {
+  return {
+    type: 'Word',
+    text: first.text + second.text,
+    value: first.value + second.value,
+    pos: first.pos,
+    end: second.end,
+    parts: [...wordParts(first), ...wordParts(second)],
   };
 }
 
