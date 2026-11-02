@@ -151,6 +151,13 @@ const builtins = new Set(
   ),
 );
 
+/** The option names `set -o` takes in Bash 5.3. */
+const setOptions = new Set(
+  'allexport braceexpand emacs errexit errtrace functrace hashall histexpand history ignoreeof interactive-comments keyword monitor noclobber noexec noglob nolog notify nounset onecmd physical pipefail posix privileged verbose vi xtrace'.split(
+    ' ',
+  ),
+);
+
 /** Variables that change what runs or where it's looked up, for the shell or the programs it starts (prompt strings and `PROMPT_COMMAND` are walked as code instead). */
 const sensitive =
   /^(PATH|BASH_ENV|ENV|IFS|SHELLOPTS|BASHOPTS|CDPATH|HOME|ZDOTDIR|TMPDIR|XDG_CONFIG_HOME|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_[A-Z_]+|GH_(PAGER|EDITOR|BROWSER|CONFIG_DIR|PATH)|BROWSER|PAGER|MANPAGER|EDITOR|VISUAL|LESSOPEN|LESSCLOSE|NODE_OPTIONS|NODE_PATH|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|SSH_ASKPASS|SUDO_ASKPASS|npm_config_\w+|NPM_CONFIG_\w+)$/;
@@ -1050,17 +1057,7 @@ class Walker {
         break;
       }
       case 'set':
-        // POSIX mode turns expand_aliases on; leaving it puts back what was there before. Options end at the first
-        // word that isn't one, which starts the positional parameters.
-        for (let i = 0; i < args.length && values[i] !== '--' && values[i] !== '-'; i++) {
-          if (values[i] !== undefined && !/^[-+]/.test(values[i]!)) break;
-          const option = /^[-+]\w*o$/.test(values[i] ?? '') ? args[i + 1] : undefined;
-          if (args[i]!.kind === 'dynamic' || option?.kind === 'dynamic')
-            state.expandAliases = state.expandAliases === true ? true : undefined;
-          else if (option?.kind === 'static' && option.value === 'posix')
-            state.expandAliases = values[i]!.startsWith('-') ? true : state.expandAliases === false ? false : undefined;
-          if (option) i++;
-        }
+        this.set(values, state);
         break;
       case 'hash':
         effects.push('shell-state');
@@ -1215,6 +1212,31 @@ class Walker {
     if (name === 'getopts') set(positionals[1]);
     else if (name === 'read') (positionals.length > 0 ? positionals : ['REPLY']).forEach(set);
     else set(positionals[0] === undefined ? 'MAPFILE' : positionals[0]);
+  }
+
+  /**
+   * `set`, as far as it turns POSIX mode on or off, and with it `expand_aliases` (leaving it puts back what was there
+   * before). Options end at the first word that isn't one. `-o` takes the next word as an option's name, unless it
+   * looks like an option itself: then it lists them. A bad letter or name anywhere makes `set` change nothing.
+   */
+  set(values: (string | undefined)[], state: State): void {
+    const maybe = () => (state.expandAliases = state.expandAliases === true ? true : undefined);
+    let posix: boolean | undefined;
+    let sure = true;
+    for (let i = 0; i < values.length; i++) {
+      const value = values[i];
+      if (value === undefined) return void maybe();
+      if (value === '--' || value === '-' || !/^[-+]/.test(value)) break;
+      if (/[^abefhkmnptuvxBCEHPTo]/.test(value.slice(1))) return;
+      if (!value.includes('o') || i + 1 === values.length || /^[-+]/.test(values[i + 1] ?? '')) continue;
+      const name = values[++i];
+      if (name === undefined) return void maybe();
+      if (name === 'posix') posix = value.startsWith('-');
+      // Builds differ (Git Bash has `igncr`): one this doesn't know may make `set` fail.
+      else if (!setOptions.has(name)) sure = false;
+    }
+    if (posix === false) state.expandAliases = state.expandAliases === false ? false : undefined;
+    else if (posix) state.expandAliases = sure ? true : maybe();
   }
 
   /**

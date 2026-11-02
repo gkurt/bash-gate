@@ -76,6 +76,7 @@ export const scripts = [
   "/bin/bash --posix -c 'alias ls=cat\nls a'; /bin/bash -O expand_aliases -c 'alias rm=cat\nrm b'",
   'set -o posix\nalias ls=cat\nls a',
   'set set -o posix\nalias ls=cat\nls a\nset -eo posix\nalias ls=sort\nls b',
+  'set -set -o posix\nalias ls=cat\nls a\nset -o posix -z\nls b\nset -eo -eo posix\nalias ls=sort\nls c',
   'shopt shopt -s expand_aliases\nalias ls=cat\nls a\nshopt -so posix\nalias ls=sort\nls b\ncat <<< <(ls here)enable -n x',
   'shopt -s expand_aliases\nalias ls=cat <missing\nls b\nx=ls; { x=sort; } <missing; $x c; hash -p /bin/cat rm <missing; rm d',
   "PS4='+$(ls ps4) '; set -x; cat a",
