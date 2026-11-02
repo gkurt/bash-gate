@@ -610,6 +610,7 @@ class Walker {
         const where = this.span(ctx, node.pos, node.end);
         this.finding(ctx, 'parse-error', 'A `$` before a line continuation, which Bash joins to what follows', where);
       }
+      if (unterminated(node)) this.finding(ctx, 'parse-error', "An expansion that's never closed", this.span(ctx, node.pos, node.end));
       if (node.type === 'ParameterExpansion' && node.operation?.type === 'Unknown')
         this.finding(ctx, 'parse-error', `An expansion the parser couldn't read: ${node.text}`, this.span(ctx, node.pos, node.end));
       if (node.type === 'ParameterExpansion') {
@@ -2089,6 +2090,16 @@ function unquote(text: string): string {
     (_, single?: string, double?: string, escaped?: string) =>
       single ?? (double === undefined ? escaped! : double.replaceAll(/\\([$`"\\\n])/g, '$1')),
   );
+}
+
+/** Whether `node` is an expansion that's never closed, which the parser accepts without an error in a here-document. */
+function unterminated(node: SyntaxNode): boolean {
+  if (node.type === 'CommandExpansion')
+    return node.text.startsWith('`') ? node.text.length < 2 || !node.text.endsWith('`') : !node.text.endsWith(')');
+  if (node.type === 'ProcessSubstitution') return !node.text.endsWith(')');
+  if (node.type === 'ArithmeticExpansion') return !node.text.endsWith(node.text.startsWith('$[') ? ']' : '))');
+  if (node.type === 'ParameterExpansion') return node.text.startsWith('${') && !node.text.endsWith('}');
+  return false;
 }
 
 /** Whether `node` has a here-document the parser found no end for. */
