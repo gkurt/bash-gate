@@ -88,6 +88,8 @@ export const scripts = [
   "set -o posix\nalias ls=cat\ncompgen -C 'ls -1' x\nmapfile -C 'ls m' -c 1 a <<< l",
   "x=$(( $'\\x24(cat decoded)' + 1 ))\n(( $'\\x24(ls cmd)' ))\na[$'\\x24(sort sub)']=1\nx=$(( '$(cat q)' + $'$(ls \\ansi)' ))",
   'cat {a}s,d}e {[}s,d}e x{a,[}b}y {a,b}}',
+  's=a; x="a  b"; cat {$,}s,d}e {,$x} "${u:-"$"("ls m)"}" "${v:-"$(sort ok)"}"',
+  'set -o posix\n{ alias ls=cat\nx=$(ls a; alias rm=sort\nrm b); }\ny=$(ls c)',
   'set set -o posix\nalias ls=cat\nls a\nset -eo posix\nalias ls=sort\nls b',
   'set -set -o posix\nalias ls=cat\nls a\nset -o posix -z\nls b\nset -eo -eo posix\nalias ls=sort\nls c',
   'shopt - -s expand_aliases\nalias ls=cat\nls a\nshopt -s-- expand_aliases\nls b\nshopt -s -- expand_aliases\nalias ls=sort\nls c',

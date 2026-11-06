@@ -370,9 +370,10 @@ class Walker {
 
   /**
    * Code Bash parses as it runs (a script, `eval`, `bash -c`, a substitution): each line is parsed with the aliases
-   * defined when it begins. `first` is the alias table for the first line when it continues one (an alias's text).
+   * defined when it begins. `first` is the alias table for the first line when it continues one (an alias's text), or
+   * for every line when it was all parsed at once (`whole`).
    */
-  script(script: ParsedScript, state: State, ctx: Context, first?: Aliases): void {
+  script(script: ParsedScript, state: State, ctx: Context, first?: Aliases, whole = false): void {
     for (const error of script.errors ?? []) this.finding(ctx, 'parse-error', `Parse error: ${error.message}`, [error.pos, error.pos]);
     this.carriageReturn(ctx.source, ctx);
     // An alias's text leaves out a here-document's body, which is after the command.
@@ -380,7 +381,7 @@ class Walker {
     let unit = first ? { aliases: first, expanding: ctx.expanding } : undefined;
     let previous: number | undefined;
     for (const statement of script.commands) {
-      if (!unit || (previous !== undefined && ctx.source.slice(previous, statement.pos).includes('\n')))
+      if (!unit || (!whole && previous !== undefined && ctx.source.slice(previous, statement.pos).includes('\n')))
         unit = { aliases: snapshot(state, ctx.late), expanding: [] };
       this.between(state, ctx);
       const shell = statement.background ? clone(state) : state;
@@ -599,7 +600,11 @@ class Walker {
     const visit = (node: SyntaxNode, ctx: Context) => {
       if (node.type === 'Script') {
         const scriptCtx = node.source === undefined ? ctx : { ...ctx, source: node.source, outer: ctx.outer ?? [node.pos, node.end] };
-        this.script(node, clone(state), { ...scriptCtx, nesting: [...ctx.nesting, '$(…)'] });
+        const inner = { ...scriptCtx, nesting: [...ctx.nesting, '$(…)'] };
+        // In POSIX mode Bash runs the substitution as it parsed it with the line around it: with that line's aliases,
+        // and none it defines itself. Otherwise it parses it again as it runs, a line at a time.
+        if (state.posix !== false && !ctx.late) this.script(node, clone(state), inner, ctx.aliases, true);
+        if (state.posix !== true || ctx.late) this.script(node, clone(state), inner);
         return;
       }
       if (node.type === 'ProcessSubstitution') return forEachChild(node, (child) => visit(child, { ...ctx, concurrent: true }));
@@ -614,6 +619,16 @@ class Walker {
           part.type === 'Literal' ? part.text.replaceAll(/\\[\s\S]|"/g, (m) => (m === '"' ? '\\"' : m)) : part.text,
         );
         this.expansions(text.join(''), state, ctx, this.at(ctx, state, node), 'here-document', true);
+      }
+      if (node.type === 'DoubleQuoted') {
+        // In `"${x:-"$"("ls)"}"`, Bash removes the inner quotes first and expands what's left: `ls` runs.
+        const expansion = /\$[({\w]|`/g;
+        for (const part of node.parts) {
+          if (part.type !== 'ParameterExpansion' || !part.text.includes('"')) continue;
+          const bare = part.text.replaceAll(/\\[\s\S]|"/g, (m) => (m === '"' ? '' : m));
+          if ((bare.match(expansion)?.length ?? 0) > (part.text.match(expansion)?.length ?? 0))
+            this.expansions(bare, state, ctx, this.at(ctx, state, part), 'parameter', true);
+        }
       }
       if ((node.type === 'Word' || node.type === 'Assignment') && ctx.source[node.end] === '#') {
         // `x=<(sort s)#; cat $x`: one word to Bash, as a `#` inside one starts no comment. The parser cut the line there.

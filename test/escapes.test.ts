@@ -81,6 +81,13 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ["x=$(( $'\\x24(rm -rf /)' ))", 'deny', 'ANSI-C quoting in arithmetic, decoded before what it holds is expanded'],
   ["a[$'\\x24(rm -rf /)']=1", 'deny', 'ANSI-C quoting in a subscript, decoded before what it holds is expanded'],
   ['x=<(cat a)#; rm -rf /', 'ask', 'a # after a process substitution, which starts no comment in Bash'],
+  ['echo "${u:-"$"("rm -rf /)"}"', 'deny', 'inner quotes in a double-quoted default, which Bash removes before expanding'],
+  [
+    'set -o posix\n{ alias rm=true\nx=$(rm -rf /); }',
+    'deny',
+    'in POSIX mode, a substitution has the aliases from when its line was parsed',
+  ],
+  ['s=/; rm -rf {$,}s', 'deny', "a variable's name running out of a brace, which expands first"],
   [
     "shopt -s expand_aliases\nalias s='sudo ' r='rm -rf /'\ns \\env r",
     'deny',

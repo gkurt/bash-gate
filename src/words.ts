@@ -30,6 +30,7 @@ export function resolveWord(word: Word, lookup: Lookup): Arg[] {
     if (texts.length === 0 || texts.length > maxAlternatives) return [dynamicArg(word.text, 'variable', true, '')];
     const args: Arg[] = [];
     for (const text of texts) {
+      if (text === '') continue;
       const next = parseWord(text);
       if (!next) return [dynamicArg(word.text, 'variable', true, '')];
       args.push(...resolveWord(next, lookup));
@@ -219,12 +220,12 @@ function expandBraces(text: string, lookup: Lookup): Alternative[] | undefined {
 }
 
 /**
- * The words a word's first brace expansion makes, as text, when a variable's name runs into a brace: Bash expands
- * braces before variables, so `$x{a,b}` is `$xa $xb`, and `{$x{a,b},c}d` is `$xad $xbd cd`. Each is read again.
- * `undefined` when no name runs into a brace, and braces can expand on parts.
+ * The words a word's first brace expansion makes, as text, when it has expansions: Bash expands braces before them, so
+ * a name may run into a brace (`$x{a,b}` is `$xa $xb`) or out of one (`{$,}s` is `$s s`). Each is read again.
+ * `undefined` when there are none, and braces can expand on parts.
  */
 function braceTexts(text: string, parts: readonly WordPart[]): string[] | undefined {
-  if (!/\$[A-Za-z_]\w*\{/.test(text)) return undefined;
+  if (!/[$`]/.test(text)) return undefined;
   const at = parts.findIndex((part) => part.type === 'BraceExpansion' && braceItems(part.text) !== undefined);
   if (at === -1) return undefined;
   // Text rebuilt from the parts must be the word's, or the words read again aren't its.
