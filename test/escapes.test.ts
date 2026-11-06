@@ -91,6 +91,7 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ["cat 'a\nb' x\\", 'ask', 'a backslash ending the code, which Bash drops after a quoted string over lines'],
   ['shopt -s expand_aliases\nalias ls="rm -rf /"\nl\\\ns', 'deny', 'an alias named across a line continuation, which is gone first'],
   ['declare d=(a){/,b}; rm -rf $d', 'ask', "declare's braces that the parser didn't see"],
+  ['b=([a[1]=1); # $(rm -rf /) ]=2)', 'deny', 'a subscript whose brackets nest, which Bash reads past `); #`'],
   [
     "shopt -s expand_aliases\nalias s='sudo ' r='rm -rf /'\ns \\env r",
     'deny',

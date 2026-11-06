@@ -29,6 +29,7 @@ import {
   resolveValue,
   resolveWord,
   resolveWords,
+  subscriptEnd,
   type Lookup,
   type Value,
 } from './words.ts';
@@ -689,8 +690,16 @@ class Walker {
       if (node.type === 'Assignment' && node.value.type === 'ArrayValue') {
         // `a=([i]=v)`: the subscript is arithmetic, as in `a[i]=v`.
         for (const element of node.value.elements) {
-          const subscript = /^\[([\s\S]*?)\]\+?=/.exec(element.text)?.[1];
-          if (subscript === undefined) continue;
+          if (!element.text.startsWith('[')) continue;
+          const end = subscriptEnd(element.text);
+          if (end === -1) {
+            // `[a[1]=1); …]=2`: Bash reads on to the `]` that closes the first, past where the parser ended the element.
+            const where = this.span(ctx, element.pos, element.end);
+            this.finding(ctx, 'parse-error', "A subscript whose brackets don't close where the parser ended it", where);
+            continue;
+          }
+          if (!/^\]\+?=/.test(element.text.slice(end))) continue;
+          const subscript = element.text.slice(1, end);
           this.unquoted(subscript, state, ctx, element);
           // Bash removes the quotes first and expands what's left again: `['$'('ls')]=1` runs `ls`.
           const bare = unquote(subscript);

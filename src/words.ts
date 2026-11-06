@@ -267,6 +267,25 @@ function bracesDisagree(word: Word): boolean {
   return bashBraces(word.text).join() !== found.join();
 }
 
+/**
+ * Where the `[` that starts `text` closes, as Bash reads an array literal's subscript: brackets nest, and quotes and
+ * expansions are skipped. -1 when it doesn't close in `text`.
+ */
+export function subscriptEnd(text: string): number {
+  let depth = 0;
+  for (let i = 0; i < text.length;) {
+    const skipped = skip(text, i);
+    if (skipped !== i) {
+      i = skipped;
+      continue;
+    }
+    if (text[i] === '[') depth++;
+    else if (text[i] === ']' && --depth === 0) return i;
+    i++;
+  }
+  return -1;
+}
+
 /** Whether Bash expands braces in a word's `text`. */
 export function expandsBraces(text: string): boolean {
   return text.includes('{') && bashBraces(text).length > 0;

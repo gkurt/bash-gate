@@ -114,6 +114,7 @@ export const hiding = [
   "ls[[ $(cat arithmetic) -eq 1 ]]''",
   'x=a; x=<(sort s)#; cat $x',
   "cat 'a\nb' x\\",
+  'b=([a[1]=1); # $(cat hidden) ]=2); c=([x[1]]=1 [$(ls nested)]=2)',
   'x=cat; $\\\nx y',
   'enable "$@"-n echo; echo hi',
   `PS4="+$(cat x)"'$(ls ps4) '; set -x; cat a`,
