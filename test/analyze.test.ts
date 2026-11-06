@@ -24,6 +24,10 @@ describe('words', () => {
     expect(split('x=ab; echo "$(date)"$x "$x"')).toMatchObject({ kind: 'dynamic', split: false });
   });
 
+  test('braces Bash and the parser read differently are dynamic; a } closes one only after a comma', () => {
+    expect(values(only('echo {a}s,d}e x{a,[}b}y {a,b}}').argv)).toEqual(['echo', '<variable>', 'xab}y', 'x[b}y', 'a}', 'b}']);
+  });
+
   test("braces expand before variables: a name runs into a brace's alternatives", () => {
     const source = 'x=X; xa=A; xb=B; xac=AC; x1=ONE; echo $x{a,b} {p,q}$x{a,b} {$x{a,b},c}c $x{1..1} $x{a}';
     expect(values(only(source).argv)).toEqual(['echo', 'A', 'B', 'pA', 'pB', 'qA', 'qB', 'AC', '<variable>', 'cc', 'ONE', 'X{a}']);

@@ -615,6 +615,11 @@ class Walker {
         );
         this.expansions(text.join(''), state, ctx, this.at(ctx, state, node), 'here-document', true);
       }
+      if (node.type === 'Word' && !node.parts && /['"`]|\$[({\w@*#?$!-]/.test(node.text)) {
+        // `ls[ $(cat q) ]''`: one word to Bash, which expands what's in it. The parser kept it all as plain text.
+        const where = this.span(ctx, node.pos, node.end);
+        this.finding(ctx, 'parse-error', 'A word with quotes or expansions the parser read as plain text', where);
+      }
       if ((node.type === 'Literal' || (node.type === 'Word' && !node.parts)) && /\$\\\n/.test(node.text)) {
         const where = this.span(ctx, node.pos, node.end);
         this.finding(ctx, 'parse-error', 'A `$` before a line continuation, which Bash joins to what follows', where);
@@ -1242,10 +1247,13 @@ class Walker {
     else set(positionals[0] === undefined ? 'MAPFILE' : positionals[0]);
   }
 
-  /** The code `-C` gives `mapfile`, `compgen` or `complete`, run with arguments appended. */
+  /**
+   * The code `-C` gives `mapfile`, `compgen` or `complete`, run with arguments appended: by `mapfile` as `eval` runs
+   * code, by the others as a substitution.
+   */
   callback(code: string | undefined, state: State, ctx: Context, call: Call, name: string): void {
     if (code === undefined) this.finding(ctx, 'dynamic-script', `${name} -C runs a string only known at run time`, call.span);
-    else this.code(code, clone(state), ctx, call, `${name} -C`, true);
+    else this.code(code, clone(state), ctx, call, `${name} -C`, true, name !== 'mapfile');
   }
 
   /**
@@ -1705,8 +1713,11 @@ class Walker {
     return script;
   }
 
-  /** Code in a string (`bash -c`, `eval`, `trap`, an alias): parsed and walked in `state`. */
-  code(text: string, state: State, ctx: Context, call: Call, label: string, open = false): void {
+  /**
+   * Code in a string (`bash -c`, `eval`, `trap`, an alias): parsed and walked in `state`. `late` when Bash runs it as a
+   * substitution (`compgen -C`): see `Context`.
+   */
+  code(text: string, state: State, ctx: Context, call: Call, label: string, open = false, late = false): void {
     if (ctx.depth >= this.maxDepth)
       return this.finding(ctx, 'too-deep', `Code nests deeper than the analysis follows (${label})`, call.span);
     this.script(this.parse(text), state, {
@@ -1718,7 +1729,7 @@ class Walker {
       writes: [],
       reads: [],
       open: ctx.open || open,
-      late: false,
+      late,
     });
   }
 

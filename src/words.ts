@@ -24,6 +24,7 @@ const special = /^(?:[0-9]+|[@*#?$!_-])$/;
  * unquoted expansions. A word with any dynamic part is one dynamic argument; a static word may be none or several.
  */
 export function resolveWord(word: Word, lookup: Lookup): Arg[] {
+  if (bracesDisagree(word)) return [dynamicArg(word.text, 'variable', true, '')];
   const texts = word.parts && braceTexts(word.text, word.parts);
   if (texts) {
     if (texts.length === 0 || texts.length > maxAlternatives) return [dynamicArg(word.text, 'variable', true, '')];
@@ -195,7 +196,7 @@ function expandBraces(text: string, lookup: Lookup): Alternative[] | undefined {
       continue;
     }
     const word = parseWord(item);
-    if (!word) return undefined;
+    if (!word || bracesDisagree(word)) return undefined;
     const alternatives = word.parts
       ? resolveParts(word.parts, lookup, false)
       : [[{ kind: 'text', value: word.value, split: false } as Segment]];
@@ -226,6 +227,106 @@ function braceTexts(text: string, parts: readonly WordPart[]): string[] | undefi
     .map((part) => part.text)
     .join('');
   return braceItems(parts[at]!.text)!.map((item) => before + item + after);
+}
+
+/**
+ * Whether Bash expands other braces in `word` than the parser found: `{a}s,d}` is `a}s d` to Bash, as a `}` only closes
+ * a brace once a `,` has been seen, but text to the parser. Neither reading can be trusted then.
+ */
+function bracesDisagree(word: Word): boolean {
+  if (!word.text.includes('{')) return false;
+  const found: string[] = [];
+  let offset = 0;
+  for (const part of word.parts ?? []) {
+    if (part.type === 'BraceExpansion' && braceItems(part.text)) found.push(`${offset}:${offset + part.text.length}`);
+    offset += part.text.length;
+  }
+  if (word.parts && offset !== word.text.length) return true;
+  return bashBraces(word.text).join() !== found.join();
+}
+
+/**
+ * The braces Bash expands in `text`, at the top level, as `start:end`. A `{` opens one, quotes and expansions aside, and
+ * the first `}` at its level closes it once a `,` or a `..` (not just before the `}`) has been seen. With none, or when
+ * what's between is no list or sequence, the `{` is text, and the next one is tried.
+ */
+function bashBraces(text: string): string[] {
+  const spans: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const skipped = skip(text, i);
+    if (skipped !== i) {
+      i = skipped;
+      continue;
+    }
+    if (text[i] !== '{') {
+      i++;
+      continue;
+    }
+    const close = closing(text, i);
+    if (close === -1 || !braceItems(text.slice(i, close + 1))) {
+      i++;
+      continue;
+    }
+    spans.push(`${i}:${close + 1}`);
+    i = close + 1;
+  }
+  return spans;
+}
+
+/** Where Bash closes the brace opened at `open`, or -1. */
+function closing(text: string, open: number): number {
+  let level = 0;
+  let separated = false;
+  for (let i = open + 1; i < text.length;) {
+    const skipped = skip(text, i);
+    if (skipped !== i) {
+      i = skipped;
+      continue;
+    }
+    const c = text[i];
+    if (c === '{') level++;
+    else if (c === '}' && level > 0) level--;
+    else if (c === '}' && separated) return i;
+    else if (level === 0 && (c === ',' || (text.startsWith('..', i) && text[i + 2] !== '}'))) separated = true;
+    i++;
+  }
+  return -1;
+}
+
+/** Where the quoted text, escape or expansion at `i` ends, or `i` when there's none there. */
+function skip(text: string, i: number): number {
+  const c = text[i];
+  const next = text[i + 1];
+  if (c === '\\') return i + 2;
+  if (c === "'") return until(text, i + 1, "'", false);
+  if (c === '"' || c === '`') return until(text, i + 1, c, true);
+  if (c !== '$') return i;
+  if (next === "'") return until(text, i + 2, "'", true);
+  if (next === '"') return until(text, i + 2, '"', true);
+  if (next !== '(' && next !== '{') return i;
+  const [opener, closer] = next === '(' ? ['(', ')'] : ['{', '}'];
+  let depth = 0;
+  for (let j = i + 1; j < text.length;) {
+    const skipped = skip(text, j);
+    if (skipped !== j) {
+      j = skipped;
+      continue;
+    }
+    if (text[j] === opener) depth++;
+    else if (text[j] === closer && --depth === 0) return j + 1;
+    j++;
+  }
+  return text.length;
+}
+
+/** Just past the first `quote` from `from`, skipping backslash escapes when `escapes`. */
+function until(text: string, from: number, quote: string, escapes: boolean): number {
+  for (let j = from; j < text.length; j++) {
+    if (escapes && text[j] === '\\') j++;
+    else if (text[j] === quote) return j + 1;
+  }
+  return text.length;
 }
 
 /**
@@ -292,7 +393,7 @@ function splitTopLevel(text: string): string[] {
     } else if (c === '{') {
       depth++;
     } else if (c === '}') {
-      depth--;
+      if (depth > 0) depth--;
     } else if (c === ',' && depth === 0) {
       items.push(text.slice(start, i));
       start = i + 1;

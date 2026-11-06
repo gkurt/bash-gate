@@ -72,6 +72,13 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ],
   ['set -o posix\nalias rm=true\ncat <<EOF\n$(rm -rf /)\nEOF', 'deny', 'in POSIX mode, a here-document is parsed without aliases'],
   [
+    "set -o posix\nalias rm=true\ncompgen -C 'rm -rf /' x",
+    'deny',
+    'in POSIX mode, compgen -C runs its code as a substitution, without aliases',
+  ],
+  ['rm -rf {a}x,/}', 'ask', "braces Bash expands but the parser doesn't: a } closes one only after a comma"],
+  ["ls[ $(rm -rf /) ]''", 'ask', 'a word with a substitution the parser read as plain text'],
+  [
     "shopt -s expand_aliases\nalias s='sudo ' r='rm -rf /'\ns \\env r",
     'deny',
     'an alias after a quoted word, which a blank-ending alias still reaches',

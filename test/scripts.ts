@@ -85,6 +85,8 @@ export const scripts = [
   'set -o[ posix\nalias ls=cat\nls a\nset -o x posix -z\nls b',
   'set -o posix\nshopt -u expand_aliases\nshopt -so posix\nalias ls=cat\nls a\nset +o posix\nset -o posix\nls b\nunset POSIXLY_CORRECT\nls c',
   'set -o posix\nalias ls=cat\ncat <<EOF\n$(ls heredoc; eval "ls ev")\nEOF\n: "$(ls dq)"\nx=$(( \'$(ls arith)\' + 1 ))',
+  "set -o posix\nalias ls=cat\ncompgen -C 'ls -1' x\nmapfile -C 'ls m' -c 1 a <<< l",
+  'cat {a}s,d}e {[}s,d}e x{a,[}b}y {a,b}}',
   'set set -o posix\nalias ls=cat\nls a\nset -eo posix\nalias ls=sort\nls b',
   'set -set -o posix\nalias ls=cat\nls a\nset -o posix -z\nls b\nset -eo -eo posix\nalias ls=sort\nls c',
   'shopt - -s expand_aliases\nalias ls=cat\nls a\nshopt -s-- expand_aliases\nls b\nshopt -s -- expand_aliases\nalias ls=sort\nls c',
@@ -104,6 +106,7 @@ export const scripts = [
 /** Scripts that run what the analysis can't see, behind a finding: the finding must account for it. */
 export const hiding = [
   'v=($(cat array))x',
+  "ls[[ $(cat arithmetic) -eq 1 ]]''",
   'x=cat; $\\\nx y',
   'enable "$@"-n echo; echo hi',
   `PS4="+$(cat x)"'$(ls ps4) '; set -x; cat a`,
