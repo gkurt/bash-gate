@@ -41,7 +41,9 @@ analyze('sudo -u root rm -rf "$dir"').invocations.map((i) => [i.shape, i.via, i.
 3. **Walk with shell state** (`src/analyze.ts`): variables (constant propagation, joined across branches, loops walked
    until they settle), functions, aliases, `hash -p`, `enable -n/-f`, `cd`, exports into child shells. Aliases expand
    as Bash parses: with `expand_aliases`, POSIX mode, `sh` or an interactive shell, from the next line, and in a
-   function body as they were when it was defined. Subshells, pipelines and substitutions get copies of the state.
+   function body as they were when it was defined. Entering POSIX mode turns `expand_aliases` on and leaving turns it
+   off, and in POSIX mode a substitution Bash only parses as it runs (in a here-document, or text expanded again) gets
+   no aliases. Subshells, pipelines and substitutions get copies of the state.
 4. **Dispatch** as Bash does: alias, then function, then builtin, then program. `command`, `builtin` and `exec` change
    that order. `eval`, `trap`, `mapfile -C`, `compgen -C`, `bash -c`, a shell's here-document or here-string, `ssh host
    cmd`, `watch`, git aliases, git config commands, gh aliases and config, prompt strings (`PS4`) and `PROMPT_COMMAND`

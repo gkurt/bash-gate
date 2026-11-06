@@ -53,6 +53,8 @@ interface State {
   aliasesUnknown: boolean;
   /** `shopt -s expand_aliases` (or POSIX mode): on, off, or `undefined` when it may be either. */
   expandAliases: boolean | undefined;
+  /** POSIX mode: on, off, or `undefined` when it may be either. */
+  posix: boolean | undefined;
   /** `hash -p` paths by name; `undefined` for one set dynamically. */
   hashed: Map<string, string | undefined>;
   /** Builtins turned off with `enable -n`: the name runs the program instead. */
@@ -129,6 +131,11 @@ interface Context {
   open: boolean;
   /** Runs alongside the rest of the script (`&`, a pipeline, `<(…)`): what it reads may be written by what comes after. */
   concurrent: boolean;
+  /**
+   * Text Bash parses only as it expands it (a here-document's body, a subscript or arithmetic expanded again): in POSIX
+   * mode, its substitutions are parsed without aliases. Code parsed later (`eval`) has them again.
+   */
+  late?: boolean;
 }
 
 /** A simple command on its way to running. */
@@ -178,6 +185,7 @@ export function analyze(source: string, environment: Environment = {}): Analysis
       aliases: new Map(),
       aliasesUnknown: false,
       expandAliases: false,
+      posix: false,
       hashed: new Map(),
       disabled: new Set(),
       integers: new Set(),
@@ -373,7 +381,7 @@ class Walker {
     let previous: number | undefined;
     for (const statement of script.commands) {
       if (!unit || (previous !== undefined && ctx.source.slice(previous, statement.pos).includes('\n')))
-        unit = { aliases: snapshot(state), expanding: [] };
+        unit = { aliases: snapshot(state, ctx.late), expanding: [] };
       this.between(state, ctx);
       const shell = statement.background ? clone(state) : state;
       this.node(statement.command, shell, { ...ctx, ...unit, ...(statement.background ? { concurrent: true } : {}) });
@@ -541,6 +549,7 @@ class Walker {
       aliasesKey(state.aliases),
       state.aliasesUnknown,
       state.expandAliases ?? null,
+      state.posix ?? null,
       sorted(state.hashed).map(([name, path]) => [name, path ?? null]),
       [...state.disabled].sort(),
       [...state.integers].sort(),
@@ -653,7 +662,7 @@ class Walker {
         this.arithmeticWord(node.left, state, ctx);
         this.arithmeticWord(node.right, state, ctx);
       }
-      forEachChild(node, (child) => visit(child, ctx));
+      forEachChild(node, (child) => visit(child, node.type === 'HereDocBody' ? { ...ctx, late: true } : ctx));
     };
     for (const node of nodes) visit(node, ctx);
   }
@@ -1053,7 +1062,8 @@ class Walker {
         break;
       case 'shopt': {
         if (args.some((arg) => arg.kind === 'dynamic')) {
-          state.expandAliases = state.expandAliases === true ? true : undefined;
+          state.expandAliases = undefined;
+          state.posix = undefined;
           break;
         }
         // Options as getopt reads them (a lone - is a name); a bad one, or -s with -u, changes nothing. With -o, the
@@ -1063,9 +1073,9 @@ class Walker {
         const names = values.slice(rest);
         if (bad || (flags.includes('s') && flags.includes('u'))) break;
         if (!names.includes(flags.includes('o') ? 'posix' : 'expand_aliases')) break;
-        if (flags.includes('s')) state.expandAliases = true;
-        else if (flags.includes('u'))
-          state.expandAliases = flags.includes('o') ? (state.expandAliases === false ? false : undefined) : false;
+        if (!flags.includes('s') && !flags.includes('u')) break;
+        if (flags.includes('o')) setPosix(state, flags.includes('s'));
+        else state.expandAliases = flags.includes('s');
         break;
       }
       case 'set':
@@ -1159,11 +1169,18 @@ class Walker {
       case 'unset': {
         const functions = values.includes('-f');
         for (const value of values) {
+          if (value === undefined && !functions) {
+            if (state.posix !== false) state.posix = undefined;
+            if (state.expandAliases !== false) state.expandAliases = undefined;
+          }
           if (value === undefined || value.startsWith('-')) continue;
           if (functions) state.functions.delete(value);
           else state.vars.set(value, { kind: 'static', value: '' });
-          // Leaving POSIX mode puts back whatever expand_aliases was before.
-          if (!functions && value === 'POSIXLY_CORRECT' && state.expandAliases) state.expandAliases = undefined;
+          // Bash leaves POSIX mode, turning expand_aliases off, even when it wasn't in it.
+          if (!functions && value === 'POSIXLY_CORRECT') {
+            state.posix = false;
+            state.expandAliases = false;
+          }
         }
         break;
       }
@@ -1232,28 +1249,47 @@ class Walker {
   }
 
   /**
-   * `set`, as far as it turns POSIX mode on or off, and with it `expand_aliases` (leaving it puts back what was there
-   * before). Options end at the first word that isn't one. `-o` takes the next word as an option's name, unless it
-   * looks like an option itself: then it lists them. A bad letter or name anywhere makes `set` change nothing.
+   * `set`, as far as it turns POSIX mode on or off. Bash reads the options twice. First as getopt does, with `-o`
+   * taking the rest of its word, or the next word unless that looks like an option: a bad letter there makes `set`
+   * change nothing. Then one at a time, `-o` taking the next word as an option's name (unless it looks like an option:
+   * then it lists them): a bad letter or name stops there, and what came before stays.
    */
   set(values: (string | undefined)[], state: State): void {
-    const maybe = () => (state.expandAliases = state.expandAliases === true ? true : undefined);
-    let posix: boolean | undefined;
-    let sure = true;
-    for (let i = 0; i < values.length; i++) {
+    const unknown = () => {
+      state.expandAliases = undefined;
+      state.posix = undefined;
+    };
+    const option = (value: string | undefined) => value === undefined || (/^[-+]./.test(value) && value !== '--');
+    for (let i = 0; i < values.length && option(values[i]); i++) {
       const value = values[i];
-      if (value === undefined) return void maybe();
-      if (value === '--' || value === '-' || !/^[-+]/.test(value)) break;
-      if (/[^abefhkmnptuvxBCEHPTo]/.test(value.slice(1))) return;
-      if (!value.includes('o') || i + 1 === values.length || /^[-+]/.test(values[i + 1] ?? '')) continue;
-      const name = values[++i];
-      if (name === undefined) return void maybe();
-      if (name === 'posix') posix = value.startsWith('-');
-      // Builds differ (Git Bash has `igncr`): one this doesn't know may make `set` fail.
-      else if (!setOptions.has(name)) sure = false;
+      if (value === undefined) return unknown();
+      const at = value.indexOf('o');
+      if (/[^abefhkmnptuvxBCEHPTo]/.test(value.slice(1, at === -1 ? undefined : at))) return;
+      if (at !== value.length - 1) continue;
+      if (i + 1 < values.length && values[i + 1] === undefined) return unknown();
+      if (i + 1 < values.length && !/^[-+]/.test(values[i + 1]!)) i++;
     }
-    if (posix === false) state.expandAliases = state.expandAliases === false ? false : undefined;
-    else if (posix) state.expandAliases = sure ? true : maybe();
+    // Builds differ (Git Bash has `igncr`): an option name this doesn't know may make `set` stop.
+    let sure = true;
+    for (let i = 0; i < values.length && option(values[i]); i++) {
+      const value = values[i]!;
+      for (const letter of value.slice(1)) {
+        if (letter !== 'o') {
+          if (!'abefhkmnptuvxBCEHPT'.includes(letter)) return;
+          continue;
+        }
+        const name = values[i + 1];
+        if (i + 1 === values.length || /^[-+]|^$/.test(name ?? 'x')) continue;
+        if (name === undefined) return unknown();
+        i++;
+        if (name === 'posix') {
+          if (sure) setPosix(state, value.startsWith('-'));
+          else maybePosix(state, value.startsWith('-'));
+        } else if (!setOptions.has(name)) {
+          sure = false;
+        }
+      }
+    }
   }
 
   /**
@@ -1383,7 +1419,10 @@ class Walker {
       }
       const remote = parsed.effects.has('exec:remote');
       const shell = remote ? freshState(undefined) : childState(state, cwd);
-      if (!remote && specFor(program) === specFor('bash')) shell.expandAliases = childAliases(program, parsed, shell);
+      if (!remote && specFor(program) === specFor('bash')) {
+        shell.expandAliases = childAliases(program, parsed, shell);
+        shell.posix = childPosix(program, parsed, shell);
+      }
       this.code(
         script.value,
         shell,
@@ -1679,6 +1718,7 @@ class Walker {
       writes: [],
       reads: [],
       open: ctx.open || open,
+      late: false,
     });
   }
 
@@ -1689,7 +1729,11 @@ class Walker {
    * evaluated first when Bash itself assigns it (`bash`); the result is what it holds.
    */
   assigned(variable: string, value: Value, state: State, ctx: Context, call: Call, shell: boolean, bash = true): Value {
-    if (shell && variable === 'POSIXLY_CORRECT') state.expandAliases = true;
+    // Bash enters POSIX mode again, turning expand_aliases on, even when it was in it.
+    if (shell && variable === 'POSIXLY_CORRECT') {
+      state.posix = true;
+      state.expandAliases = true;
+    }
     const prompt = /^PS[0124]$/.test(variable);
     if ((prompt || variable === 'PROMPT_COMMAND') && value.kind === 'static') {
       const text = value.value;
@@ -1729,7 +1773,16 @@ class Walker {
     while (text.split('\n').includes(delimiter)) delimiter += '_';
     const source = doubleQuoted ? `: "${text}"\n` : `: <<${delimiter}\n${text}\n${delimiter}\n`;
     const script = this.parse(source);
-    const inner = { ...ctx, source, outer: call.span, nesting: [...ctx.nesting, label], depth: ctx.depth + 1, writes: [], reads: [] };
+    const inner = {
+      ...ctx,
+      source,
+      outer: call.span,
+      nesting: [...ctx.nesting, label],
+      depth: ctx.depth + 1,
+      writes: [],
+      reads: [],
+      late: true,
+    };
     for (const error of script.errors ?? []) this.finding(inner, 'parse-error', `Parse error: ${error.message}`, call.span);
     this.carriageReturn(source, inner);
     this.substitutions(script.commands, state, inner);
@@ -2000,9 +2053,10 @@ function plain(word: Word): boolean {
   return !word.parts && word.text === word.value;
 }
 
-/** The aliases a line starting now is parsed with. */
-function snapshot(state: State): Aliases {
-  return { table: new Map(state.aliases), unknown: state.aliasesUnknown, expand: state.expandAliases };
+/** The aliases a line starting now is parsed with; `late` for text Bash parses as it expands it (see `Context`). */
+function snapshot(state: State, late = false): Aliases {
+  const expand = !late || state.posix === false ? state.expandAliases : state.posix || state.expandAliases === false ? false : undefined;
+  return { table: new Map(state.aliases), unknown: state.aliasesUnknown, expand };
 }
 
 function sorted<V>(map: Map<string, V>): [string, V][] {
@@ -2041,6 +2095,7 @@ function equal(a: State, b: State): boolean {
     sameMap(a.aliases, b.aliases, sameAlias) &&
     a.aliasesUnknown === b.aliasesUnknown &&
     a.expandAliases === b.expandAliases &&
+    a.posix === b.posix &&
     sameMap(a.hashed, b.hashed) &&
     sameSet(a.disabled, b.disabled) &&
     sameSet(a.integers, b.integers) &&
@@ -2150,6 +2205,7 @@ function clone(state: State): State {
     aliases: new Map(state.aliases),
     aliasesUnknown: state.aliasesUnknown,
     expandAliases: state.expandAliases,
+    posix: state.posix,
     hashed: new Map(state.hashed),
     disabled: new Set(state.disabled),
     integers: new Set(state.integers),
@@ -2185,6 +2241,33 @@ function childAliases(program: string, parsed: Parsed, child: State): boolean | 
   return named.some((value) => value.kind === 'dynamic') ? undefined : false;
 }
 
+/** Whether a shell started as `program` is in POSIX mode: `sh` and the like are, and Bash when told to. */
+function childPosix(program: string, parsed: Parsed, child: State): boolean | undefined {
+  if (program !== 'bash' || parsed.options['--posix'] || child.vars.has('POSIXLY_CORRECT')) return true;
+  const named = (parsed.options['-o'] ?? []).filter((value) => value !== true);
+  if (named.some((value) => value.kind === 'static' && value.value === 'posix')) return true;
+  return named.some((value) => value.kind === 'dynamic') ? undefined : false;
+}
+
+/**
+ * POSIX mode turned on or off by `set -o` or `shopt -o`, and with it `expand_aliases`: entering the mode turns it on,
+ * leaving it off, and staying changes nothing.
+ */
+function setPosix(state: State, on: boolean): void {
+  const was = state.posix;
+  state.posix = on;
+  if (was === on) return;
+  state.expandAliases = was === undefined && state.expandAliases !== on ? undefined : on;
+}
+
+/** `setPosix`, when it may not happen. */
+function maybePosix(state: State, on: boolean): void {
+  const { posix, expandAliases } = state;
+  setPosix(state, on);
+  if (state.posix !== posix) state.posix = undefined;
+  if (state.expandAliases !== expandAliases) state.expandAliases = undefined;
+}
+
 function freshState(cwd: string | undefined): State {
   return {
     vars: new Map(),
@@ -2194,6 +2277,7 @@ function freshState(cwd: string | undefined): State {
     aliases: new Map(),
     aliasesUnknown: false,
     expandAliases: false,
+    posix: false,
     hashed: new Map(),
     disabled: new Set(),
     integers: new Set(),
@@ -2239,6 +2323,7 @@ function join(state: State, other: State): void {
   }
   state.aliasesUnknown ||= other.aliasesUnknown;
   if (state.expandAliases !== other.expandAliases) state.expandAliases = undefined;
+  if (state.posix !== other.posix) state.posix = undefined;
   // `undefined` is a path only known at run time, which isn't the same as no `hash -p` at all.
   for (const name of new Set([...state.hashed.keys(), ...other.hashed.keys()])) {
     if (!state.hashed.has(name) || !other.hashed.has(name) || state.hashed.get(name) !== other.hashed.get(name))

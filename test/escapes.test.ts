@@ -64,6 +64,13 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['shopt - -s expand_aliases\nalias rm=true\nrm -rf /', 'deny', "a lone - ends shopt's options, so -s is a name"],
   ['shopt -s- expand_aliases\nalias rm=true\nrm -rf /', 'deny', 'shopt with an option letter Bash rejects changes nothing'],
   ['set -o -o posix\nalias ls="rm -rf /"\nls', 'deny', 'set -o before an option lists them, and the next -o sets POSIX mode'],
+  ['set -o[ posix\nalias ls="rm -rf /"\nls', 'deny', 'set -o takes the next word, and a bad letter after it leaves POSIX mode on'],
+  [
+    'set -o posix\nshopt -u expand_aliases\nshopt -so posix\nalias rm=true\nrm -rf /',
+    'deny',
+    'entering POSIX mode turns aliases on, but staying in it changes nothing',
+  ],
+  ['set -o posix\nalias rm=true\ncat <<EOF\n$(rm -rf /)\nEOF', 'deny', 'in POSIX mode, a here-document is parsed without aliases'],
   [
     "shopt -s expand_aliases\nalias s='sudo ' r='rm -rf /'\ns \\env r",
     'deny',
