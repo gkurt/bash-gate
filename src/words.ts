@@ -109,6 +109,17 @@ export function joinStatic(args: Arg[]): string | undefined {
   return values.join(' ');
 }
 
+/**
+ * `text` with each `$'…'` in it replaced by what it stands for, as Bash reads arithmetic before expanding it again:
+ * `$(( $'\x24(ls)' ))` runs `ls`. One that can't be read is left as it is.
+ */
+export function decodeAnsiC(text: string): string {
+  return text.replaceAll(/\$'(?:\\[\s\S]|[^'\\])*'/g, (quoted) => {
+    const [part] = parseWord(quoted)?.parts ?? [];
+    return part?.type === 'AnsiCQuoted' ? ansiC(part) : quoted;
+  });
+}
+
 export function dynamicArg(text: string, reason: DynamicReason, split: boolean, prefix: string): Arg {
   return { kind: 'dynamic', text, reason, split, prefix };
 }

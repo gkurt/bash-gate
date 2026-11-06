@@ -21,7 +21,7 @@ import { Changes, Probe, type FileSystem } from './files.ts';
 import { basename, isSystemPath, resolvePath } from './paths.ts';
 import { gitConfig, specFor } from './specs.ts';
 import type { Analysis, Arg, Effect, FindingKind, Invocation } from './types.ts';
-import { dynamicArg, joinStatic, resolveValue, resolveWord, resolveWords, type Lookup, type Value } from './words.ts';
+import { decodeAnsiC, dynamicArg, joinStatic, resolveValue, resolveWord, resolveWords, type Lookup, type Value } from './words.ts';
 
 /** What the analysis knows of where the command runs. */
 export interface Environment {
@@ -615,6 +615,11 @@ class Walker {
         );
         this.expansions(text.join(''), state, ctx, this.at(ctx, state, node), 'here-document', true);
       }
+      if ((node.type === 'Word' || node.type === 'Assignment') && ctx.source[node.end] === '#') {
+        // `x=<(sort s)#; cat $x`: one word to Bash, as a `#` inside one starts no comment. The parser cut the line there.
+        const where = this.span(ctx, node.pos, node.end + 1);
+        this.finding(ctx, 'parse-error', 'A `#` inside a word, which the parser read as starting a comment', where);
+      }
       if (node.type === 'Word' && !node.parts && /['"`]|\$[({\w@*#?$!-]/.test(node.text)) {
         // `ls[ $(cat q) ]''`: one word to Bash, which expands what's in it. The parser kept it all as plain text.
         const where = this.span(ctx, node.pos, node.end);
@@ -692,7 +697,11 @@ class Walker {
    * here-document's body, where they're text too.
    */
   unquoted(text: string, state: State, ctx: Context, node: { pos: number; end: number }): void {
-    if (text.includes("'") && /[$`]/.test(text)) this.expansions(text, state, ctx, this.at(ctx, state, node), 'arithmetic');
+    if (!text.includes("'") || !/[$`]/.test(text)) return;
+    this.expansions(text, state, ctx, this.at(ctx, state, node), 'arithmetic');
+    // `$'…'` stands for what it decodes to first: `$'\x24(ls)'` is `$(ls)`.
+    const decoded = decodeAnsiC(text);
+    if (decoded !== text && /[$`]/.test(decoded)) this.expansions(decoded, state, ctx, this.at(ctx, state, node), 'arithmetic');
   }
 
   /**

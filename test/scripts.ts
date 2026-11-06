@@ -86,6 +86,7 @@ export const scripts = [
   'set -o posix\nshopt -u expand_aliases\nshopt -so posix\nalias ls=cat\nls a\nset +o posix\nset -o posix\nls b\nunset POSIXLY_CORRECT\nls c',
   'set -o posix\nalias ls=cat\ncat <<EOF\n$(ls heredoc; eval "ls ev")\nEOF\n: "$(ls dq)"\nx=$(( \'$(ls arith)\' + 1 ))',
   "set -o posix\nalias ls=cat\ncompgen -C 'ls -1' x\nmapfile -C 'ls m' -c 1 a <<< l",
+  "x=$(( $'\\x24(cat decoded)' + 1 ))\n(( $'\\x24(ls cmd)' ))\na[$'\\x24(sort sub)']=1\nx=$(( '$(cat q)' + $'$(ls \\ansi)' ))",
   'cat {a}s,d}e {[}s,d}e x{a,[}b}y {a,b}}',
   'set set -o posix\nalias ls=cat\nls a\nset -eo posix\nalias ls=sort\nls b',
   'set -set -o posix\nalias ls=cat\nls a\nset -o posix -z\nls b\nset -eo -eo posix\nalias ls=sort\nls c',
@@ -107,6 +108,7 @@ export const scripts = [
 export const hiding = [
   'v=($(cat array))x',
   "ls[[ $(cat arithmetic) -eq 1 ]]''",
+  'x=a; x=<(sort s)#; cat $x',
   'x=cat; $\\\nx y',
   'enable "$@"-n echo; echo hi',
   `PS4="+$(cat x)"'$(ls ps4) '; set -x; cat a`,

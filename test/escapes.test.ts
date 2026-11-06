@@ -78,6 +78,9 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ],
   ['rm -rf {a}x,/}', 'ask', "braces Bash expands but the parser doesn't: a } closes one only after a comma"],
   ["ls[ $(rm -rf /) ]''", 'ask', 'a word with a substitution the parser read as plain text'],
+  ["x=$(( $'\\x24(rm -rf /)' ))", 'deny', 'ANSI-C quoting in arithmetic, decoded before what it holds is expanded'],
+  ["a[$'\\x24(rm -rf /)']=1", 'deny', 'ANSI-C quoting in a subscript, decoded before what it holds is expanded'],
+  ['x=<(cat a)#; rm -rf /', 'ask', 'a # after a process substitution, which starts no comment in Bash'],
   [
     "shopt -s expand_aliases\nalias s='sudo ' r='rm -rf /'\ns \\env r",
     'deny',
