@@ -109,6 +109,11 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['a=(["$1"]=1)', 'ask', "an array literal's subscript only known at run time, which Bash expands again"],
   ['x="$(echo ${y:-$\'\\x24(rm -rf /)\'})"', 'deny', 'ANSI-C quoting in a default, in a substitution inside double quotes'],
   [
+    'set -o posix\nalias ls="rm -rf /"\n{ alias ls=cat\ncat <(ls); }',
+    'deny',
+    "in POSIX mode, a process substitution has its line's aliases first, then those when it runs",
+  ],
+  [
     "shopt -s expand_aliases\nalias s='sudo ' r='rm -rf /'\ns \\env r",
     'deny',
     'an alias after a quoted word, which a blank-ending alias still reaches',

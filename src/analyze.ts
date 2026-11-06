@@ -633,10 +633,10 @@ class Walker {
         const scriptCtx = node.source === undefined ? ctx : { ...ctx, source: node.source, outer: ctx.outer ?? [node.pos, node.end] };
         const inner = { ...scriptCtx, nesting: [...ctx.nesting, '$(…)'] };
         // In POSIX mode Bash runs a command substitution as it parsed it with the line around it: with that line's
-        // aliases, and none it defines itself. Otherwise, and for a process substitution, it parses it again as it runs.
-        const parsed = !again && !ctx.late;
-        if (state.posix !== false && parsed) this.script(node, clone(state), inner, ctx.aliases, true);
-        if (state.posix !== true || !parsed) this.script(node, clone(state), inner);
+        // aliases, and none it defines itself. Otherwise it parses it again as it runs. A process substitution gets
+        // both: the line's aliases, then those when it runs, so either may be what runs.
+        if (state.posix !== false && !ctx.late) this.script(node, clone(state), inner, ctx.aliases, true);
+        if (state.posix !== true || ctx.late || again) this.script(node, clone(state), inner);
         return;
       }
       if (node.type === 'ProcessSubstitution') return forEachChild(node, (child) => visit(child, { ...ctx, concurrent: true }, true));
