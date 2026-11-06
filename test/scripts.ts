@@ -123,6 +123,7 @@ export const hiding = [
   'cat <<EOF\n${u:-"$"("ls hd)"}\nEOF\nx=$(( \'${u:-"$"("sort ar)"}\' ))',
   'y=b; f() { declare y!=d; cat $y; }; f; z=q; z=a read z <<< r; ls "$z"; w=a declare -g w=e; sort "$w"',
   'set -o posix\n{ alias e="cat "\ncat <(e ls ps); x=$(e cs); }',
+  'echo $"${u:-"$"("ls l)"}" "${u:-$"""$"("cat m)"}"',
   "echo \"${y:-$'$(cat dq)'}\" \"${y:-$'\\x24(ls hex)'}\"\ncat <<EOF\n${y:-$'$(sort heredoc)'}\nEOF\nc=([\\$\\(cat\\ esc$'\\;;')]=1)",
   'x=cat; $\\\nx y',
   'enable "$@"-n echo; echo hi',

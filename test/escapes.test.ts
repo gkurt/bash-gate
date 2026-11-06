@@ -103,6 +103,8 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['y=/; f() { declare y!=a; rm -rf $y; }; f', 'deny', 'a declare argument that is no name, which Bash refuses'],
   ['z=/; z=a read z <<< x; rm -rf $z', 'ask', "what a builtin assigns to its temporary environment's variable, gone after it"],
   ['set -o posix\n{ alias e="rm -rf /"\ncat <(e); }', 'deny', 'in POSIX mode, a process substitution has the aliases when it runs'],
+  ['echo $"${u:-"$"("rm -rf /)"}"', 'deny', "inner quotes in a locale string's default, which Bash removes first"],
+  ['echo "${u:-$"""$"("rm -rf /)"}"', 'deny', 'inner `$"…"` quotes in a default, which Bash removes in pairs'],
   [
     "shopt -s expand_aliases\nalias s='sudo ' r='rm -rf /'\ns \\env r",
     'deny',

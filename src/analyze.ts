@@ -651,13 +651,13 @@ class Walker {
         );
         this.expansions(text.join(''), state, ctx, this.at(ctx, state, node), 'here-document', true);
       }
-      if (node.type === 'DoubleQuoted' || node.type === 'HereDocBody') {
-        // In `"${x:-"$"("ls)"}"`, and the same in a here-document, Bash removes the inner quotes first and expands
-        // what's left: `ls` runs.
+      if (node.type === 'DoubleQuoted' || node.type === 'LocaleString' || node.type === 'HereDocBody') {
+        // In `"${x:-"$"("ls)"}"`, and the same in `$"…"` or a here-document, Bash removes the inner quotes first and
+        // expands what's left: `ls` runs. `$"…"` inside is quotes too: `$"""$"(` is `$(`.
         const expansion = /\$[({\w]|`/g;
         for (const part of node.parts ?? []) {
           if (part.type !== 'ParameterExpansion') continue;
-          const bare = part.text.replaceAll(/\\[\s\S]|"/g, (m) => (m === '"' ? '' : m));
+          const bare = part.text.replaceAll(/\\[\s\S]|\$?"((?:\\[\s\S]|[^"\\])*)"/g, (m, inner?: string) => inner ?? m);
           if ((bare.match(expansion)?.length ?? 0) > (part.text.match(expansion)?.length ?? 0))
             this.expansions(bare, state, ctx, this.at(ctx, state, part), 'parameter', true);
           // And `$'…'` in it stands for what it decodes to, which is expanded: `"${x:-$'\x24(ls)'}"` runs `ls`.
