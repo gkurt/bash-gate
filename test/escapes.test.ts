@@ -99,6 +99,7 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ["f() { (( '$(rm -rf /)' )); }; eval f", 'deny', 'a function called from eval, read in the code it was defined in'],
   ['echo "${u:-"$"("cat {a}s,d}e")"}"', 'ask', 'braces Bash expands across quotes, which multiply a substitution'],
   ["'r'm() { :; }; rm -rf /", 'deny', 'a function name with quotes, which Bash refuses to define'],
+  ['cat <<EOF\n${u:-"$"("rm -rf /)"}\nEOF', 'deny', "inner quotes in a here-document's default, which Bash removes first"],
   [
     "shopt -s expand_aliases\nalias s='sudo ' r='rm -rf /'\ns \\env r",
     'deny',

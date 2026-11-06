@@ -649,10 +649,11 @@ class Walker {
         );
         this.expansions(text.join(''), state, ctx, this.at(ctx, state, node), 'here-document', true);
       }
-      if (node.type === 'DoubleQuoted') {
-        // In `"${x:-"$"("ls)"}"`, Bash removes the inner quotes first and expands what's left: `ls` runs.
+      if (node.type === 'DoubleQuoted' || node.type === 'HereDocBody') {
+        // In `"${x:-"$"("ls)"}"`, and the same in a here-document, Bash removes the inner quotes first and expands
+        // what's left: `ls` runs.
         const expansion = /\$[({\w]|`/g;
-        for (const part of node.parts) {
+        for (const part of node.parts ?? []) {
           if (part.type !== 'ParameterExpansion') continue;
           const bare = part.text.replaceAll(/\\[\s\S]|"/g, (m) => (m === '"' ? '' : m));
           if ((bare.match(expansion)?.length ?? 0) > (part.text.match(expansion)?.length ?? 0))
