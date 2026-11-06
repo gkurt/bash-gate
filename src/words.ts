@@ -42,9 +42,17 @@ export function resolveWord(word: Word, lookup: Lookup): Arg[] {
     ? resolveParts(word.parts, lookup, false)
     : [[{ kind: 'text', value: word.value, split: false } as Segment]];
   if (!alternatives) return [dynamicArg(word.text, 'variable', true, '')];
-  // A `$` that starts no expansion keeps Bash from splitting the word: `$x-$` is one word, whatever `$x` holds.
-  const whole = word.parts?.some((part) => part.type === 'Literal' && part.text.replaceAll(/\\[\s\S]/g, '').includes('$'));
-  return alternatives.flatMap((alternative) => toArgs(alternative, word.text, whole));
+  return alternatives.flatMap((alternative) => toArgs(alternative, word.text, whole(word.parts ?? [])));
+}
+
+/**
+ * Whether Bash keeps a word from splitting: a `$` that starts no expansion does, unless an unquoted expansion comes after
+ * it. `$x-$` and `$x$/"$x"` are one word whatever `$x` holds; `$x$/$x` splits.
+ */
+function whole(parts: readonly WordPart[]): boolean {
+  const last = parts.findLastIndex((part) => part.type === 'Literal' && part.text.replaceAll(/\\[\s\S]/g, '').includes('$'));
+  const expansions = new Set(['SimpleExpansion', 'ParameterExpansion', 'CommandExpansion', 'ArithmeticExpansion']);
+  return last !== -1 && !parts.slice(last + 1).some((part) => expansions.has(part.type));
 }
 
 /** The value an assignment stores: no brace expansion, globbing or splitting. */
@@ -257,6 +265,11 @@ function bracesDisagree(word: Word): boolean {
   }
   if (word.parts && offset !== word.text.length) return true;
   return bashBraces(word.text).join() !== found.join();
+}
+
+/** Whether Bash expands braces in a word's `text`. */
+export function expandsBraces(text: string): boolean {
+  return text.includes('{') && bashBraces(text).length > 0;
 }
 
 /**

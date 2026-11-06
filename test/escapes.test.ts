@@ -89,6 +89,8 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ],
   ['s=/; rm -rf {$,}s', 'deny', "a variable's name running out of a brace, which expands first"],
   ["cat 'a\nb' x\\", 'ask', 'a backslash ending the code, which Bash drops after a quoted string over lines'],
+  ['shopt -s expand_aliases\nalias ls="rm -rf /"\nl\\\ns', 'deny', 'an alias named across a line continuation, which is gone first'],
+  ['declare d=(a){/,b}; rm -rf $d', 'ask', "declare's braces that the parser didn't see"],
   [
     "shopt -s expand_aliases\nalias s='sudo ' r='rm -rf /'\ns \\env r",
     'deny',

@@ -35,6 +35,8 @@ describe('words', () => {
 
   test("a $ that starts no expansion keeps the word from splitting, a quoted or escaped one doesn't", () => {
     expect(values(only('x="a  b"; echo $x-$ $x"$" $x\\$').argv)).toEqual(['echo', 'a  b-$', 'a', 'b$', 'a', 'b$']);
+    // Unless an unquoted expansion comes after it.
+    expect(values(only('x="a  b"; echo $x$/"$x" $x$/$x').argv)).toEqual(['echo', 'a  b$/a  b', 'a', 'b$/a', 'b']);
   });
 
   test('an unquoted known value with a pattern is a glob; an assignment removes the quotes in one', () => {

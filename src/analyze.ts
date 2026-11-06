@@ -21,7 +21,17 @@ import { Changes, Probe, type FileSystem } from './files.ts';
 import { basename, isSystemPath, resolvePath } from './paths.ts';
 import { gitConfig, specFor } from './specs.ts';
 import type { Analysis, Arg, Effect, FindingKind, Invocation } from './types.ts';
-import { decodeAnsiC, dynamicArg, joinStatic, resolveValue, resolveWord, resolveWords, type Lookup, type Value } from './words.ts';
+import {
+  decodeAnsiC,
+  dynamicArg,
+  expandsBraces,
+  joinStatic,
+  resolveValue,
+  resolveWord,
+  resolveWords,
+  type Lookup,
+  type Value,
+} from './words.ts';
 
 /** What the analysis knows of where the command runs. */
 export interface Environment {
@@ -2056,7 +2066,9 @@ function argument(item: Command['suffix'][number], lookup: Lookup): Arg[] {
   if (item.type === 'Word') return resolveWord(item, lookup);
   if (item.type !== 'Assignment') return [];
   // As an argument (`alias`, `declare`), Bash expands its braces: `declare v=a{b,c}` declares v twice.
-  const word = item.value.type === 'Word' && item.value.parts?.some((part) => part.type === 'BraceExpansion') ? asWord(item) : undefined;
+  const braces =
+    item.value.type === 'Word' && (item.value.parts?.some((part) => part.type === 'BraceExpansion') || expandsBraces(item.value.text));
+  const word = braces ? asWord(item) : undefined;
   if (word) return resolveWord(word, lookup);
   const value = assignmentValue(item, lookup);
   const prefix = `${item.name}${item.append ? '+=' : '='}`;
@@ -2090,7 +2102,8 @@ function lookupIn(state: State): Lookup {
 
 /** A word with no quotes or expansions, which aliases may replace. */
 function plain(word: Word): boolean {
-  return !word.parts && word.text === word.value;
+  // A line continuation is gone before Bash reads the word: `c\` and a newline is `c`.
+  return !word.parts && word.text.replaceAll('\\\n', '') === word.value;
 }
 
 /** The aliases a line starting now is parsed with; `late` for text Bash parses as it expands it (see `Context`). */
