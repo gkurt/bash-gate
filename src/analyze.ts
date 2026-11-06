@@ -152,6 +152,11 @@ interface Context {
    * mode, its substitutions are parsed without aliases. Code parsed later (`eval`) has them again.
    */
   late?: boolean;
+  /**
+   * In a command substitution inside double quotes (`"$(…)"`), where Bash decodes a `$'…'` in a `${…}` operand, then
+   * expands what it holds. Code parsed later (`eval`) is read as usual.
+   */
+  quoted?: boolean;
 }
 
 /** A simple command on its way to running. */
@@ -687,6 +692,11 @@ class Walker {
         this.finding(ctx, 'parse-error', 'A `$` before a line continuation, which Bash joins to what follows', where);
       }
       if (unterminated(node)) this.finding(ctx, 'parse-error', "An expansion that's never closed", this.span(ctx, node.pos, node.end));
+      if (ctx.quoted && node.type === 'ParameterExpansion' && node.text.includes("$'")) {
+        // `"$(echo ${y:-$'\x24(ls)'})"`: the `$'…'` is decoded, then what it holds is expanded, as in double quotes.
+        const decoded = decodeAnsiC(node.text);
+        if (decoded !== node.text) this.expansions(decoded, state, ctx, this.at(ctx, state, node), 'parameter', true);
+      }
       if (node.type === 'ParameterExpansion' && node.operation?.type === 'Unknown')
         this.finding(ctx, 'parse-error', `An expansion the parser couldn't read: ${node.text}`, this.span(ctx, node.pos, node.end));
       if (node.type === 'ParameterExpansion') {
@@ -744,7 +754,10 @@ class Walker {
         this.arithmeticWord(node.left, state, ctx);
         this.arithmeticWord(node.right, state, ctx);
       }
-      forEachChild(node, (child) => visit(child, node.type === 'HereDocBody' ? { ...ctx, late: true } : ctx));
+      const inner = node.type === 'HereDocBody' ? { ...ctx, late: true } : ctx;
+      forEachChild(node, (child) =>
+        visit(child, node.type === 'DoubleQuoted' && child.type === 'CommandExpansion' ? { ...inner, quoted: true } : inner),
+      );
     };
     for (const node of nodes) visit(node, ctx);
   }
@@ -1839,6 +1852,7 @@ class Walker {
       reads: [],
       open: ctx.open || open,
       late,
+      quoted: false,
     });
   }
 
@@ -1902,6 +1916,7 @@ class Walker {
       writes: [],
       reads: [],
       late: true,
+      quoted: false,
     };
     for (const error of script.errors ?? []) this.finding(inner, 'parse-error', `Parse error: ${error.message}`, call.span);
     this.carriageReturn(source, inner);

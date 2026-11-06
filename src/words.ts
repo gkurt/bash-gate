@@ -159,7 +159,10 @@ function joinNames(parts: readonly (WordPart | DoubleQuotedChild)[]): (WordPart 
     const more = /^\w*/.exec(next.value)![0];
     if (!more) continue;
     joined[i] = { ...name, text: name.text + more };
-    joined[i + 1] = { ...next, text: next.value.slice(more.length), value: next.value.slice(more.length) };
+    const rest = next.value.slice(more.length);
+    // Nothing left is no text at all: `$z\` and a newline then `x`, with `zx` empty, is no word.
+    if (rest) joined[i + 1] = { ...next, text: rest, value: rest };
+    else joined.splice(i + 1, 1);
   }
   return joined;
 }
