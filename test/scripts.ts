@@ -126,6 +126,7 @@ export const hiding = [
   'y=b; f() { declare y!=d; cat $y; }; f; z=q; z=a read z <<< r; ls "$z"; w=a declare -g w=e; sort "$w"',
   'set -o posix\n{ alias e="cat "\ncat <(e ls ps); x=$(e cs); }',
   'set -o posix\nalias ls=cat\ncase a in *)\nalias ls=sort\nls b\ncat <(ls here)\n;; esac',
+  'shopt -s expand_aliases\nalias s=\'cat \' q=sort\ns \\a q; s \\a <(:) q; s \\a "$x" q; s \\a $x q\necho "${v:-"$\\(ls A)"}" "${v:-"\\$(ls B)"}"',
   'echo $"${u:-"$"("ls l)"}" "${u:-$"""$"("cat m)"}"',
   'k=\'$(cat idx)\'; a=(["$k"]=1); k=\'$(ls plain)\'; b=([$k]=1); declare -A m; m=(["$k"]=1)',
   "echo \"${y:-$'$(cat dq)'}\" \"${y:-$'\\x24(ls hex)'}\"\ncat <<EOF\n${y:-$'$(sort heredoc)'}\nEOF\nc=([\\$\\(cat\\ esc$'\\;;')]=1)",

@@ -663,7 +663,10 @@ class Walker {
         const expansion = /\$[({\w]|`/g;
         for (const part of node.parts ?? []) {
           if (part.type !== 'ParameterExpansion') continue;
-          const bare = part.text.replaceAll(/\\[\s\S]|\$?"((?:\\[\s\S]|[^"\\])*)"/g, (m, inner?: string) => inner ?? m);
+          // A backslash in them escapes only what it escapes in double quotes; before anything else it's gone too.
+          const bare = part.text.replaceAll(/\\[\s\S]|\$?"((?:\\[\s\S]|[^"\\])*)"/g, (m, inner?: string) =>
+            inner === undefined ? m : inner.replaceAll(/\\([^$`"\\\n])/g, '$1'),
+          );
           if ((bare.match(expansion)?.length ?? 0) > (part.text.match(expansion)?.length ?? 0))
             this.expansions(bare, state, ctx, this.at(ctx, state, part), 'parameter', true);
           // And `$'…'` in it stands for what it decodes to, which is expanded: `"${x:-$'\x24(ls)'}"` runs `ls`.
@@ -1056,7 +1059,9 @@ class Walker {
     let last = value;
     const values = [value];
     for (const item of command.suffix) {
-      // A quoted word isn't expanded, and the next one is still checked.
+      // A quoted word isn't expanded, and the next one is still checked; one with an unquoted expansion ends it.
+      const expansions = ['SimpleExpansion', 'ParameterExpansion', 'CommandExpansion', 'ArithmeticExpansion', 'ProcessSubstitution'];
+      if (item.type === 'Word' && item.parts?.some((part) => expansions.includes(part.type))) break;
       if (item.type === 'Word' && !plain(item)) continue;
       if (!/[ \t]$/.test(last) || item.type !== 'Word') break;
       if (!table.has(item.value)) {

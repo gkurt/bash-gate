@@ -141,6 +141,14 @@ describe('options', () => {
 });
 
 describe('invocations', () => {
+  test('a blank-ending alias reaches past quoted words, but not past an unquoted expansion', () => {
+    const argv = (source: string) =>
+      values(analyze(`shopt -s expand_aliases\nalias s='cat ' q=sort\n${source}`).invocations.find((i) => i.program === 'cat')!.argv);
+    expect(argv("s \\a 'b' q")).toEqual(['cat', 'a', 'b', 'sort']);
+    expect(argv('s \\a <(:) q')).toEqual(['cat', 'a', '<substitution>', 'q']);
+    expect(argv('s $x q')).toEqual(['cat', '<variable>', 'q']);
+  });
+
   test('shape leaves values out', () => {
     expect(only('git -C repo commit -m "fix it" --amend').shape).toBe('git commit --amend --message=<v> -C=<v>');
   });
