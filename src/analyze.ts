@@ -631,8 +631,13 @@ class Walker {
       if (node.type === 'HereDocBody' && node.parts?.some((part) => part.type === 'ParameterExpansion' && part.text.includes("'"))) {
         // Bash expands the body as if it were in double quotes, so `'` in `${y:-'$(ls)'}` is only text, and `ls` runs.
         // The parser reads it as quoting, but not in a double-quoted string: the body is walked again as one.
+        // So is `$` before one: `${y:-$'$(ls)'}` runs `ls` too.
         const text = node.parts.map((part) =>
-          part.type === 'Literal' ? part.text.replaceAll(/\\[\s\S]|"/g, (m) => (m === '"' ? '\\"' : m)) : part.text,
+          part.type === 'Literal'
+            ? part.text.replaceAll(/\\[\s\S]|"/g, (m) => (m === '"' ? '\\"' : m))
+            : part.type === 'ParameterExpansion'
+              ? part.text.replaceAll(/\\[\s\S]|\$'/g, (m) => (m === "$'" ? "'" : m))
+              : part.text,
         );
         this.expansions(text.join(''), state, ctx, this.at(ctx, state, node), 'here-document', true);
       }
@@ -640,10 +645,14 @@ class Walker {
         // In `"${x:-"$"("ls)"}"`, Bash removes the inner quotes first and expands what's left: `ls` runs.
         const expansion = /\$[({\w]|`/g;
         for (const part of node.parts) {
-          if (part.type !== 'ParameterExpansion' || !part.text.includes('"')) continue;
+          if (part.type !== 'ParameterExpansion') continue;
           const bare = part.text.replaceAll(/\\[\s\S]|"/g, (m) => (m === '"' ? '' : m));
           if ((bare.match(expansion)?.length ?? 0) > (part.text.match(expansion)?.length ?? 0))
             this.expansions(bare, state, ctx, this.at(ctx, state, part), 'parameter', true);
+          // And `$'…'` in it stands for what it decodes to, which is expanded: `"${x:-$'\x24(ls)'}"` runs `ls`.
+          const decoded = decodeAnsiC(part.text);
+          if (decoded !== part.text && /[$`]/.test(decoded.slice(1)))
+            this.expansions(decoded, state, ctx, this.at(ctx, state, part), 'parameter', true);
         }
       }
       if ((node.type === 'Word' || node.type === 'Assignment') && ctx.source[node.end] === '#') {
@@ -2203,9 +2212,11 @@ function getopt(
 /** `text` with its quotes and backslashes removed, as Bash removes them from a word. */
 function unquote(text: string): string {
   return text.replaceAll(
-    /'([^']*)'|"((?:\\[\s\S]|[^"\\])*)"|\\([\s\S])/g,
-    (_, single?: string, double?: string, escaped?: string) =>
-      single ?? (double === undefined ? escaped! : double.replaceAll(/\\([$`"\\\n])/g, '$1')),
+    /\$'(?:\\[\s\S]|[^'\\])*'|'([^']*)'|"((?:\\[\s\S]|[^"\\])*)"|\\([\s\S])/g,
+    (ansi: string, single?: string, double?: string, escaped?: string) => {
+      if (ansi.startsWith("$'")) return decodeAnsiC(ansi);
+      return single ?? (double === undefined ? escaped! : double.replaceAll(/\\([$`"\\\n])/g, '$1'));
+    },
   );
 }
 

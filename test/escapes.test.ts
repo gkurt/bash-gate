@@ -92,6 +92,9 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['shopt -s expand_aliases\nalias ls="rm -rf /"\nl\\\ns', 'deny', 'an alias named across a line continuation, which is gone first'],
   ['declare d=(a){/,b}; rm -rf $d', 'ask', "declare's braces that the parser didn't see"],
   ['b=([a[1]=1); # $(rm -rf /) ]=2)', 'deny', 'a subscript whose brackets nest, which Bash reads past `); #`'],
+  ['echo "${y:-$\'\\x24(rm -rf /)\'}"', 'deny', 'ANSI-C quoting in a double-quoted default, decoded and then expanded'],
+  ["cat <<EOF\n${y:-$'$(rm -rf /)'}\nEOF", 'deny', "a here-document's `$'` in a default, which is no quoting there"],
+  ['xr=/; rm -rf $x\\\nr', 'deny', "a variable's name across a line continuation"],
   [
     "shopt -s expand_aliases\nalias s='sudo ' r='rm -rf /'\ns \\env r",
     'deny',

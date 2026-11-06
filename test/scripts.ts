@@ -115,6 +115,8 @@ export const hiding = [
   'x=a; x=<(sort s)#; cat $x',
   "cat 'a\nb' x\\",
   'b=([a[1]=1); # $(cat hidden) ]=2); c=([x[1]]=1 [$(ls nested)]=2)',
+  'zx=a; z=b; cat $z\\\nx "a$z\\\nx" ${z}\\\nx',
+  "echo \"${y:-$'$(cat dq)'}\" \"${y:-$'\\x24(ls hex)'}\"\ncat <<EOF\n${y:-$'$(sort heredoc)'}\nEOF\nc=([\\$\\(cat\\ esc$'\\;;')]=1)",
   'x=cat; $\\\nx y',
   'enable "$@"-n echo; echo hi',
   `PS4="+$(cat x)"'$(ls ps4) '; set -x; cat a`,

@@ -135,9 +135,27 @@ export function dynamicArg(text: string, reason: DynamicReason, split: boolean, 
   return { kind: 'dynamic', text, reason, split, prefix };
 }
 
+/**
+ * `parts` with a variable's name joined across a line continuation, which is gone before Bash reads the word: `$z\`, a
+ * newline and `x` is `$zx`. The parser ends the name at the backslash.
+ */
+function joinNames(parts: readonly (WordPart | DoubleQuotedChild)[]): (WordPart | DoubleQuotedChild)[] {
+  const joined = [...parts];
+  for (let i = 0; i + 1 < joined.length; i++) {
+    const [name, next] = [joined[i]!, joined[i + 1]!];
+    if (name.type !== 'SimpleExpansion' || !/^\$[A-Za-z_]\w*$/.test(name.text)) continue;
+    if (next.type !== 'Literal' || !next.text.startsWith('\\\n')) continue;
+    const more = /^\w*/.exec(next.value)![0];
+    if (!more) continue;
+    joined[i] = { ...name, text: name.text + more };
+    joined[i + 1] = { ...next, text: next.value.slice(more.length), value: next.value.slice(more.length) };
+  }
+  return joined;
+}
+
 function resolveParts(parts: readonly WordPart[], lookup: Lookup, quoted: boolean): Alternative[] | undefined {
   let alternatives: Alternative[] = [[]];
-  for (const part of parts) {
+  for (const part of joinNames(parts)) {
     const next = resolvePart(part, lookup, quoted);
     if (!next) return undefined;
     if (next.length === 1) {
@@ -160,7 +178,7 @@ function resolvePart(part: WordPart | DoubleQuotedChild, lookup: Lookup, quoted:
     case 'DoubleQuoted':
     case 'LocaleString': {
       const segments: Segment[] = [{ kind: 'text', value: '', split: false }];
-      for (const child of part.parts) {
+      for (const child of joinNames(part.parts)) {
         const resolved = resolvePart(child, lookup, true);
         if (resolved?.length !== 1) return undefined;
         segments.push(...resolved[0]!);
