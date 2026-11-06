@@ -98,6 +98,17 @@ function valueText(parts: readonly WordPart[], lookup: Lookup): string | undefin
   return value;
 }
 
+/**
+ * What `text` stands for as one word expanded with no splitting or globbing, as an assignment's value is: `undefined`
+ * when the run decides, `null` when it isn't one word.
+ */
+export function expandText(text: string, lookup: Lookup): string | undefined | null {
+  const word = parseWord(text);
+  if (!word) return null;
+  const value = resolveValue(word, lookup);
+  return value.kind === 'static' ? value.value : undefined;
+}
+
 /** The arguments a string of shell words becomes (`env -S`'s value), or `undefined` when it isn't plain words. */
 export function resolveWords(text: string, lookup: Lookup): Arg[] | undefined {
   const script = parse(`: ${text}`);

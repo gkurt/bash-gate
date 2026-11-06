@@ -105,6 +105,8 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['set -o posix\n{ alias e="rm -rf /"\ncat <(e); }', 'deny', 'in POSIX mode, a process substitution has the aliases when it runs'],
   ['echo $"${u:-"$"("rm -rf /)"}"', 'deny', "inner quotes in a locale string's default, which Bash removes first"],
   ['echo "${u:-$"""$"("rm -rf /)"}"', 'deny', 'inner `$"…"` quotes in a default, which Bash removes in pairs'],
+  ["k='$(rm -rf /)'; a=([$k]=1)", 'deny', "an array literal's subscript, whose value Bash expands again"],
+  ['a=(["$1"]=1)', 'ask', "an array literal's subscript only known at run time, which Bash expands again"],
   [
     "shopt -s expand_aliases\nalias s='sudo ' r='rm -rf /'\ns \\env r",
     'deny',

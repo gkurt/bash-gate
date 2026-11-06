@@ -25,6 +25,7 @@ import {
   bracesDisagree,
   decodeAnsiC,
   dynamicArg,
+  expandText,
   expandsBraces,
   joinStatic,
   resolveValue,
@@ -726,9 +727,16 @@ class Walker {
           if (!/^\]\+?=/.test(element.text.slice(end))) continue;
           const subscript = element.text.slice(1, end);
           this.unquoted(subscript, state, ctx, element);
-          // Bash removes the quotes first and expands what's left again: `['$'('ls')]=1` runs `ls`.
+          // Bash expands the subscript, then expands what that leaves again: `['$'('ls')]=1` runs `ls`, and so does
+          // `[$k]=1` with `k='$(ls)'`. What it leaves may be any code when it's only known at run time.
+          const call = this.at(ctx, state, element);
           const bare = unquote(subscript);
-          if (bare !== subscript && /[$`]/.test(bare)) this.expansions(bare, state, ctx, this.at(ctx, state, element), 'subscript');
+          if (bare !== subscript && /[$`]/.test(bare)) this.expansions(bare, state, ctx, call, 'subscript');
+          const expanded = expandText(subscript, lookupIn(state));
+          if (typeof expanded !== 'string' && /[$`]/.test(subscript))
+            this.finding(ctx, 'dynamic-script', `An array subscript Bash expands twice is only known at run time: ${subscript}`, call.span);
+          else if (typeof expanded === 'string' && expanded !== bare && /[$`]/.test(expanded))
+            this.expansions(expanded, state, ctx, call, 'subscript');
           this.arithmeticText(subscript, state, ctx, element.text, this.span(ctx, element.pos, element.end));
         }
       }
