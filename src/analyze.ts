@@ -376,6 +376,11 @@ class Walker {
   script(script: ParsedScript, state: State, ctx: Context, first?: Aliases, whole = false): void {
     for (const error of script.errors ?? []) this.finding(ctx, 'parse-error', `Parse error: ${error.message}`, [error.pos, error.pos]);
     this.carriageReturn(ctx.source, ctx);
+    // Bash keeps a backslash that ends the code, or drops it after a quoted string over several lines.
+    if (!first && /(?<!\\)(?:\\\\)*\\$/.test(ctx.source)) {
+      const end = ctx.source.length;
+      this.finding(ctx, 'parse-error', 'A backslash at the end of the code, which Bash may keep or drop', this.span(ctx, end - 1, end));
+    }
     // An alias's text leaves out a here-document's body, which is after the command.
     if (!first && unclosed(script)) this.finding(ctx, 'parse-error', 'A here-document is never closed', this.span(ctx, 0, 0));
     let unit = first ? { aliases: first, expanding: ctx.expanding } : undefined;

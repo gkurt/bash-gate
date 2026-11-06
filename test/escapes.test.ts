@@ -88,6 +88,7 @@ const cases: [source: string, decision: Decision, what: string][] = [
     'in POSIX mode, a substitution has the aliases from when its line was parsed',
   ],
   ['s=/; rm -rf {$,}s', 'deny', "a variable's name running out of a brace, which expands first"],
+  ["cat 'a\nb' x\\", 'ask', 'a backslash ending the code, which Bash drops after a quoted string over lines'],
   [
     "shopt -s expand_aliases\nalias s='sudo ' r='rm -rf /'\ns \\env r",
     'deny',

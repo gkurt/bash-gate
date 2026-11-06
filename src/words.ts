@@ -42,7 +42,9 @@ export function resolveWord(word: Word, lookup: Lookup): Arg[] {
     ? resolveParts(word.parts, lookup, false)
     : [[{ kind: 'text', value: word.value, split: false } as Segment]];
   if (!alternatives) return [dynamicArg(word.text, 'variable', true, '')];
-  return alternatives.flatMap((alternative) => toArgs(alternative, word.text));
+  // A `$` that starts no expansion keeps Bash from splitting the word: `$x-$` is one word, whatever `$x` holds.
+  const whole = word.parts?.some((part) => part.type === 'Literal' && part.text.replaceAll(/\\[\s\S]/g, '').includes('$'));
+  return alternatives.flatMap((alternative) => toArgs(alternative, word.text, whole));
 }
 
 /** The value an assignment stores: no brace expansion, globbing or splitting. */
@@ -433,14 +435,17 @@ function expandSequence(text: string): string[] | undefined {
   return values;
 }
 
-/** Field splitting on default `IFS`: unquoted expansions split, quoted text joins its neighbours. */
-function toArgs(word: Alternative, text: string): Arg[] {
+/**
+ * Field splitting on default `IFS`: unquoted expansions split, quoted text joins its neighbours. Known values don't
+ * split in a `whole` word, though they still match files.
+ */
+function toArgs(word: Alternative, text: string, whole = false): Arg[] {
   // An unquoted known value is a pattern too: `x='*'; cat $x` names the files it matches.
-  const alternative = word.map((segment): Segment =>
-    segment.kind === 'text' && segment.split && /[*?[]|[@!+]\(/.test(segment.value)
-      ? { kind: 'dynamic', reason: 'glob', split: true }
-      : segment,
-  );
+  const alternative = word.map((segment): Segment => {
+    if (segment.kind !== 'text' || !segment.split) return segment;
+    if (/[*?[]|[@!+]\(/.test(segment.value)) return { kind: 'dynamic', reason: 'glob', split: true };
+    return whole ? { ...segment, split: false } : segment;
+  });
   const dynamic = alternative.filter((segment) => segment.kind === 'dynamic');
   if (dynamic.length > 0) {
     let prefix = '';
