@@ -621,17 +621,19 @@ class Walker {
 
   /** Command substitutions and arithmetic evaluation hidden in `nodes`. */
   substitutions(nodes: readonly SyntaxNode[], state: State, ctx: Context): void {
-    const visit = (node: SyntaxNode, ctx: Context) => {
+    /** `again`: a substitution Bash parses again as it runs it. */
+    const visit = (node: SyntaxNode, ctx: Context, again = false) => {
       if (node.type === 'Script') {
         const scriptCtx = node.source === undefined ? ctx : { ...ctx, source: node.source, outer: ctx.outer ?? [node.pos, node.end] };
         const inner = { ...scriptCtx, nesting: [...ctx.nesting, '$(…)'] };
-        // In POSIX mode Bash runs the substitution as it parsed it with the line around it: with that line's aliases,
-        // and none it defines itself. Otherwise it parses it again as it runs, a line at a time.
-        if (state.posix !== false && !ctx.late) this.script(node, clone(state), inner, ctx.aliases, true);
-        if (state.posix !== true || ctx.late) this.script(node, clone(state), inner);
+        // In POSIX mode Bash runs a command substitution as it parsed it with the line around it: with that line's
+        // aliases, and none it defines itself. Otherwise, and for a process substitution, it parses it again as it runs.
+        const parsed = !again && !ctx.late;
+        if (state.posix !== false && parsed) this.script(node, clone(state), inner, ctx.aliases, true);
+        if (state.posix !== true || !parsed) this.script(node, clone(state), inner);
         return;
       }
-      if (node.type === 'ProcessSubstitution') return forEachChild(node, (child) => visit(child, { ...ctx, concurrent: true }));
+      if (node.type === 'ProcessSubstitution') return forEachChild(node, (child) => visit(child, { ...ctx, concurrent: true }, true));
       if (node.type === 'ArithmeticExpansion') {
         if (node.expression) this.arithmetic(node.expression, state, ctx);
         return;
@@ -928,6 +930,7 @@ class Walker {
       cwd: state.cwd,
       home: homeOf(state),
     };
+    const before = new Map(assignments.map(({ name }) => [name, state.vars.get(name)]));
     for (const assignment of assignments) {
       const value = assignmentValue(assignment, lookup);
       const stored = this.assigned(assignment.name, value, state, ctx, call, argv.length === 0);
@@ -936,8 +939,14 @@ class Walker {
     this.wrote(files.writes, call, 'contents');
     const opens = files.writes.length > 0 || files.reads.length > 0;
     // A file Bash can't open stops the command before it runs, along with what it would change (`alias x=y <nofile`).
-    if (argv.length > 0 && opens) return settle(state, [clone(state), this.branch(state, ctx, (s, c) => this.dispatch(argv, s, c, call))]);
-    if (argv.length > 0) return this.dispatch(argv, state, ctx, call);
+    if (argv.length > 0 && opens) settle(state, [clone(state), this.branch(state, ctx, (s, c) => this.dispatch(argv, s, c, call))]);
+    else if (argv.length > 0) this.dispatch(argv, state, ctx, call);
+    if (argv.length > 0) {
+      // What a builtin or function assigns to a variable of its own temporary environment (`z=a declare z=b`) is gone
+      // after it, unless it went global (`declare -g`, `export`): the value is only known at run time.
+      for (const { name } of assignments) if (!sameValue(state.vars.get(name), before.get(name))) state.vars.set(name, { kind: 'dynamic' });
+      return;
+    }
     if (opens) this.emit(ctx, call, ':', 'builtin', [{ kind: 'static', value: ':' }], emptyParsed());
   }
 
@@ -1227,8 +1236,14 @@ class Walker {
         for (const arg of args) {
           const text = arg.kind === 'static' ? arg.value : arg.prefix;
           if (text.startsWith('-')) continue;
-          const match = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?(\+?=)?/.exec(text);
-          if (!match) continue;
+          // `y!=d` is no name to Bash, which refuses it and goes on to the next.
+          const match = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?(\+?=|$)/.exec(text);
+          if (!match && arg.kind === 'static') continue;
+          if (!match) {
+            const variable = /^[A-Za-z_]\w*/.exec(text)?.[0];
+            if (variable) state.vars.set(variable, { kind: 'dynamic' });
+            continue;
+          }
           const variable = match[1]!;
           if (flags.includes('f')) {
             if (name === 'export') state.exportedFunctions.add(variable);
@@ -2183,12 +2198,16 @@ function sameSet<T>(a: Set<T>, b: Set<T>): boolean {
   return a.size === b.size && [...a].every((item) => b.has(item));
 }
 
+/** Whether two values of a variable are the same, `undefined` being never assigned. */
+function sameValue(x: Value | undefined, y: Value | undefined): boolean {
+  if (!x || !y) return x === y;
+  return x.kind === 'dynamic' ? y.kind === 'dynamic' && x.numeric === y.numeric : y.kind === 'static' && x.value === y.value;
+}
+
 /** Whether two states know the same, for when a loop has settled. */
 function equal(a: State, b: State): boolean {
   return (
-    sameMap(a.vars, b.vars, (x, y) =>
-      x.kind === 'dynamic' ? y.kind === 'dynamic' && x.numeric === y.numeric : y.kind === 'static' && x.value === y.value,
-    ) &&
+    sameMap(a.vars, b.vars, sameValue) &&
     sameSet(a.exported, b.exported) &&
     sameMap(a.functions, b.functions, (x, y) => x.maybeUndefined === y.maybeUndefined && sameSet(new Set(x.bodies), new Set(y.bodies))) &&
     sameSet(a.exportedFunctions, b.exportedFunctions) &&

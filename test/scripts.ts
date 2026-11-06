@@ -121,6 +121,8 @@ export const hiding = [
   "( trap 'f' EXIT; f() { x=$(( '$(cat q)' ))cat loop; } )\nf() { declare y=d; declare -x=<(sort s) y=1; cat $y; }; f",
   "'l's() { cat inside; }; ls command ls x; \\rm() { sort a; }; rm b; ls-x() { cat c; }; ls-x",
   'cat <<EOF\n${u:-"$"("ls hd)"}\nEOF\nx=$(( \'${u:-"$"("sort ar)"}\' ))',
+  'y=b; f() { declare y!=d; cat $y; }; f; z=q; z=a read z <<< r; ls "$z"; w=a declare -g w=e; sort "$w"',
+  'set -o posix\n{ alias e="cat "\ncat <(e ls ps); x=$(e cs); }',
   "echo \"${y:-$'$(cat dq)'}\" \"${y:-$'\\x24(ls hex)'}\"\ncat <<EOF\n${y:-$'$(sort heredoc)'}\nEOF\nc=([\\$\\(cat\\ esc$'\\;;')]=1)",
   'x=cat; $\\\nx y',
   'enable "$@"-n echo; echo hi',
