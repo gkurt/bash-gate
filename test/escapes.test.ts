@@ -25,6 +25,9 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ["$'\\x72m' -rf /", 'deny', 'ANSI-C quoting'],
   ['{rm,-rf,/}', 'deny', 'brace expansion making the whole command'],
   ['rm {,-rf} /', 'deny', 'brace expansion making an option'],
+  ['x=./build; xr=/; rm -rf $x{r,}', 'deny', 'braces after a variable, which expand first and lengthen its name'],
+  ['x=[\';rm -rf /;\']; eval "$x"', 'deny', 'quotes in a glob-like assignment value, which Bash removes'],
+  ["x='/u*'; rm -rf $x", 'ask', 'a known value used unquoted is a pattern, as a written glob is'],
   ['cmd=rm; $cmd -rf /', 'deny', 'a variable followed through constant propagation'],
   ['flags="-rf /"; rm $flags', 'deny', 'field splitting of an unquoted variable'],
   ['$(echo rm) -rf /', 'ask', 'a command name from a substitution'],
@@ -58,6 +61,8 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ["bash $x 'rm -rf /'", 'deny', 'a shell option only known at run time, which may be -c'],
   ['set -eo posix\nalias ls="rm -rf /"\nls', 'deny', 'POSIX mode set with other options in one word'],
   ['shopt -so posix\nalias ls="rm -rf /"\nls', 'deny', 'POSIX mode set by shopt -o'],
+  ['shopt - -s expand_aliases\nalias rm=true\nrm -rf /', 'deny', "a lone - ends shopt's options, so -s is a name"],
+  ['shopt -s- expand_aliases\nalias rm=true\nrm -rf /', 'deny', 'shopt with an option letter Bash rejects changes nothing'],
   ['set -o -o posix\nalias ls="rm -rf /"\nls', 'deny', 'set -o before an option lists them, and the next -o sets POSIX mode'],
   [
     "shopt -s expand_aliases\nalias s='sudo ' r='rm -rf /'\ns \\env r",

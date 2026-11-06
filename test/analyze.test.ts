@@ -18,6 +18,21 @@ describe('words', () => {
     expect(analyze('x="a  b"; echo $x').invocations[0]!.argv).toHaveLength(3);
   });
 
+  test("a dynamic word with a known value that splits may be many words, one that doesn't can't", () => {
+    const split = (source: string) => analyze(source).invocations.find((invocation) => invocation.program === 'echo')!.argv[1];
+    expect(split('x="a  b"; echo "$(date)"$x')).toMatchObject({ kind: 'dynamic', split: true });
+    expect(split('x=ab; echo "$(date)"$x "$x"')).toMatchObject({ kind: 'dynamic', split: false });
+  });
+
+  test("braces expand before variables: a name runs into a brace's alternatives", () => {
+    const source = 'x=X; xa=A; xb=B; xac=AC; x1=ONE; echo $x{a,b} {p,q}$x{a,b} {$x{a,b},c}c $x{1..1} $x{a}';
+    expect(values(only(source).argv)).toEqual(['echo', 'A', 'B', 'pA', 'pB', 'qA', 'qB', 'AC', '<variable>', 'cc', 'ONE', 'X{a}']);
+  });
+
+  test('an unquoted known value with a pattern is a glob; an assignment removes the quotes in one', () => {
+    expect(values(only(`x='*'; y=a['q']"b"; echo $x "$x" "$y"`).argv)).toEqual(['echo', '<glob>', '*', 'a[q]b']);
+  });
+
   test('an unquoted empty expansion is no word, a quoted one is an empty word', () => {
     expect(values(only('e=; echo $e "$e" end').argv)).toEqual(['echo', '', 'end']);
   });

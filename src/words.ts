@@ -24,6 +24,18 @@ const special = /^(?:[0-9]+|[@*#?$!_-])$/;
  * unquoted expansions. A word with any dynamic part is one dynamic argument; a static word may be none or several.
  */
 export function resolveWord(word: Word, lookup: Lookup): Arg[] {
+  const texts = word.parts && braceTexts(word.text, word.parts);
+  if (texts) {
+    if (texts.length === 0 || texts.length > maxAlternatives) return [dynamicArg(word.text, 'variable', true, '')];
+    const args: Arg[] = [];
+    for (const text of texts) {
+      const next = parseWord(text);
+      if (!next) return [dynamicArg(word.text, 'variable', true, '')];
+      args.push(...resolveWord(next, lookup));
+      if (args.length > maxAlternatives) return [dynamicArg(word.text, 'variable', true, '')];
+    }
+    return args;
+  }
   const alternatives = word.parts
     ? resolveParts(word.parts, lookup, false)
     : [[{ kind: 'text', value: word.value, split: false } as Segment]];
@@ -35,21 +47,43 @@ export function resolveWord(word: Word, lookup: Lookup): Arg[] {
 export function resolveValue(word: Word, lookup: Lookup): Value {
   if (!word.parts) return { kind: 'static', value: word.value };
   if (word.parts.length === 1 && word.parts[0]?.type === 'ArithmeticExpansion') return { kind: 'dynamic', numeric: true };
+  const value = valueText(word.parts, lookup);
+  return value === undefined ? { kind: 'dynamic' } : { kind: 'static', value };
+}
+
+/**
+ * What parts stand for with no brace expansion, globbing or splitting, or `undefined` when the run decides. Quotes
+ * inside a glob or braces are still removed: `x=a['q']` stores `a[q]`.
+ */
+function valueText(parts: readonly WordPart[], lookup: Lookup): string | undefined {
   let value = '';
-  for (const part of word.parts) {
-    if (part.type === 'Glob' || part.type === 'BraceExpansion' || part.type === 'ExtendedGlob') {
+  for (const part of parts) {
+    if (part.type === 'Glob' || part.type === 'ExtendedGlob') {
+      const open = part.type === 'Glob' ? 1 : 2;
+      if (!part.parts) {
+        value += part.text;
+      } else {
+        if (part.parts.map((child) => child.text).join('') !== part.text.slice(open, -1)) return undefined;
+        const inner = valueText(part.parts, lookup);
+        if (inner === undefined) return undefined;
+        value += part.text.slice(0, open) + inner + part.text.slice(-1);
+      }
+      continue;
+    }
+    if (part.type === 'BraceExpansion') {
+      if (/['"\\$`]/.test(part.text)) return undefined;
       value += part.text;
       continue;
     }
     const alternatives = resolveParts([part], lookup, false);
     const only = alternatives?.length === 1 ? alternatives[0] : undefined;
-    if (!only) return { kind: 'dynamic' };
+    if (!only) return undefined;
     for (const segment of only) {
-      if (segment.kind === 'dynamic') return { kind: 'dynamic' };
+      if (segment.kind === 'dynamic') return undefined;
       value += segment.value;
     }
   }
-  return { kind: 'static', value };
+  return value;
 }
 
 /** The arguments a string of shell words becomes (`env -S`'s value), or `undefined` when it isn't plain words. */
@@ -172,6 +206,39 @@ function expandBraces(text: string, lookup: Lookup): Alternative[] | undefined {
   return result;
 }
 
+/**
+ * The words a word's first brace expansion makes, as text, when a variable's name runs into a brace: Bash expands
+ * braces before variables, so `$x{a,b}` is `$xa $xb`, and `{$x{a,b},c}d` is `$xad $xbd cd`. Each is read again.
+ * `undefined` when no name runs into a brace, and braces can expand on parts.
+ */
+function braceTexts(text: string, parts: readonly WordPart[]): string[] | undefined {
+  if (!/\$[A-Za-z_]\w*\{/.test(text)) return undefined;
+  const at = parts.findIndex((part) => part.type === 'BraceExpansion' && braceItems(part.text) !== undefined);
+  if (at === -1) return undefined;
+  // Text rebuilt from the parts must be the word's, or the words read again aren't its.
+  if (parts.map((part) => part.text).join('') !== text) return [];
+  const before = parts
+    .slice(0, at)
+    .map((part) => part.text)
+    .join('');
+  const after = parts
+    .slice(at + 1)
+    .map((part) => part.text)
+    .join('');
+  return braceItems(parts[at]!.text)!.map((item) => before + item + after);
+}
+
+/**
+ * What a brace expansion's alternatives are as text, or `undefined` for braces that stay text. A sequence's letters and
+ * digits may run into a name (`$x{1..2}` is `$x1 $x2`); Bash quotes anything else it makes.
+ */
+function braceItems(text: string): string[] | undefined {
+  const inner = text.slice(1, -1);
+  const items = splitTopLevel(inner);
+  if (items.length >= 2) return items;
+  return expandSequence(inner)?.map((value) => value.replaceAll(/[^A-Za-z0-9]/g, '\\$&'));
+}
+
 /** What `$'…'` stands for. unbash drops a backslash and newline in it, which Bash keeps: they're no escape there. */
 function ansiC(part: AnsiCQuotedPart): string {
   const inner = part.text.slice(2, -1);
@@ -254,7 +321,13 @@ function expandSequence(text: string): string[] | undefined {
 }
 
 /** Field splitting on default `IFS`: unquoted expansions split, quoted text joins its neighbours. */
-function toArgs(alternative: Alternative, text: string): Arg[] {
+function toArgs(word: Alternative, text: string): Arg[] {
+  // An unquoted known value is a pattern too: `x='*'; cat $x` names the files it matches.
+  const alternative = word.map((segment): Segment =>
+    segment.kind === 'text' && segment.split && /[*?[]|[@!+]\(/.test(segment.value)
+      ? { kind: 'dynamic', reason: 'glob', split: true }
+      : segment,
+  );
   const dynamic = alternative.filter((segment) => segment.kind === 'dynamic');
   if (dynamic.length > 0) {
     let prefix = '';
@@ -263,14 +336,9 @@ function toArgs(alternative: Alternative, text: string): Arg[] {
       prefix += segment.value;
     }
     const reason = dynamic.find((segment) => segment.reason !== 'variable')?.reason ?? dynamic[0]!.reason;
-    return [
-      dynamicArg(
-        text,
-        reason,
-        dynamic.some((segment) => segment.split),
-        prefix,
-      ),
-    ];
+    // A known value splits too: `"$(cmd)"$x` with `x='a b'` is two words.
+    const splits = alternative.some((segment) => segment.split && (segment.kind === 'dynamic' || /[ \t\n]/.test(segment.value)));
+    return [dynamicArg(text, reason, splits, prefix)];
   }
   const fields: string[] = [];
   let current = '';

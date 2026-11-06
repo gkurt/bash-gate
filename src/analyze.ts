@@ -1056,12 +1056,12 @@ class Walker {
           state.expandAliases = state.expandAliases === true ? true : undefined;
           break;
         }
-        // Options end at the first name; a bad one, or -s with -u, changes nothing. With -o, the names are `set -o`'s.
-        let end = values.findIndex((value) => !value!.startsWith('-') || value === '--');
-        if (end === -1) end = values.length;
-        const flags = values.slice(0, end).join('');
-        const names = values.slice(values[end] === '--' ? end + 1 : end);
-        if (/[^-psuoq]/.test(flags) || (flags.includes('s') && flags.includes('u'))) break;
+        // Options as getopt reads them (a lone - is a name); a bad one, or -s with -u, changes nothing. With -o, the
+        // names are `set -o`'s.
+        const { options, rest, bad } = getopt(values, 'psuoq');
+        const flags = options.map(([letter]) => letter).join('');
+        const names = values.slice(rest);
+        if (bad || (flags.includes('s') && flags.includes('u'))) break;
         if (!names.includes(flags.includes('o') ? 'posix' : 'expand_aliases')) break;
         if (flags.includes('s')) state.expandAliases = true;
         else if (flags.includes('u'))
