@@ -98,6 +98,7 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ["trap f EXIT; f() { x=$(( '$(rm -rf /)' )); }", 'deny', 'a function called from a trap, read in the code it was defined in'],
   ["f() { (( '$(rm -rf /)' )); }; eval f", 'deny', 'a function called from eval, read in the code it was defined in'],
   ['echo "${u:-"$"("cat {a}s,d}e")"}"', 'ask', 'braces Bash expands across quotes, which multiply a substitution'],
+  ["'r'm() { :; }; rm -rf /", 'deny', 'a function name with quotes, which Bash refuses to define'],
   [
     "shopt -s expand_aliases\nalias s='sudo ' r='rm -rf /'\ns \\env r",
     'deny',

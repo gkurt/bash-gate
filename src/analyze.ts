@@ -496,9 +496,12 @@ class Walker {
         if (files.writes.length === 0 && files.reads.length === 0) return this.node(node.command, state, inner);
         return settle(state, [clone(state), this.branch(state, inner, (s, c) => this.node(node.command, s, c))]);
       }
-      case 'Function':
+      case 'Function': {
+        // Bash refuses a name with quotes, escapes or expansions in it.
+        if (!plain(node.name) || node.name.value.includes('$')) return;
         state.functions.set(node.name.value, { bodies: [this.body(node, ctx)], maybeUndefined: false });
         return;
+      }
       case 'Coproc':
         return this.node(node.body, clone(state), { ...ctx, concurrent: true });
       default: {
@@ -755,11 +758,16 @@ class Walker {
    * here-document's body, where they're text too.
    */
   unquoted(text: string, state: State, ctx: Context, node: { pos: number; end: number }): void {
-    if (!text.includes("'") || !/[$`]/.test(text)) return;
-    this.expansions(text, state, ctx, this.at(ctx, state, node), 'arithmetic');
+    if (!/['"]/.test(text) || !/[$`]/.test(text)) return;
+    if (text.includes("'")) this.expansions(text, state, ctx, this.at(ctx, state, node), 'arithmetic');
     // `$'…'` stands for what it decodes to first: `$'\x24(ls)'` is `$(ls)`.
     const decoded = decodeAnsiC(text);
     if (decoded !== text && /[$`]/.test(decoded)) this.expansions(decoded, state, ctx, this.at(ctx, state, node), 'arithmetic');
+    // Double quotes are gone too when a subscript is expanded again: `a[$"$"(ls)]` runs `ls`.
+    const expansion = /\$[({\w]|`/g;
+    const bare = text.replaceAll(/\\[\s\S]|\$?"((?:\\[\s\S]|[^"\\])*)"/g, (m, inner?: string) => inner ?? m);
+    if ((bare.match(expansion)?.length ?? 0) > (text.match(expansion)?.length ?? 0))
+      this.expansions(bare, state, ctx, this.at(ctx, state, node), 'arithmetic');
   }
 
   /**
