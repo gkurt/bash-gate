@@ -22,6 +22,7 @@ import { basename, isSystemPath, resolvePath } from './paths.ts';
 import { gitConfig, specFor } from './specs.ts';
 import type { Analysis, Arg, Effect, FindingKind, Invocation } from './types.ts';
 import {
+  bracesDisagree,
   decodeAnsiC,
   dynamicArg,
   expandsBraces,
@@ -114,6 +115,9 @@ interface Alias {
 interface Body {
   node: FunctionNode;
   aliases: Aliases;
+  /** The code it was defined in, which its positions index, wherever it's called from. */
+  source: string;
+  outer?: [number, number];
 }
 
 /** Where the walk is: the source positions index, and how it got there. */
@@ -493,7 +497,7 @@ class Walker {
         return settle(state, [clone(state), this.branch(state, inner, (s, c) => this.node(node.command, s, c))]);
       }
       case 'Function':
-        state.functions.set(node.name.value, { bodies: [this.body(node, ctx.aliases)], maybeUndefined: false });
+        state.functions.set(node.name.value, { bodies: [this.body(node, ctx)], maybeUndefined: false });
         return;
       case 'Coproc':
         return this.node(node.body, clone(state), { ...ctx, concurrent: true });
@@ -602,11 +606,12 @@ class Walker {
   }
 
   /** The definition of `node` parsed with `aliases`: the same object each time, so that states compare equal. */
-  body(node: FunctionNode, aliases: Aliases): Body {
+  body(node: FunctionNode, ctx: Context): Body {
+    const { aliases, source, outer } = ctx;
     const known = this.bodies.get(node) ?? [];
-    const found = known.find((body) => sameAliases(body.aliases, aliases));
+    const found = known.find((body) => sameAliases(body.aliases, aliases) && body.source === source);
     if (found) return found;
-    const body = { node, aliases };
+    const body = { node, aliases, source, outer };
     this.bodies.set(node, [...known, body]);
     return body;
   }
@@ -654,6 +659,11 @@ class Walker {
           if (decoded !== part.text && /[$`]/.test(decoded.slice(1)))
             this.expansions(decoded, state, ctx, this.at(ctx, state, part), 'parameter', true);
         }
+      }
+      if (node.type === 'Word' && bracesDisagree(node)) {
+        // Bash expands braces on the word's text first: they may make several of a substitution the parser read once.
+        const where = this.span(ctx, node.pos, node.end);
+        this.finding(ctx, 'parse-error', 'Braces Bash expands differently from the parser', where);
       }
       if ((node.type === 'Word' || node.type === 'Assignment') && ctx.source[node.end] === '#') {
         // `x=<(sort s)#; cat $x`: one word to Bash, as a `#` inside one starts no comment. The parser cut the line there.
@@ -947,14 +957,15 @@ class Walker {
     const fn = ctx.externalOnly || call.noFunctions ? undefined : state.functions.get(name);
     if (fn) {
       this.emit(ctx, call, name, 'function', argv, emptyParsed());
-      const outcomes = fn.bodies.map(({ node, aliases }) => {
+      const outcomes = fn.bodies.map(({ node, aliases, source, outer }) => {
         if (ctx.calls.includes(node)) {
           this.finding(ctx, 'too-deep', `Recursive function \`${name}\` cannot be followed further`, call.span);
           return clone(state);
         }
         // The body was parsed, aliases and all, when it was defined.
         const locals = new Set<string>();
-        return this.branch(state, { ...ctx, calls: [...ctx.calls, node], locals, aliases, expanding: [] }, (s, c) => {
+        const inner = { ...ctx, source, outer, calls: [...ctx.calls, node], locals, aliases, expanding: [] };
+        return this.branch(state, inner, (s, c) => {
           this.node(node.body, s, c);
           restore(s, state, locals);
         });
@@ -1192,6 +1203,15 @@ class Walker {
         const options = end === -1 ? values : values.slice(0, end);
         const known = name === 'export' || name === 'readonly' ? /^[-+][aAfnp]+$/ : /^[-+][aAfFgiIlnprtuxc]+$/;
         if (!options.every((option) => known.test(option!))) break;
+        const unknown = end === -1 ? undefined : args[end];
+        if (unknown?.kind === 'dynamic' && /^([-+]|$)/.test(unknown.prefix)) {
+          // A word only known at run time that may be an option: one Bash rejects changes nothing, another changes how.
+          for (const arg of args.slice(end + 1)) {
+            const variable = /^[A-Za-z_]\w*/.exec(arg.kind === 'static' ? arg.value : arg.prefix)?.[0];
+            if (variable) state.vars.set(variable, { kind: 'dynamic' });
+          }
+          break;
+        }
         const flags = options.filter((value) => value?.startsWith('-')).join('');
         // In a function, `local`, and `declare` without -g, make a variable of the call's own, unset until assigned.
         const locals = ctx.calls.length > 0 && (name === 'local' || (name !== 'export' && name !== 'readonly' && !flags.includes('g')));

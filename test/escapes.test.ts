@@ -95,6 +95,9 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['echo "${y:-$\'\\x24(rm -rf /)\'}"', 'deny', 'ANSI-C quoting in a double-quoted default, decoded and then expanded'],
   ["cat <<EOF\n${y:-$'$(rm -rf /)'}\nEOF", 'deny', "a here-document's `$'` in a default, which is no quoting there"],
   ['xr=/; rm -rf $x\\\nr', 'deny', "a variable's name across a line continuation"],
+  ["trap f EXIT; f() { x=$(( '$(rm -rf /)' )); }", 'deny', 'a function called from a trap, read in the code it was defined in'],
+  ["f() { (( '$(rm -rf /)' )); }; eval f", 'deny', 'a function called from eval, read in the code it was defined in'],
+  ['echo "${u:-"$"("cat {a}s,d}e")"}"', 'ask', 'braces Bash expands across quotes, which multiply a substitution'],
   [
     "shopt -s expand_aliases\nalias s='sudo ' r='rm -rf /'\ns \\env r",
     'deny',

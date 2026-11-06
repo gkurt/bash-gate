@@ -273,7 +273,7 @@ function braceTexts(text: string, parts: readonly WordPart[]): string[] | undefi
  * Whether Bash expands other braces in `word` than the parser found: `{a}s,d}` is `a}s d` to Bash, as a `}` only closes
  * a brace once a `,` has been seen, but text to the parser. Neither reading can be trusted then.
  */
-function bracesDisagree(word: Word): boolean {
+export function bracesDisagree(word: Word): boolean {
   if (!word.text.includes('{')) return false;
   const found: string[] = [];
   let offset = 0;
