@@ -792,6 +792,8 @@ class Walker {
     // `$'…'` stands for what it decodes to first: `$'\x24(ls)'` is `$(ls)`.
     const decoded = decodeAnsiC(text);
     if (decoded !== text && /[$`]/.test(decoded)) this.expansions(decoded, state, ctx, this.at(ctx, state, node), 'arithmetic');
+    // `$"…"` is translated as Bash parses, and what it leaves with what's around it can't be followed.
+    if (text.includes('$"')) this.finding(ctx, 'unknown-syntax', `A $"…" string in arithmetic: ${text}`, this.at(ctx, state, node).span);
     // Double quotes are gone too when a subscript is expanded again: `a[$"$"(ls)]` runs `ls`.
     const expansion = /\$[({\w]|`/g;
     const bare = text.replaceAll(/\\[\s\S]|\$?"((?:\\[\s\S]|[^"\\])*)"/g, (m, inner?: string) => inner ?? m);

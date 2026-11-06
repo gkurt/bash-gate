@@ -91,7 +91,14 @@ describe.skipIf(!compatibleBash)('against bash', () => {
   ]);
   // On Windows a process just killed holds the directory for a moment (EBUSY).
   const remove = (path: string) => rmSync(path, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 });
-  afterAll(() => remove(dir));
+  // A mutant's process Windows didn't kill may hold it past the retries: leaving the temporary directory is harmless.
+  afterAll(() => {
+    try {
+      remove(dir);
+    } catch (error) {
+      if (process.platform !== 'win32') throw error;
+    }
+  });
 
   /** Undoes what the last script wrote. Only stubs it changed are written again: Windows scans a new executable first. */
   function fresh() {

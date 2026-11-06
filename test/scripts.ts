@@ -116,6 +116,7 @@ export const hiding = [
   "cat 'a\nb' x\\",
   'echo "${u:-"$"("cat {a}s,d}e x{a,[}b}y ls m)"}"',
   'b=(["$"$@""("ls dq)"]=1)',
+  '\\\n(( a[$"$"$@""(ls<<D\'\' q)$"]" = 1<<D\\\n ))\nD\n\tD\n',
   '(( a[$"$"(ls<<D\'\' q)$"]" = 1<<D\\\n ))\nD\n\tD\n',
   'b=([a[1]=1); # $(cat hidden) ]=2); c=([x[1]]=1 [$(ls nested)]=2)',
   'zx=a; z=b; cat $z\\\nx "a$z\\\nx" ${z}\\\nx\nzx=; cat $z\\\nx "a$z\\\nx"',

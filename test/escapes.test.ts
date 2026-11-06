@@ -110,6 +110,7 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['x="$(echo ${y:-$\'\\x24(rm -rf /)\'})"', 'deny', 'ANSI-C quoting in a default, in a substitution inside double quotes'],
   ['echo "${v:-"$\\(rm -rf /)"}"', 'deny', "a backslash before `(` in a default's inner quotes, which Bash removes"],
   ['set -o posix\n{ alias ls="rm -rf /"\nx=$(echo `ls`); }', 'deny', 'in POSIX mode, backquotes have the aliases when they run'],
+  ['(( a[$"$"$@""(rm -rf /)] = 1 ))', 'ask', 'a $"…" string in arithmetic, which Bash translates as it parses'],
   [
     'set -o posix\nalias ls="rm -rf /"\n{ alias ls=cat\ncat <(ls); }',
     'deny',
