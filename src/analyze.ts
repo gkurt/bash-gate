@@ -758,8 +758,10 @@ class Walker {
         this.arithmeticWord(node.right, state, ctx);
       }
       const inner = node.type === 'HereDocBody' ? { ...ctx, late: true } : ctx;
+      // Backquotes are parsed as they run, like a process substitution.
+      const backquoted = node.type === 'CommandExpansion' && node.text.startsWith('`');
       forEachChild(node, (child) =>
-        visit(child, node.type === 'DoubleQuoted' && child.type === 'CommandExpansion' ? { ...inner, quoted: true } : inner),
+        visit(child, node.type === 'DoubleQuoted' && child.type === 'CommandExpansion' ? { ...inner, quoted: true } : inner, backquoted),
       );
     };
     for (const node of nodes) visit(node, ctx);
