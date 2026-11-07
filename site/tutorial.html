@@ -108,7 +108,12 @@ check('git status', recommended).decision; // 'allow'</pre>
           <p>
             The walk keeps the state Bash keeps: variables (across branches, and through loops until they settle), functions, aliases,
             <code>hash -p</code>, <code>enable</code> and the working directory. Then it dispatches as Bash does: alias, function, builtin,
-            program.
+            program, or <code>command_not_found_handle</code> when the program isn't found.
+          </p>
+          <p>
+            Some variables are state too. <code>BASH_ALIASES</code> and <code>BASH_CMDS</code> are the alias and <code>hash</code> tables,
+            and a nameref (<code>declare -n</code>) assigns whichever variable it names. Assigning one of those, or a variable named only at
+            run time, is a finding.
           </p>
           <p>
             Aliases expand only where Bash would expand them: with <code>expand_aliases</code>, from the next line on. Try the alias example

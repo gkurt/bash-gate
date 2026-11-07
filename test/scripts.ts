@@ -106,6 +106,11 @@ export const scripts = [
   'z=b; f() { declare x -g z=e; }; f; ls "$z"',
   'z=b; declare -e z=c; ls "$z"; declare -l v; v=CAT; $v a; declare -u -l w=cAt; $w b; f() { local -c x=sORT; $x c; }; f',
   `export x=a; f() { local x; /bin/bash -c 'ls "$x"'; cat "[$x]"; }; f`,
+  'RANDOM=5; ls $RANDOM; OLDPWD=a; cd .; cat "$OLDPWD"; PIPESTATUS=ls; true | true; sort $PIPESTATUS',
+  'x=; : ${x:=ls}; $x a; y=cat; declare -n r=y; r=sort; $y b',
+  'cat() { ls fn; }; unset cat; cat a; x=a; exec {x}>out; grep "$x" out',
+  'command_not_found_handle() { cat "$@"; }; nosuch a; x=$(missing b)',
+  'select x in ls; do $x cat a; break; done <<< 9',
 ];
 
 /** Scripts that run what the analysis can't see, behind a finding: the finding must account for it. */
@@ -141,4 +146,9 @@ export const hiding = [
   'shopt -s $(cat a\nc <<E )\nEOF\nls <<"EOF"\n$(ls body)\nEOF',
   "shopt -s expand_aliases\nalias c='cat <<EOF'\nc\n<<D\nEOF\nls after",
   'shopt -s expand_aliases\nread -r v <<< \'env cat a; ls b\'\nalias q="$v"\nq c',
+  'shopt -s expand_aliases\nBASH_ALIASES[ls]=cat\nls a\nBASH_CMDS[sort]=bin/grep; sort b',
+  "declare -n r=PS4; r='+$(cat ps4) '; set -x; ls a",
+  "printf -vPS4 %s '+$(cat printf) '; set -x; ls a",
+  "set -o history\nhistory -s 'cat fc'\nfc -s cat",
+  "set -H -o history; history -s 'cat bang'\n!!",
 ];

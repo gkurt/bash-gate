@@ -336,6 +336,33 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['shopt -s expand_aliases\nalias c=cat\nc <<EOF\n<<D\nEOF\nls', 'allow', 'an aliased command with a here-document of its own'],
   ["cat <<'EOF'\nEOF\r\nrm -rf /\nEOF", 'ask', 'a carriage return, which ends the here-document only in Git Bash'],
   ['cowsay hi', 'ask', 'a program no rule covers'],
+
+  // Variables Bash gives a meaning of its own, and variables named only at run time.
+  ["shopt -s expand_aliases\nBASH_ALIASES[ls]='rm -rf /'\nls", 'ask', 'an alias defined through BASH_ALIASES'],
+  ["shopt -s expand_aliases\n: ${BASH_ALIASES[ls]:='rm -rf /'}\nls", 'ask', 'an alias defined by a default assignment'],
+  ['BASH_CMDS[ls]=/bin/rm; ls -rf /', 'ask', 'a path given to a name through BASH_CMDS'],
+  ["declare -n r=PS4; r='$(rm -rf /)'; set -x; ls", 'ask', 'a prompt string assigned through a nameref'],
+  ["declare -n r=BASH_ALIASES; shopt -s expand_aliases; r[ls]='rm -rf /'\nls", 'ask', 'an alias defined through a nameref'],
+  ['x=ls; declare -n r=x; r=rm; $x -rf /', 'ask', 'a variable assigned through a nameref'],
+  ['declare -n r=x; ls', 'allow', 'a nameref nothing assigns through'],
+  ["declare $o r=PS4; r='$(rm -rf /)'; set -x; ls", 'ask', 'declare with an option only known at run time, which may be -n'],
+  ['declare "$n"=\'$(rm -rf /)\'; set -x; ls', 'ask', 'declare assigning a variable named only at run time'],
+  ["printf -vPS4 %s '$(rm -rf /)'; set -x; ls", 'ask', 'printf -v with the name in the same word'],
+  ["unset PS4; : ${PS4:='$(rm -rf /)'}; set -x; ls", 'ask', 'a prompt string set by a default assignment'],
+  ['command_not_found_handle() { rm -rf /; }; nosuchprog', 'deny', 'the handler Bash runs for a command it cannot find'],
+  ['declare -n p=PATH; p=/nope; command_not_found_handle() { rm -rf /; }; ls', 'deny', 'the handler, for a name PATH no longer finds'],
+  ['rm() { :; }; unset rm; rm -rf /', 'deny', 'unset removing a function when no variable has the name'],
+  ['unset PATH; ls', 'ask', 'unsetting PATH, which looks commands up in the working directory'],
+  ['f() { local PATH; ls; }; f', 'ask', 'a local PATH, which is empty inside the function'],
+  ["EXECIGNORE='*'; ls", 'ask', 'EXECIGNORE, which hides programs from the lookup'],
+  ['exec {PATH}>/dev/null; ls', 'ask', 'a descriptor number assigned to PATH'],
+  ['wait -p PATH; ls', 'ask', 'wait -p assigning PATH'],
+  ['coproc PATH { :; }; ls', 'ask', 'a coprocess named PATH'],
+  ["set -o history; history -s 'rm -rf /'; fc -s rm", 'ask', 'fc running a history entry'],
+  ["set -H -o history; history -s 'rm -rf /'\n!!", 'ask', 'history expansion'],
+  ["shopt -so histexpand; set -o history; history -s 'rm -rf /'\n!!", 'ask', 'history expansion turned on by shopt -o'],
+  ['history -w .git/hooks/pre-commit', 'ask', 'history -w writing a hook'],
+  ['RANDOM=5; ls $RANDOM', 'allow', 'a variable Bash computes, read after an assignment'],
 ];
 
 /**

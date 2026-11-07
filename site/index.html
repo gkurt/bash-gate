@@ -80,8 +80,9 @@
           <li>
             <span class="step">[3/6]</span> <b>walk with shell state</b>
             <p>
-              Variables, functions, aliases, <code>hash -p</code>, <code>enable</code>, <code>cd</code>, exports into child shells. Loops
-              are walked until they settle; subshells, pipelines and substitutions get copies of the state.
+              Variables, functions, aliases, <code>hash -p</code>, <code>enable</code>, <code>cd</code>, exports into child shells, and the
+              variables Bash gives a meaning of its own (<code>BASH_ALIASES</code>, <code>BASH_CMDS</code>, namerefs). Loops are walked
+              until they settle; subshells, pipelines and substitutions get copies of the state.
             </p>
           </li>
           <li>

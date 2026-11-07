@@ -54,6 +54,7 @@ const shell: CommandSpec = {
     '-n',
     '-f',
     '-a',
+    '-H',
     '-o=',
     '-O=',
     '--norc',

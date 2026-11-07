@@ -44,13 +44,21 @@ analyze('sudo -u root rm -rf "$dir"').invocations.map((i) => [i.shape, i.via, i.
    function body as they were when it was defined. Entering POSIX mode turns `expand_aliases` on and leaving turns it
    off. In POSIX mode a substitution has the aliases of the line it was parsed with, and one Bash only parses as it
    runs (in a here-document, or text expanded again) gets none. Subshells, pipelines and substitutions get copies of the state.
+   Variables Bash gives a meaning of its own are state too: assigning `BASH_ALIASES` or `BASH_CMDS` makes the alias or
+   `hash` table unknown, and one Bash sets as it runs (`RANDOM`, `PWD`, `PIPESTATUS`, `_`…) is unknown whatever was
+   assigned. Every way to assign counts (`${x:=v}`, `printf -v`, `read`, `wait -p`, `exec {fd}>`, `coproc`, `select`),
+   and so does `unset`, which removes a function when no variable has the name. Assigning or unsetting a variable named
+   only at run time, or a nameref (`declare -n`), may change any variable: every value, both tables and `PS4` become
+   unknown. A command Bash can't find runs `command_not_found_handle` if one is defined, so it's walked in place of
+   each program.
 4. **Dispatch** as Bash does: alias, then function, then builtin, then program. `command`, `builtin` and `exec` change
    that order. `eval`, `trap`, `mapfile -C`, `compgen -C`, `bash -c`, a shell's here-document or here-string, `ssh host
    cmd`, `watch`, git aliases, git config commands, gh aliases and config, prompt strings (`PS4`) and `PROMPT_COMMAND`
    parse their strings and walk them as code. Once set, a trap action or prompt string may run between any two commands (a signal, a failing command,
    `set -x`), so it's walked at each of those points with the state there, until `trap -` resets it, and what it
    changes carries on. Code for other shells (`zsh -c`, `fish -c`, `pwsh`) is never parsed as Bash: it's code the
-   analysis can't see into.
+   analysis can't see into, and so are command lines run again from the history (`fc`, or history expansion turned
+   on with `set -H`).
 5. **Read argv with a spec** (`src/specs.ts`, `src/argv.ts`): options under canonical names (`-f`, `--forc`, `-fu` →
    `--force`), clusters, attached values, `--`, POSIX vs GNU ordering, subcommands, paths read and written, and the
    command lines that wrappers run (`sudo`, `env`, `timeout`, `xargs`, `find -exec`, `git bisect run`…). `gh` is read
@@ -229,7 +237,8 @@ bun run checks   # tsc, then bun test
   the analysis predicted, with those arguments, or one a finding hides (the `hiding` scripts and generated ones).
   This is the check that keeps the analysis honest. Extend it before trusting a new construct. Besides the
   hand-written scripts, it generates scripts that mix variables, functions,
-  aliases, `hash -p`, loops, substitutions, `eval`, `bash -c` and traps over a few shared names. Set `BASH_RUNS` to
+  aliases, `hash -p`, loops, substitutions, `eval`, `bash -c` and traps over a few shared names, along with namerefs,
+  `unset`, `command_not_found_handle`, `BASH_ALIASES`, `BASH_CMDS` and variables Bash sets itself. Set `BASH_RUNS` to
   change the number of generated scripts.
   The generator only writes what the analysis already follows, so the parser is fuzzed apart from it: mutants
   (`test/mutated.ts`) of the hand-written and generated scripts, changed a few characters or tokens at a time

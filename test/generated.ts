@@ -6,6 +6,8 @@ const variables = ['v1', 'v2', 'v3'];
 const functions = ['f1', 'f2'];
 const aliases = ['a1', 'a2'];
 const values = ['a', '-rf', 'x y', 'cat', 'rm -rf', 'f1', 'a1', ''];
+/** Variables Bash sets itself: assigning one doesn't decide what it holds. None holds a path. */
+const specials = ['RANDOM', 'LINENO', 'OPTIND', 'PIPESTATUS', 'BASH_REMATCH'];
 const expansions = [
   '$v',
   '"$v"',
@@ -14,6 +16,8 @@ const expansions = [
   '"${v:-cat}"',
   '${v:=rm}',
   '${v:+-rf}',
+  '${v=ls}',
+  '${!v:=a}',
   '${v/a/b}',
   '${v#-}',
   '${!v}',
@@ -57,6 +61,8 @@ export const { script: generatedScript } = fc.letrec<{ word: string; command: st
       literal,
       fc.tuple(variable, fc.constantFrom(...expansions)).map(([v, form]) => form.replaceAll('v', v)),
       fc.constantFrom('"$@"', '$@', '"$*"', '$1', '"$2"', '$#', '{a,-rf}', 'x{1,2}', '*.sh', '$((1 + 2))', '$((c + 1))'),
+      // Variables Bash sets itself, whatever the script assigned them.
+      fc.constantFrom(...specials).map((name) => `$${name}`),
       command.map((code) => `"$(${code})"`),
       command.map((code) => `$(${code})`),
       command.map((code) => `<(${code})`),
@@ -74,7 +80,22 @@ export const { script: generatedScript } = fc.letrec<{ word: string; command: st
         .tuple(fc.constantFrom('', 'local ', 'declare ', 'export '), variable, fc.constantFrom('=', '+='), word)
         .map((parts) => parts.join('')),
       fc.tuple(variable, words).map(([v, list]) => `${v}=(${list})`),
+      fc.tuple(fc.constantFrom(...specials), word).map(([name, value]) => `${name}=${value}`),
       fc.tuple(fc.constantFrom('unset', 'export'), variable).map((parts) => parts.join(' ')),
+      // Without -f, unset removes a function when no variable has the name.
+      fc.tuple(fc.constantFrom('unset', 'unset -f', 'unset -v'), fc.constantFrom(...functions)).map((parts) => parts.join(' ')),
+      // A nameref: what's assigned through it lands on the variable it names.
+      fc.tuple(variable, variable).map(([ref, target]) => `declare -n ${ref}=${target}`),
+      fc.tuple(variable, word).map(([v, value]) => `printf -v ${v} %s ${value}`),
+      variable.map((v) => `exec {${v}}>/dev/null`),
+      // The alias and hash tables, as arrays.
+      fc.tuple(fc.constantFrom(...aliases), literalCommand).map(([a, code]) => `BASH_ALIASES[${a}]=${quote(code)}`),
+      fc
+        .tuple(fc.constantFrom(...programs, 'h1'), fc.constantFrom(...programs))
+        .map(([name, program]) => `BASH_CMDS[${name}]=bin/${program}`),
+      // Run in place of a command that isn't found (f1 before it's defined, h1). One command, which may not be found
+      // either: FUNCNEST bounds the subshells it nests, and more would fork exponentially many.
+      literalCommand.map((body) => `command_not_found_handle() {\n${body} "$@"\n}`),
       fc.tuple(variable, word).map(([v, value]) => `read -r ${v} <<< ${value}`),
       words.map((list) => `set -- ${list}`),
       fc.constant('shift'),

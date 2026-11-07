@@ -70,6 +70,10 @@ interface State {
   posix: boolean | undefined;
   /** `hash -p` paths by name; `undefined` for one set dynamically. */
   hashed: Map<string, string | undefined>;
+  /** Whether any name may have a path the analysis doesn't know (`BASH_CMDS` assigned). */
+  hashUnknown: boolean;
+  /** Variables that may be namerefs (`declare -n`): assigning or unsetting one changes another variable. */
+  refs: Set<string>;
   /** Builtins turned off with `enable -n`: the name runs the program instead. */
   disabled: Set<string>;
   /** Variables with the integer attribute (`declare -i`): what they're assigned is evaluated as arithmetic. */
@@ -188,7 +192,7 @@ const setOptions = new Set(
 
 /** Variables that change what runs or where it's looked up, for the shell or the programs it starts (prompt strings and `PROMPT_COMMAND` are walked as code instead). */
 const sensitive =
-  /^(PATH|BASH_ENV|ENV|IFS|SHELLOPTS|BASHOPTS|CDPATH|HOME|ZDOTDIR|TMPDIR|XDG_CONFIG_HOME|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_[A-Z_]+|GH_(PAGER|EDITOR|BROWSER|CONFIG_DIR|PATH)|BROWSER|PAGER|MANPAGER|EDITOR|VISUAL|LESSOPEN|LESSCLOSE|NODE_OPTIONS|NODE_PATH|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|SSH_ASKPASS|SUDO_ASKPASS|npm_config_\w+|NPM_CONFIG_\w+)$/;
+  /^(PATH|EXECIGNORE|BASH_ENV|ENV|IFS|SHELLOPTS|BASHOPTS|BASH_COMPAT|BASH_LOADABLES_PATH|CDPATH|HOME|ZDOTDIR|TMPDIR|XDG_CONFIG_HOME|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_[A-Z_]+|GH_(PAGER|EDITOR|BROWSER|CONFIG_DIR|PATH)|BROWSER|PAGER|MANPAGER|EDITOR|VISUAL|LESSOPEN|LESSCLOSE|NODE_OPTIONS|NODE_PATH|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|SSH_ASKPASS|SUDO_ASKPASS|npm_config_\w+|NPM_CONFIG_\w+)$/;
 
 /** Files a redirection may name without touching the file system. */
 const devices = /^\/dev\/(null|stdin|stdout|stderr|tty|fd\/\d+)$/;
@@ -208,6 +212,8 @@ export function analyze(source: string, environment: Environment = {}): Analysis
       expandAliases: false,
       posix: false,
       hashed: new Map(),
+      hashUnknown: false,
+      refs: new Set(),
       disabled: new Set(),
       integers: new Set(),
       cases: new Map(),
@@ -470,8 +476,11 @@ class Walker {
         this.substitutions(node.wordlist ?? [], state, ctx);
         const values = (node.wordlist ?? []).flatMap((word) => resolveWord(word, lookupIn(state)));
         const only = values.length === 1 ? values[0] : undefined;
-        const value: Value = only?.kind === 'static' ? { kind: 'static', value: only.value } : { kind: 'dynamic' };
-        state.vars.set(node.name.value, this.assigned(node.name.value, value, state, ctx, this.at(ctx, state, node), true));
+        // `select` sets the variable to what's chosen, which is nothing for a bad answer, and REPLY to the answer.
+        const value: Value = only?.kind === 'static' && node.type === 'For' ? { kind: 'static', value: only.value } : { kind: 'dynamic' };
+        const call = this.at(ctx, state, node);
+        state.vars.set(node.name.value, this.assigned(node.name.value, value, state, ctx, call, true));
+        if (node.type === 'Select') state.vars.set('REPLY', this.assigned('REPLY', { kind: 'dynamic' }, state, ctx, call, true));
         return this.loop(state, ctx, node, (s, c) => this.list(node.body.commands, s, c));
       }
       case 'ArithmeticFor':
@@ -508,8 +517,15 @@ class Walker {
         state.functions.set(node.name.value, { bodies: [this.body(node, ctx)], maybeUndefined: false });
         return;
       }
-      case 'Coproc':
-        return this.node(node.body, clone(state), { ...ctx, concurrent: true });
+      case 'Coproc': {
+        this.node(node.body, clone(state), { ...ctx, concurrent: true });
+        // The shell gets the coprocess's descriptors in NAME and its process ID in NAME_PID.
+        const name = node.name?.value ?? 'COPROC';
+        const call = this.at(ctx, state, node);
+        for (const variable of [name, `${name}_PID`])
+          state.vars.set(variable, this.assigned(variable, { kind: 'dynamic', numeric: true }, state, ctx, call, true));
+        return;
+      }
       default: {
         // A node this version doesn't know (a newer parser): what it runs can't be followed.
         const unknown = node satisfies never as { type: string; pos: number; end: number };
@@ -581,6 +597,8 @@ class Walker {
       state.expandAliases ?? null,
       state.posix ?? null,
       sorted(state.hashed).map(([name, path]) => [name, path ?? null]),
+      state.hashUnknown,
+      [...state.refs].sort(),
       [...state.disabled].sort(),
       [...state.integers].sort(),
       sorted(state.cases).map(([name, how]) => [name, how ?? null]),
@@ -702,6 +720,13 @@ class Walker {
       }
       if (node.type === 'ParameterExpansion' && node.operation?.type === 'Unknown')
         this.finding(ctx, 'parse-error', `An expansion the parser couldn't read: ${node.text}`, this.span(ctx, node.pos, node.end));
+      if (node.type === 'ParameterExpansion' && node.operation?.type === 'Default' && /^:?=$/.test(node.operation.operator)) {
+        // `${x:=v}` assigns x when it's unset (or empty); `${!x:=v}` the variable x names.
+        const call = this.at(ctx, state, node);
+        if (node.prefix === '!') this.anyVariable(state, ctx, call, `${node.text} assigns a variable named only at run time`);
+        else if (/^[A-Za-z_]\w*$/.test(node.parameter))
+          state.vars.set(node.parameter, this.assigned(node.parameter, { kind: 'dynamic' }, state, ctx, call, true));
+      }
       if (node.type === 'ParameterExpansion') {
         if (node.index && node.index.value !== '@' && node.index.value !== '*') this.arithmeticWord(node.index, state, ctx, true);
         if (node.operation?.type === 'Slice') {
@@ -724,6 +749,14 @@ class Walker {
         // `v=(…)x`: no array, but a string Bash expands, parentheses and all. The parser read it as plain text.
         const where = this.span(ctx, node.pos, node.end);
         this.finding(ctx, 'parse-error', 'An array assignment with text after it, which Bash expands as a string', where);
+      }
+      if (
+        (node.type === 'Redirect' || node.type === 'HereString' || node.type === 'HereDoc') &&
+        node.descriptor?.type === 'FileDescriptorVariable'
+      ) {
+        // `exec {fd}>f` assigns fd the descriptor's number.
+        const variable = node.descriptor.name;
+        state.vars.set(variable, this.assigned(variable, { kind: 'dynamic', numeric: true }, state, ctx, this.at(ctx, state, node), true));
       }
       if (node.type === 'Assignment' && node.index) this.arithmeticWord(node.index, state, ctx, true);
       if (node.type === 'Assignment' && node.value.type === 'ArrayValue') {
@@ -852,9 +885,16 @@ class Walker {
         // The target is a name once expanded: \`(( $x = 1 ))\` assigns the variable x names.
         const text = /^[A-Za-z_]\w*\[/.test(target.value) ? target.value : expanded(target.value, target.parts, lookup);
         const variable = text === undefined ? undefined : /^([A-Za-z_]\w*)(?:\[[\s\S]*\])?$/.exec(text)?.[1];
-        if (variable) writes.push({ variable, numeric: this.numericExpression(expression, state, new Set(seen)) });
-        else
-          this.finding(ctx, 'sensitive-variable', `Arithmetic assigns a variable named only at run time: ${target.value}`, where(target));
+        if (variable) {
+          writes.push({ variable, numeric: this.numericExpression(expression, state, new Set(seen)) });
+        } else {
+          this.anyVariable(
+            state,
+            ctx,
+            { ...this.at(ctx, state, expression), span: where(target) },
+            `Arithmetic assigns a variable named only at run time: ${target.value}`,
+          );
+        }
       }
       if (node.type === 'ArithmeticWord') return this.operand(node, reads.get(node) ?? true, state, ctx, seen, where(node));
       forEachChild(node, visit);
@@ -1020,7 +1060,21 @@ class Walker {
       if (!fn.maybeUndefined) return;
     }
     if (!ctx.externalOnly && builtins.has(name) && !state.disabled.has(name)) return this.builtin(name, argv, state, ctx, call);
+    if (!ctx.externalOnly && !name.includes('/')) this.notFound(argv, state, ctx, call);
     this.program(argv, state, ctx, call);
+  }
+
+  /**
+   * The program may not be found, and Bash then calls `command_not_found_handle` with the command line, in a subshell.
+   * Not `exec`, nor a wrapper (`env`), which look programs up themselves.
+   */
+  notFound(argv: Arg[], state: State, ctx: Context, call: Call): void {
+    const name = 'command_not_found_handle';
+    const handler = state.functions.get(name);
+    if (!handler) return;
+    const subshell = clone(state);
+    subshell.functions.set(name, { ...handler, maybeUndefined: false });
+    this.dispatch([{ kind: 'static', value: name }, ...argv], subshell, ctx, { ...call, command: undefined, noFunctions: false });
   }
 
   /**
@@ -1102,6 +1156,7 @@ class Walker {
     const args = argv.slice(1);
     const values = args.map((arg) => (arg.kind === 'static' ? arg.value : undefined));
     const effects: Effect[] = [];
+    const historyWrites: Arg[] = [];
     switch (name) {
       case 'command': {
         let i = 0;
@@ -1185,6 +1240,7 @@ class Walker {
         if (args.some((arg) => arg.kind === 'dynamic')) {
           state.expandAliases = undefined;
           state.posix = undefined;
+          this.historyExpansion(ctx, call);
           break;
         }
         // Options as getopt reads them (a lone - is a name); a bad one, or -s with -u, changes nothing. With -o, the
@@ -1193,6 +1249,7 @@ class Walker {
         const flags = options.map(([letter]) => letter).join('');
         const names = values.slice(rest);
         if (bad || (flags.includes('s') && flags.includes('u'))) break;
+        if (flags.includes('o') && flags.includes('s') && names.includes('histexpand')) this.historyExpansion(ctx, call);
         if (!names.includes(flags.includes('o') ? 'posix' : 'expand_aliases')) break;
         if (!flags.includes('s') && !flags.includes('u')) break;
         if (flags.includes('o')) setPosix(state, flags.includes('s'));
@@ -1200,7 +1257,7 @@ class Walker {
         break;
       }
       case 'set':
-        this.set(values, state);
+        this.set(values, state, ctx, call);
         break;
       case 'hash':
         effects.push('shell-state');
@@ -1253,10 +1310,19 @@ class Walker {
         if (!options.every((option) => known.test(option!))) break;
         const unknown = end === -1 ? undefined : args[end];
         if (unknown?.kind === 'dynamic' && /^([-+]|$)/.test(unknown.prefix)) {
-          // A word only known at run time that may be an option: one Bash rejects changes nothing, another changes how.
+          // A word only known at run time that may be an option: one Bash rejects changes nothing, another gives the
+          // names after it any attribute (a nameref, an integer, a case). It may be a name and value itself, of any
+          // variable, and unquoted, several words: options and names, all unseen.
+          const attributes = `${name} has arguments only known at run time, which may give a variable any attribute`;
+          if (unknown.split) this.finding(ctx, 'dynamic-script', attributes, call.span);
+          this.anyVariable(state, ctx, call, `${name} may set a variable named only at run time`);
           for (const arg of args.slice(end + 1)) {
             const variable = /^[A-Za-z_]\w*/.exec(arg.kind === 'static' ? arg.value : arg.prefix)?.[0];
-            if (variable) state.vars.set(variable, { kind: 'dynamic' });
+            if (!variable) continue;
+            state.vars.set(variable, { kind: 'dynamic' });
+            state.refs.add(variable);
+            state.integers.add(variable);
+            state.cases.set(variable, undefined);
           }
           break;
         }
@@ -1266,12 +1332,15 @@ class Walker {
         for (const arg of args) {
           const text = arg.kind === 'static' ? arg.value : arg.prefix;
           if (text.startsWith('-')) continue;
-          // `y!=d` is no name to Bash, which refuses it and goes on to the next.
-          const match = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?(\+?=|$)/.exec(text);
+          // `y!=d` is no name to Bash, which refuses it and goes on to the next. A word only known at run time names a
+          // variable only once `[` or `=` ends the name: before that, it may be any.
+          const match =
+            arg.kind === 'static'
+              ? /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?(\+?=|$)/.exec(text)
+              : /^([A-Za-z_][A-Za-z0-9_]*)(\[|\+?=)/.exec(text);
           if (!match && arg.kind === 'static') continue;
           if (!match) {
-            const variable = /^[A-Za-z_]\w*/.exec(text)?.[0];
-            if (variable) state.vars.set(variable, { kind: 'dynamic' });
+            this.anyVariable(state, ctx, call, `${name} sets a variable named only at run time`);
             continue;
           }
           const variable = match[1]!;
@@ -1280,6 +1349,9 @@ class Walker {
             continue;
           }
           if (locals && !ctx.locals?.has(variable)) {
+            // `local PATH` leaves PATH empty in the function: commands are looked up in the working directory.
+            if (sensitive.test(variable))
+              this.finding(ctx, 'sensitive-variable', `${name} ${variable} unsets it inside the function`, call.span);
             ctx.locals?.add(variable);
             // Unset in the shell, while what it starts still sees an exported value from outside.
             state.vars.set(variable, state.exported.has(variable) ? { kind: 'dynamic' } : { kind: 'static', value: '' });
@@ -1293,10 +1365,14 @@ class Walker {
           if (cases.size === 1) state.cases.set(variable, [...cases][0]);
           else if (cases.size > 1 || options.some((option) => option?.startsWith('+') && /[ulc]/.test(option)))
             state.cases.delete(variable);
+          if (flags.includes('n')) {
+            // A nameref: its value is the name of the variable it stands for, which isn't assigned.
+            state.refs.add(variable);
+            state.vars.set(variable, { kind: 'dynamic' });
+            continue;
+          }
           const value: Value =
-            flags.includes('n') || match[2] === '+=' || arg.kind === 'dynamic'
-              ? { kind: 'dynamic' }
-              : { kind: 'static', value: text.slice(match[0].length) };
+            match[2] === '+=' || arg.kind === 'dynamic' ? { kind: 'dynamic' } : { kind: 'static', value: text.slice(match[0].length) };
           const stored = match[2] ? this.assigned(variable, value, state, ctx, call, true) : value;
           if (match[2] || value.kind === 'dynamic') state.vars.set(variable, stored);
         }
@@ -1304,14 +1380,33 @@ class Walker {
       }
       case 'unset': {
         const functions = values.includes('-f');
+        const variablesOnly = values.includes('-v');
+        const refsThemselves = values.includes('-n');
+        /** Without -v, a name that's no variable is a function's, which Bash removes instead. */
+        const maybeFunction = (fn: string) => {
+          const known = state.functions.get(fn);
+          if (known) state.functions.set(fn, { ...known, maybeUndefined: true });
+        };
         for (const value of values) {
-          if (value === undefined && !functions) {
+          if (value === undefined) {
+            if (!variablesOnly) for (const fn of state.functions.keys()) maybeFunction(fn);
+            if (functions) continue;
             if (state.posix !== false) state.posix = undefined;
             if (state.expandAliases !== false) state.expandAliases = undefined;
+            this.anyVariable(state, ctx, call, 'unset removes a variable named only at run time');
+            continue;
           }
-          if (value === undefined || value.startsWith('-')) continue;
-          if (functions) state.functions.delete(value);
-          else state.vars.set(value, { kind: 'static', value: '' });
+          if (value.startsWith('-')) continue;
+          if (functions) {
+            state.functions.delete(value);
+            continue;
+          }
+          if (!variablesOnly) maybeFunction(value);
+          if (refsThemselves) state.refs.delete(value);
+          else if (state.refs.has(value))
+            this.anyVariable(state, ctx, call, `${value} may be a nameref: unsetting it unsets another variable`);
+          if (sensitive.test(value)) this.finding(ctx, 'sensitive-variable', `Unsetting ${value} changes what runs or how`, call.span);
+          state.vars.set(value, { kind: 'static', value: '' });
           // Bash leaves POSIX mode, turning expand_aliases off, even when it wasn't in it.
           if (!functions && value === 'POSIXLY_CORRECT') {
             state.posix = false;
@@ -1325,6 +1420,7 @@ class Walker {
       case 'mapfile':
       case 'readarray':
       case 'printf':
+      case 'wait':
         this.assigns(name, args, state, ctx, call);
         break;
       case 'let':
@@ -1338,30 +1434,67 @@ class Walker {
         const { options, dynamic } = getopt(values, 'abcdefgjksuvpDEIo:A:G:W:F:C:X:P:S:V:r');
         if (dynamic)
           this.finding(ctx, 'dynamic-script', `${name} has an option only known at run time, which may be a callback`, call.span);
-        for (const [letter, value] of options) if (letter === 'C') this.callback(value, state, ctx, call, name);
+        for (const [letter, value] of options) {
+          if (letter === 'C') this.callback(value, state, ctx, call, name);
+          if (letter === 'V' && name === 'compgen') this.setNamed(name, value ?? null, state, ctx, call);
+        }
+        // compgen -V may be among them, setting any variable.
+        if (dynamic && name === 'compgen') this.setNamed(name, null, state, ctx, call);
+        break;
+      }
+      case 'fc': {
+        // Without -l, fc runs earlier command lines again (in an editor first, unless -s), which the analysis doesn't see.
+        const { options, dynamic } = getopt(values, 'e:lnrs');
+        if (dynamic || !options.some(([letter]) => letter === 'l'))
+          this.finding(ctx, 'dynamic-script', 'fc runs command lines from the history again', call.span);
+        break;
+      }
+      case 'history': {
+        // -a and -w write the history to the file named, or to HISTFILE.
+        const { options, rest, dynamic } = getopt(values, 'cd:anrwps');
+        if (!dynamic && !options.some(([letter]) => letter === 'a' || letter === 'w')) break;
+        const histfile = state.vars.get('HISTFILE');
+        const unknown: Arg = { kind: 'dynamic', text: '$HISTFILE', reason: 'variable', split: false, prefix: '' };
+        // A clean shell has no HISTFILE, and `history` then writes nothing.
+        if (dynamic) historyWrites.push(unknown);
+        else if (args[rest]) historyWrites.push(args[rest]);
+        else if (histfile?.kind === 'dynamic') historyWrites.push(unknown);
+        else if (histfile?.value) historyWrites.push({ kind: 'static', value: histfile.value });
         break;
       }
     }
     const parsed = normalize(args, specFor(name));
     for (const effect of effects) parsed.effects.add(effect);
     if (name === '.' || name === 'source') parsed.reads.push(...args.slice(0, 1));
+    if (historyWrites.length > 0) {
+      parsed.writes.push(...historyWrites);
+      parsed.effects.add('fs:write');
+    }
     this.emit(ctx, call, name, 'builtin', argv, parsed);
     this.wrote(parsed.writes, call, 'contents');
   }
 
-  /** Builtins that set variables from input (`read`, `mapfile`, `printf -v`): those become dynamic. */
+  /**
+   * A builtin sets a variable by name to something only known at run time; `null` for a name only known at run time,
+   * which may be any variable.
+   */
+  setNamed(name: string, variable: string | null | undefined, state: State, ctx: Context, call: Call, numeric = false): void {
+    if (variable === null) return this.anyVariable(state, ctx, call, `${name} sets a variable named only at run time`);
+    if (!variable) return;
+    const base = variable.replace(/\[.*$/, '');
+    state.vars.set(base, this.assigned(base, { kind: 'dynamic', ...(numeric ? { numeric } : {}) }, state, ctx, call, true));
+  }
+
+  /** Builtins that set variables from input (`read`, `mapfile`, `printf -v`, `wait -p`): those become dynamic. */
   assigns(name: string, args: Arg[], state: State, ctx: Context, call: Call): void {
     const values = args.map((arg) => (arg.kind === 'static' ? arg.value : undefined));
-    /** Sets a variable by name; `null` for a name only known at run time, which may be any variable. */
-    const set = (variable: string | null | undefined) => {
-      if (variable === null) return this.finding(ctx, 'sensitive-variable', `${name} sets a variable named only at run time`, call.span);
-      if (!variable) return;
-      const base = variable.replace(/\[.*$/, '');
-      state.vars.set(base, this.assigned(base, { kind: 'dynamic' }, state, ctx, call, true));
-    };
+    const set = (variable: string | null | undefined) => this.setNamed(name, variable, state, ctx, call);
     const named = (i: number) => (args[i]?.kind === 'dynamic' ? null : values[i]);
-    if (name === 'printf') {
-      if (values.includes('-v')) set(named(values.indexOf('-v') + 1));
+    if (name === 'printf' || name === 'wait') {
+      // A word only known at run time may be `-v NAME` (`-vNAME` too): the format, then, is the next.
+      const { options, dynamic } = getopt(values, name === 'printf' ? 'v:' : 'fnp:');
+      if (dynamic) set(null);
+      for (const [letter, value] of options) if (letter === 'v' || letter === 'p') set(value ?? null);
       return;
     }
     if (name === 'getopts') return set(named(1));
@@ -1393,10 +1526,11 @@ class Walker {
    * change nothing. Then one at a time, `-o` taking the next word as an option's name (unless it looks like an option:
    * then it lists them): a bad letter or name stops there, and what came before stays.
    */
-  set(values: (string | undefined)[], state: State): void {
+  set(values: (string | undefined)[], state: State, ctx: Context, call: Call): void {
     const unknown = () => {
       state.expandAliases = undefined;
       state.posix = undefined;
+      this.historyExpansion(ctx, call);
     };
     const option = (value: string | undefined) => value === undefined || (/^[-+]./.test(value) && value !== '--');
     for (let i = 0; i < values.length && option(values[i]); i++) {
@@ -1415,6 +1549,7 @@ class Walker {
       for (const letter of value.slice(1)) {
         if (letter !== 'o') {
           if (!'abefhkmnptuvxBCEHPT'.includes(letter)) return;
+          if (letter === 'H' && value.startsWith('-')) this.historyExpansion(ctx, call);
           continue;
         }
         const name = values[i + 1];
@@ -1424,11 +1559,18 @@ class Walker {
         if (name === 'posix') {
           if (sure) setPosix(state, value.startsWith('-'));
           else maybePosix(state, value.startsWith('-'));
+        } else if (name === 'histexpand' && value.startsWith('-')) {
+          this.historyExpansion(ctx, call);
         } else if (!setOptions.has(name)) {
           sure = false;
         }
       }
     }
+  }
+
+  /** History expansion turned on: a `!` in a later line may become any earlier command line (`!!`), which isn't followed. */
+  historyExpansion(ctx: Context, call: Call): void {
+    this.finding(ctx, 'dynamic-script', 'History expansion may run earlier command lines again', call.span);
   }
 
   /**
@@ -1462,7 +1604,10 @@ class Walker {
     }
     const names = values.slice(i);
     if (flags.has('t')) return;
-    if (flags.has('r')) state.hashed.clear();
+    if (flags.has('r')) {
+      state.hashed.clear();
+      state.hashUnknown = false;
+    }
     for (const name of names) {
       if (name === undefined) {
         if (flags.has('p'))
@@ -1479,6 +1624,10 @@ class Walker {
   /** A program run from `PATH`, a path, or what `hash -p` gave the name. */
   program(argv: Arg[], state: State, ctx: Context, call: Call): void {
     const name = (argv[0] as Extract<Arg, { kind: 'static' }>).value;
+    if (!name.includes('/') && state.hashUnknown && !state.hashed.has(name)) {
+      this.finding(ctx, 'loads-code', `\`${name}\` may have been given a path through BASH_CMDS`, call.span);
+      return this.run(argv, state, ctx, call, undefined);
+    }
     if (name.includes('/') || !state.hashed.has(name)) return this.run(argv, state, ctx, call, name.includes('/') ? name : undefined);
     const path = state.hashed.get(name);
     if (path === undefined) {
@@ -1542,7 +1691,7 @@ class Walker {
       cwd,
     });
     // What a program starts is found on `PATH`: the shell's `hash -p` table isn't passed on.
-    const unhashed = () => ({ ...clone(state), hashed: new Map<string, string | undefined>() });
+    const unhashed = () => ({ ...clone(state), hashed: new Map<string, string | undefined>(), hashUnknown: false });
     for (const nested of parsed.nested) this.dispatch(nested.argv, unhashed(), inner, innerCall(nested.open));
     for (const text of parsed.argvStrings) {
       const words = text.kind === 'static' ? resolveWords(text.value, lookupIn(state)) : undefined;
@@ -1561,6 +1710,10 @@ class Walker {
       if (!remote && specFor(program) === specFor('bash')) {
         shell.expandAliases = childAliases(program, parsed, shell);
         shell.posix = childPosix(program, parsed, shell);
+        // An interactive shell expands history too.
+        const named = (parsed.options['-o'] ?? []).filter((value) => value !== true);
+        if (parsed.options['-H'] || parsed.options['-i'] || named.some((value) => value.kind === 'dynamic' || value.value === 'histexpand'))
+          this.historyExpansion(ctx, call);
       }
       this.code(
         script.value,
@@ -1872,10 +2025,21 @@ class Walker {
    * evaluated first when Bash itself assigns it (`bash`); the result is what it holds.
    */
   assigned(variable: string, value: Value, state: State, ctx: Context, call: Call, shell: boolean, bash = true): Value {
+    // Through a nameref, the assignment lands on whichever variable it names.
+    if (bash && state.refs.has(variable)) {
+      this.anyVariable(state, ctx, call, `${variable} may be a nameref: assigning it sets another variable`);
+      return { kind: 'dynamic' };
+    }
     // Bash enters POSIX mode again, turning expand_aliases on, even when it was in it.
     if (shell && variable === 'POSIXLY_CORRECT') {
       state.posix = true;
       state.expandAliases = true;
+    }
+    // Their elements are the alias table and the `hash` table.
+    if (bash && variable === 'BASH_ALIASES') state.aliasesUnknown = true;
+    if (bash && variable === 'BASH_CMDS') {
+      for (const name of state.hashed.keys()) state.hashed.set(name, undefined);
+      state.hashUnknown = true;
     }
     const prompt = /^PS[0124]$/.test(variable);
     if ((prompt || variable === 'PROMPT_COMMAND') && value.kind === 'static') {
@@ -1903,6 +2067,25 @@ class Walker {
       call.span,
     );
     return { kind: 'dynamic' };
+  }
+
+  /**
+   * A variable named only at run time is assigned or unset (`printf -v "$name"`, a nameref): it may be any of them, so
+   * every value is unknown, and so are the alias and `hash` tables, POSIX mode, and the code `PS4` holds.
+   */
+  anyVariable(state: State, ctx: Context, call: Call, message: string): void {
+    this.finding(ctx, 'sensitive-variable', message, call.span);
+    for (const name of state.vars.keys()) state.vars.set(name, { kind: 'dynamic' });
+    state.aliasesUnknown = true;
+    for (const name of state.hashed.keys()) state.hashed.set(name, undefined);
+    state.hashUnknown = true;
+    maybePosix(state, true);
+    const prompt: Later = {
+      key: `PS4\0${call.span.join()}\0unknown`,
+      walk: (_, silent) => this.finding({ ...ctx, silent }, 'dynamic-script', 'PS4 may hold code only known at run time', call.span),
+    };
+    const set = state.later.get('PS4') ?? [];
+    if (!set.some((later) => later.key === prompt.key)) state.later.set('PS4', [...set, prompt]);
   }
 
   /**
@@ -2190,8 +2373,21 @@ function redirections(list: readonly Redirection[], lookup: Lookup): { reads: Ar
   return { reads, writes };
 }
 
+/**
+ * Variables Bash sets itself as the script runs (or keeps on assignment, as `BASH_ALIASES` keeps the alias table):
+ * what was last assigned to one isn't what it holds. Those that are always a number are marked so.
+ */
+const computed = new Map<string, Value>([
+  ...'RANDOM SRANDOM SECONDS EPOCHSECONDS BASH_MONOSECONDS LINENO BASHPID BASH_SUBSHELL HISTCMD PPID UID EUID'
+    .split(' ')
+    .map((name): [string, Value] => [name, { kind: 'dynamic', numeric: true }]),
+  ...'_ BASH_ALIASES BASH_CMDS BASH_ARGC BASH_ARGV BASH_ARGV0 BASH_COMMAND BASH_EXECUTION_STRING BASH_LINENO BASH_REMATCH BASH_SOURCE BASH_TRAPSIG BASHOPTS SHELLOPTS COLUMNS LINES COPROC DIRSTACK EPOCHREALTIME FUNCNAME GROUPS OLDPWD OPTARG OPTIND PIPESTATUS PWD'
+    .split(' ')
+    .map((name): [string, Value] => [name, { kind: 'dynamic' }]),
+]);
+
 function lookupIn(state: State): Lookup {
-  return (name) => state.vars.get(name);
+  return (name) => computed.get(name) ?? state.vars.get(name);
 }
 
 /** A word with no quotes or expansions, which aliases may replace. */
@@ -2248,6 +2444,8 @@ function equal(a: State, b: State): boolean {
     a.expandAliases === b.expandAliases &&
     a.posix === b.posix &&
     sameMap(a.hashed, b.hashed) &&
+    a.hashUnknown === b.hashUnknown &&
+    sameSet(a.refs, b.refs) &&
     sameSet(a.disabled, b.disabled) &&
     sameSet(a.integers, b.integers) &&
     sameMap(a.cases, b.cases) &&
@@ -2360,6 +2558,8 @@ function clone(state: State): State {
     expandAliases: state.expandAliases,
     posix: state.posix,
     hashed: new Map(state.hashed),
+    hashUnknown: state.hashUnknown,
+    refs: new Set(state.refs),
     disabled: new Set(state.disabled),
     integers: new Set(state.integers),
     cases: new Map(state.cases),
@@ -2432,6 +2632,8 @@ function freshState(cwd: string | undefined): State {
     expandAliases: false,
     posix: false,
     hashed: new Map(),
+    hashUnknown: false,
+    refs: new Set(),
     disabled: new Set(),
     integers: new Set(),
     cases: new Map(),
@@ -2482,7 +2684,8 @@ function join(state: State, other: State): void {
     if (!state.hashed.has(name) || !other.hashed.has(name) || state.hashed.get(name) !== other.hashed.get(name))
       state.hashed.set(name, undefined);
   }
-
+  state.hashUnknown ||= other.hashUnknown;
+  for (const name of other.refs) state.refs.add(name);
   for (const name of other.disabled) state.disabled.add(name);
   if (state.cwd !== other.cwd) state.cwd = undefined;
   // Code set in a slot on either way may be what runs there.

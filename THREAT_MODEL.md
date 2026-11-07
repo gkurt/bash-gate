@@ -59,7 +59,8 @@ Out of scope:
 **S1. The analysis over-approximates execution.** For every command line `c`, and every run of `c` in a clean Bash,
 every process the shell starts, with its program and argv, is _covered_ by an invocation in `analyze(c)`. Covered
 means the same program, with each static argument equal and each dynamic argument standing for any words. Code the
-shell runs from strings (`eval`, `trap`, `bash -c`, a shell's here-document, aliases, git config) counts. A construct the analysis can't follow
+shell runs from strings (`eval`, `trap`, `bash -c`, a shell's here-document, aliases, git config, the history) counts,
+and so does `command_not_found_handle`, which Bash runs for a command it can't find. A construct the analysis can't follow
 must become a finding, or a dynamic argument, command, option or `open` invocation. It must never disappear.
 
 **S2. The policy is monotone in what it's unsure of.** Making an invocation more capable never lowers its decision
@@ -76,7 +77,7 @@ anywhere, nested code included, is a finding.
 
 **S4. Rewrites don't change the decision.** If two command lines run the same processes in a clean Bash, they're
 decided the same way, or the rewrite is decided more strictly. Examples: quoting, escapes, braces, variables,
-wrappers, `eval`, `bash -c`, functions, aliases, `hash -p`. A rewrite that hides a value from static analysis (a
+wrappers, `eval`, `bash -c`, functions, aliases, `hash -p`, `BASH_ALIASES`, `BASH_CMDS`, namerefs. A rewrite that hides a value from static analysis (a
 substitution, an unset variable, or exceeding the analysis depth limit) may turn `deny` into `ask`, never into
 `allow` under the default finding decisions. The depth limit necessarily loses information even when the code is
 literal; a `too-deep` finding asks by default. S1 and S2 support S4 but don't by themselves guarantee that a

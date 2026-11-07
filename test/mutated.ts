@@ -23,8 +23,10 @@ function confined(script: string): boolean {
   if (script.includes('~')) return false;
   // `$'\57'`, `$'\x2f'` and the like: escapes that may spell a slash.
   if (/\\[0-7xuU]/.test(script)) return false;
-  // `$_` starts as the shell's own path, and `PWD`, `PATH`, `BASH` and the log directory are absolute.
-  return !script.replaceAll('expand_aliases', '').includes('_') && !/BASH|PWD|PATH|HOME|LOGS/.test(script);
+  // `$_` starts as the shell's own path, and `PWD`, `PATH`, `BASH` and the log directory are absolute. So is what
+  // BASH_CMDS holds once a stub is found, so it may only be assigned.
+  const named = script.replaceAll(/expand_aliases|command_not_found_handle|BASH_ALIASES|BASH_REMATCH|BASH_CMDS\[\w+\]=/g, '');
+  return !named.includes('_') && !/BASH|PWD|PATH|HOME|LOGS/.test(named);
 }
 
 /** What a mutation inserts: the characters and tokens where Bash's grammar turns, none of which spells a path. */

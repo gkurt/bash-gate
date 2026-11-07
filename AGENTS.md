@@ -26,7 +26,7 @@ runs everything on Linux, then builds and loads `dist/` in Node.
 ## Project Structure
 
 - `src/words.ts`: word resolution (quotes, braces, variables, field splitting) into static or dynamic `Arg`s.
-- `src/analyze.ts`: the walk. Shell state (variables, functions, aliases, `hash`, `enable`, `cd`), dispatch (alias,
+- `src/analyze.ts`: the walk. Shell state (variables, namerefs, functions, aliases, `hash`, `enable`, `cd`), dispatch (alias,
   function, builtin, program), wrappers, and code inside strings. What the script writes, against which file reads
   and real paths become unknown.
 - `src/argv.ts`: reads argv with a `CommandSpec`. Canonical options, subcommands, nested command lines, and cobra's
