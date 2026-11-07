@@ -51,6 +51,7 @@ const LESSONS: Readonly<Record<string, Lesson>> = {
       'BASH_CMDS[ls]=/bin/rm; ls -rf /',
       "declare -n r=PS4; r='$(rm -rf /)'; set -x; ls",
       'command_not_found_handle() { rm -rf /; }; nosuchprog',
+      'x=ls; shopt -s lastpipe; echo rm | read -r x; $x -rf /',
       'for d in src /; do rm -rf "$d"; done',
       'PATH=./bin:$PATH; ls',
     ],

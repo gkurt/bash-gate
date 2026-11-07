@@ -18,6 +18,8 @@ export interface CommandSpec {
   subcommands?: Record<string, CommandSpec>;
   /** Options end at the first positional, as POSIX has it (`sudo`, `env`, `xargs`), rather than anywhere, as GNU has it. */
   posix?: boolean;
+  /** Options may start with `+` too, which turns them off (a shell's `+x`, `+O name`): they're read as `+x`. */
+  plus?: boolean;
   /** Long options may be abbreviated to a unique prefix, as `getopt_long` and git allow. */
   abbreviations?: boolean;
   /** What the positionals are, when they're paths. */
@@ -106,8 +108,13 @@ export function normalize(args: Arg[], spec: CommandSpec | undefined): Parsed {
         i = readOption(args, i, current, parsed);
         continue;
       }
+      if (current?.plus && arg.value.length > 1 && arg.value.startsWith('+')) {
+        i = readPlus(args, i, current, parsed);
+        continue;
+      }
     }
-    if (arg.kind === 'dynamic' && optionsOpen && mayBeOption(arg)) parsed.maybeOptions = true;
+    if (arg.kind === 'dynamic' && optionsOpen && (mayBeOption(arg) || (current?.plus && arg.prefix.startsWith('+'))))
+      parsed.maybeOptions = true;
     if (subcommandsOpen && current?.subcommands) {
       const found = arg.kind === 'static' ? findSubcommand(current.subcommands, arg.value) : undefined;
       if (found) {
@@ -251,6 +258,27 @@ function readOption(args: Arg[], i: number, spec: CommandSpec | undefined, parse
     if (rest) optionValue = { kind: 'static', value: rest };
     else if (option.value === true && i + 1 < args.length) optionValue = args[++i]!;
     record(parsed, option, optionValue);
+    break;
+  }
+  return i;
+}
+
+/** `+abc`, which turns options off: each letter is recorded as `+a`, with the value of one that takes it. */
+function readPlus(args: Arg[], i: number, spec: CommandSpec, parsed: Parsed): number {
+  const value = (args[i] as Extract<Arg, { kind: 'static' }>).value;
+  for (let j = 1; j < value.length; j++) {
+    const name = `+${value[j]}`;
+    const option = findOption(spec, `-${value[j]}`);
+    if (!option) {
+      unknown(parsed, name, true);
+      continue;
+    }
+    if (option.value !== true) {
+      (parsed.options[name] ??= []).push(true);
+      continue;
+    }
+    const rest = value.slice(j + 1);
+    (parsed.options[name] ??= []).push(rest ? { kind: 'static', value: rest } : i + 1 < args.length ? args[++i]! : true);
     break;
   }
   return i;

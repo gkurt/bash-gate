@@ -363,6 +363,31 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ["shopt -so histexpand; set -o history; history -s 'rm -rf /'\n!!", 'ask', 'history expansion turned on by shopt -o'],
   ['history -w .git/hooks/pre-commit', 'ask', 'history -w writing a hook'],
   ['RANDOM=5; ls $RANDOM', 'allow', 'a variable Bash computes, read after an assignment'],
+
+  // Shell options.
+  ['x=ls; shopt -s lastpipe; echo rm | read -r x; $x -rf /', 'ask', "lastpipe, which runs a pipeline's last command in the shell"],
+  ['x=ls; set -m; shopt -s lastpipe; echo rm | read -r x; $x -rf /', 'allow', 'lastpipe under job control, which does nothing'],
+  ['x=rm; f() { local x=ls; g; }; g() { unset x; $x -rf /; }; f', 'ask', "unset in a function, showing the value a caller's local hid"],
+  ['x=rm; shopt -s localvar_inherit; f() { local x; $x -rf /; }; f', 'deny', 'localvar_inherit, which gives a local its outer value'],
+  ['cd -P link/..; echo hi > x', 'ask', 'cd -P, where .. leaves the symlink'],
+  ['set -P; cd link/..; echo hi > x', 'ask', 'set -P, where .. leaves the symlink'],
+  ['cd link/..; echo hi > x', 'allow', 'a logical cd, where .. undoes the symlink'],
+  ['shopt -s cdable_vars; r=..; cd r; echo hi > x', 'ask', 'cdable_vars, which goes where a variable says'],
+  ['shopt -s expand_aliases; export BASHOPTS; bash -c \'alias ls="rm -rf /"\nls\'', 'deny', 'shopt options passed on in BASHOPTS'],
+  ['set -o posix; export SHELLOPTS; bash -c \'alias ls="rm -rf /"\nls\'', 'deny', 'set options passed on in SHELLOPTS'],
+  ['set -a; f() { rm -rf /; }; bash -c f', 'deny', 'allexport, which exports functions too'],
+  ["set -a; x=rm; bash -c '$x -rf /'", 'deny', 'allexport, which exports what is assigned'],
+  ['set -k; bash -c ls BASH_ENV=./evil.sh', 'ask', 'keyword, which makes an assignment anywhere environment'],
+  ['set +B; ls {a,b}', 'ask', 'brace expansion turned off'],
+  ['shopt -s compat31; ls', 'ask', 'a compatibility level'],
+  ['BASH_COMPAT=31; ls', 'ask', 'a compatibility level set by BASH_COMPAT'],
+  ["bash +B -c 'rm -rf /'", 'deny', "a shell's + option before -c"],
+  ['export -n x; x=1; ls', 'allow', 'export -n, which is no nameref'],
+  ['set -e -o pipefail; ls | head', 'allow', 'options that only make Bash run less'],
+  ['shopt -s nullglob extglob; ls', 'allow', 'glob options'],
+  ['x=ls; f() { $x -rf /; }; x=rm f', 'deny', 'an assignment before a function call, which the function sees'],
+  ['x=ls; f() { local x; $x -rf /; }; x=rm f', 'ask', 'a local starting with the value of an assignment before the call'],
+  ['set -o posix; x=ls; x=rm :; $x -rf /', 'ask', 'an assignment before a special builtin, which POSIX mode keeps'],
 ];
 
 /**

@@ -13,7 +13,8 @@ gate, and it can read this repository.
 
 The command runs in a **clean Bash**: `bash --noprofile --norc -c '<command>'` with a fixed environment (`env -i` plus
 known variables), no `BASH_ENV` or `ENV`, a `PATH` of system directories only, no inherited functions or aliases, and
-default shell options. Everything the shell knows comes from the command itself. When the integration can't
+default shell options (no BASHOPTS or SHELLOPTS in the environment). Everything the shell knows comes from the command
+itself, options included: those it turns on are followed, or a finding when what they change isn't. When the integration can't
 guarantee this, the gate's answers are about some other shell.
 
 The integration may provide `fs`, the filesystem as it is before the command runs: `readFile(path)` to inspect

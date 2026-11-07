@@ -42,6 +42,7 @@ const staticValue = (arg: Arg | undefined) => (arg?.kind === 'static' ? arg.valu
 /** A shell: `-c` runs its first positional as code, a positional alone runs that file, `-s` or nothing at all runs stdin. */
 const shell: CommandSpec = {
   posix: true,
+  plus: true,
   options: opts(
     '-c',
     '-i',
@@ -54,7 +55,17 @@ const shell: CommandSpec = {
     '-n',
     '-f',
     '-a',
+    '-b',
+    '-h',
+    '-k',
+    '-m',
+    '-t',
+    '-B',
+    '-C',
+    '-E',
     '-H',
+    '-P',
+    '-T',
     '-o=',
     '-O=',
     '--norc',

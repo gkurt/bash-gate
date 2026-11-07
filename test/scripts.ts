@@ -111,6 +111,11 @@ export const scripts = [
   'cat() { ls fn; }; unset cat; cat a; x=a; exec {x}>out; grep "$x" out',
   'command_not_found_handle() { cat "$@"; }; nosuch a; x=$(missing b)',
   'select x in ls; do $x cat a; break; done <<< 9',
+  'x=ls; shopt -s lastpipe; echo cat | read -r x; $x a; set -m; echo grep | read -r x; $x b',
+  'x=cat; f() { local x=ls; g; }; g() { unset x; $x a; }; f; y=sort; shopt -s localvar_inherit; h() { local y; $y b; }; h',
+  "set -a; x=cat; f() { ls fn; }; /bin/bash -c '$x a; f'",
+  "shopt -s expand_aliases; export BASHOPTS; /bin/bash -c 'alias l=cat\nl a'",
+  'x=ls; f() { $x a; }; x=cat f; g() { local x; $x b; }; x=sort g; $x c; set -o posix; x=grep :; $x d',
 ];
 
 /** Scripts that run what the analysis can't see, behind a finding: the finding must account for it. */
@@ -151,4 +156,5 @@ export const hiding = [
   "printf -vPS4 %s '+$(cat printf) '; set -x; ls a",
   "set -o history\nhistory -s 'cat fc'\nfc -s cat",
   "set -H -o history; history -s 'cat bang'\n!!",
+  "set +B; cat {a,b}; /bin/bash +B -c 'ls {c,d}'",
 ];

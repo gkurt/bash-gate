@@ -74,6 +74,11 @@ interface State {
   hashUnknown: boolean;
   /** Variables that may be namerefs (`declare -n`): assigning or unsetting one changes another variable. */
   refs: Set<string>;
+  /** The shell options in `followed`, by name: on, or `undefined` when it may be either. Absent is off. */
+  options: Map<string, boolean | undefined>;
+  /** Exported variables and functions that may not be: a shell started now may not get them. */
+  maybeExported: Set<string>;
+  maybeExportedFunctions: Set<string>;
   /** Builtins turned off with `enable -n`: the name runs the program instead. */
   disabled: Set<string>;
   /** Variables with the integer attribute (`declare -i`): what they're assigned is evaluated as arithmetic. */
@@ -152,6 +157,11 @@ interface Context {
   /** Runs alongside the rest of the script (`&`, a pipeline, `<(…)`): what it reads may be written by what comes after. */
   concurrent: boolean;
   /**
+   * Variables of a temporary environment around the command or a function call it's in (`x=a f`): a local of the
+   * same name may start with its value.
+   */
+  temporary?: Set<string>;
+  /**
    * Text Bash parses only as it expands it (a here-document's body, a subscript or arithmetic expanded again): in POSIX
    * mode, its substitutions are parsed without aliases. Code parsed later (`eval`) has them again.
    */
@@ -192,7 +202,7 @@ const setOptions = new Set(
 
 /** Variables that change what runs or where it's looked up, for the shell or the programs it starts (prompt strings and `PROMPT_COMMAND` are walked as code instead). */
 const sensitive =
-  /^(PATH|EXECIGNORE|BASH_ENV|ENV|IFS|SHELLOPTS|BASHOPTS|BASH_COMPAT|BASH_LOADABLES_PATH|CDPATH|HOME|ZDOTDIR|TMPDIR|XDG_CONFIG_HOME|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_[A-Z_]+|GH_(PAGER|EDITOR|BROWSER|CONFIG_DIR|PATH)|BROWSER|PAGER|MANPAGER|EDITOR|VISUAL|LESSOPEN|LESSCLOSE|NODE_OPTIONS|NODE_PATH|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|SSH_ASKPASS|SUDO_ASKPASS|npm_config_\w+|NPM_CONFIG_\w+)$/;
+  /^(PATH|EXECIGNORE|BASH_ENV|ENV|IFS|SHELLOPTS|BASHOPTS|BASH_LOADABLES_PATH|TEXTDOMAIN|TEXTDOMAINDIR|CDPATH|HOME|ZDOTDIR|TMPDIR|XDG_CONFIG_HOME|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_[A-Z_]+|GH_(PAGER|EDITOR|BROWSER|CONFIG_DIR|PATH)|BROWSER|PAGER|MANPAGER|EDITOR|VISUAL|LESSOPEN|LESSCLOSE|NODE_OPTIONS|NODE_PATH|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|SSH_ASKPASS|SUDO_ASKPASS|npm_config_\w+|NPM_CONFIG_\w+)$/;
 
 /** Files a redirection may name without touching the file system. */
 const devices = /^\/dev\/(null|stdin|stdout|stderr|tty|fd\/\d+)$/;
@@ -214,6 +224,9 @@ export function analyze(source: string, environment: Environment = {}): Analysis
       hashed: new Map(),
       hashUnknown: false,
       refs: new Set(),
+      options: new Map(),
+      maybeExported: new Set(),
+      maybeExportedFunctions: new Set(),
       disabled: new Set(),
       integers: new Set(),
       cases: new Map(),
@@ -454,10 +467,21 @@ class Walker {
       }
       case 'Pipeline': {
         const together = node.commands.length > 1;
-        for (const command of node.commands) {
+        // With lastpipe and no job control, the last command runs in the shell itself: what it changes stays.
+        const lastpipe =
+          option(state, 'lastpipe') === false || option(state, 'monitor') === true
+            ? false
+            : option(state, 'lastpipe') && option(state, 'monitor') === false
+              ? true
+              : undefined;
+        for (const [i, command] of node.commands.entries()) {
           const shell = together ? clone(state) : state;
           this.node(command, shell, together ? { ...ctx, concurrent: true } : ctx);
-          if (together) this.between(shell, ctx);
+          if (!together) continue;
+          this.between(shell, ctx);
+          if (i < node.commands.length - 1 || lastpipe === false) continue;
+          if (lastpipe) Object.assign(state, shell);
+          else join(state, shell);
         }
         return;
       }
@@ -515,6 +539,7 @@ class Walker {
         // Bash refuses a name with quotes, escapes or expansions in it.
         if (!plain(node.name) || node.name.value.includes('$')) return;
         state.functions.set(node.name.value, { bodies: [this.body(node, ctx)], maybeUndefined: false });
+        exportAll(state, node.name.value, state.exportedFunctions, state.maybeExportedFunctions);
         return;
       }
       case 'Coproc': {
@@ -599,6 +624,9 @@ class Walker {
       sorted(state.hashed).map(([name, path]) => [name, path ?? null]),
       state.hashUnknown,
       [...state.refs].sort(),
+      sorted(state.options).map(([name, on]) => [name, on ?? null]),
+      [...state.maybeExported].sort(),
+      [...state.maybeExportedFunctions].sort(),
       [...state.disabled].sort(),
       [...state.integers].sort(),
       sorted(state.cases).map(([name, how]) => [name, how ?? null]),
@@ -999,20 +1027,33 @@ class Walker {
       home: homeOf(state),
     };
     const before = new Map(assignments.map(({ name }) => [name, state.vars.get(name)]));
+    // Before a command, they're its temporary environment: a function or builtin sees them as variables, and a local
+    // of the same name starts with the value (see `Context.temporary`).
+    const temporary = new Map<string, Value>();
     for (const assignment of assignments) {
       const value = assignmentValue(assignment, lookup);
       const stored = this.assigned(assignment.name, value, state, ctx, call, argv.length === 0);
-      if (argv.length === 0) state.vars.set(assignment.name, stored);
+      state.vars.set(assignment.name, stored);
+      temporary.set(assignment.name, stored);
     }
     this.wrote(files.writes, call, 'contents');
     const opens = files.writes.length > 0 || files.reads.length > 0;
+    const inner =
+      argv.length > 0 && temporary.size > 0 ? { ...ctx, temporary: new Set([...(ctx.temporary ?? []), ...temporary.keys()]) } : ctx;
     // A file Bash can't open stops the command before it runs, along with what it would change (`alias x=y <nofile`).
-    if (argv.length > 0 && opens) settle(state, [clone(state), this.branch(state, ctx, (s, c) => this.dispatch(argv, s, c, call))]);
-    else if (argv.length > 0) this.dispatch(argv, state, ctx, call);
+    if (argv.length > 0 && opens) settle(state, [clone(state), this.branch(state, inner, (s, c) => this.dispatch(argv, s, c, call))]);
+    else if (argv.length > 0) this.dispatch(argv, state, inner, call);
     if (argv.length > 0) {
-      // What a builtin or function assigns to a variable of its own temporary environment (`z=a declare z=b`) is gone
-      // after it, unless it went global (`declare -g`, `export`): the value is only known at run time.
-      for (const { name } of assignments) if (!sameValue(state.vars.get(name), before.get(name))) state.vars.set(name, { kind: 'dynamic' });
+      // Gone after it: what was there before is back, unless POSIX mode keeps them (after a special builtin). What a
+      // builtin or function assigned to one of them (`z=a declare z=b`) is gone too, unless it went global
+      // (`declare -g`, `export`): the value is only known at run time.
+      for (const [name, value] of temporary) {
+        const back = before.get(name);
+        const kept = state.posix === false ? back : back && sameValue(back, value) ? back : { kind: 'dynamic' as const };
+        if (!sameValue(state.vars.get(name), value)) state.vars.set(name, { kind: 'dynamic' });
+        else if (kept) state.vars.set(name, kept);
+        else state.vars.delete(name);
+      }
       return;
     }
     if (opens) this.emit(ctx, call, ':', 'builtin', [{ kind: 'static', value: ':' }], emptyParsed());
@@ -1238,22 +1279,17 @@ class Walker {
         break;
       case 'shopt': {
         if (args.some((arg) => arg.kind === 'dynamic')) {
-          state.expandAliases = undefined;
-          state.posix = undefined;
-          this.historyExpansion(ctx, call);
+          this.anyOption(state, ctx, call);
           break;
         }
         // Options as getopt reads them (a lone - is a name); a bad one, or -s with -u, changes nothing. With -o, the
         // names are `set -o`'s.
         const { options, rest, bad } = getopt(values, 'psuoq');
         const flags = options.map(([letter]) => letter).join('');
-        const names = values.slice(rest);
         if (bad || (flags.includes('s') && flags.includes('u'))) break;
-        if (flags.includes('o') && flags.includes('s') && names.includes('histexpand')) this.historyExpansion(ctx, call);
-        if (!names.includes(flags.includes('o') ? 'posix' : 'expand_aliases')) break;
         if (!flags.includes('s') && !flags.includes('u')) break;
-        if (flags.includes('o')) setPosix(state, flags.includes('s'));
-        else state.expandAliases = flags.includes('s');
+        for (const name of values.slice(rest))
+          this.shellOption(flags.includes('o') ? 'set' : 'shopt', name!, flags.includes('s'), true, state, ctx, call);
         break;
       }
       case 'set':
@@ -1288,8 +1324,15 @@ class Walker {
       case 'pushd': {
         const target = values.find((value) => value === undefined || !value.startsWith('-'));
         const arg = args[values.indexOf(target)];
+        // Physically (-P, `set -P`), `..` leaves a symlink's target, not the symlink; with cdable_vars, a name that's
+        // no directory is a variable holding one.
+        const physical = option(state, 'physical') !== false || values.some((value) => value !== target && value?.includes('P'));
+        const elsewhere =
+          arg?.kind === 'static' &&
+          ((physical && arg.value.split('/').includes('..')) ||
+            (option(state, 'cdable_vars') !== false && /^[A-Za-z_]\w*$/.test(arg.value)));
         if (args.length === 0) state.cwd = homeOf(state) ?? '~';
-        else if (arg?.kind === 'static' && arg.value !== '-') state.cwd = resolvePath(state.cwd, arg.value, homeOf(state));
+        else if (arg?.kind === 'static' && arg.value !== '-' && !elsewhere) state.cwd = resolvePath(state.cwd, arg.value, homeOf(state));
         else state.cwd = undefined;
         break;
       }
@@ -1345,7 +1388,10 @@ class Walker {
           }
           const variable = match[1]!;
           if (flags.includes('f')) {
-            if (name === 'export') state.exportedFunctions.add(variable);
+            if (name === 'export') {
+              state.exportedFunctions.add(variable);
+              state.maybeExportedFunctions.delete(variable);
+            }
             continue;
           }
           if (locals && !ctx.locals?.has(variable)) {
@@ -1353,20 +1399,29 @@ class Walker {
             if (sensitive.test(variable))
               this.finding(ctx, 'sensitive-variable', `${name} ${variable} unsets it inside the function`, call.span);
             ctx.locals?.add(variable);
-            // Unset in the shell, while what it starts still sees an exported value from outside.
-            state.vars.set(variable, state.exported.has(variable) ? { kind: 'dynamic' } : { kind: 'static', value: '' });
-            state.integers.delete(variable);
-            state.cases.delete(variable);
+            // Unset in the shell, while what it starts still sees an exported value from outside. With
+            // localvar_inherit, it starts with the value and attributes it had outside.
+            const inherit = ctx.temporary?.has(variable) ? undefined : option(state, 'localvar_inherit');
+            const outside = state.vars.get(variable);
+            const own: Value = state.exported.has(variable) ? { kind: 'dynamic' } : { kind: 'static', value: '' };
+            state.vars.set(variable, inherit === false ? own : inherit && outside ? outside : { kind: 'dynamic' });
+            if (inherit === false) state.integers.delete(variable);
+            if (inherit === false) state.cases.delete(variable);
+            else if (inherit === undefined && state.cases.has(variable)) state.cases.set(variable, undefined);
           }
-          if (name === 'export' || flags.includes('x')) state.exported.add(variable);
+          if (name === 'export' || flags.includes('x')) {
+            state.exported.add(variable);
+            state.maybeExported.delete(variable);
+          }
           if (flags.includes('i')) state.integers.add(variable);
           // One of -u, -l and -c sets it; two of them together, or +u, +l or +c, turn it off.
           const cases = new Set((['u', 'l', 'c'] as const).filter((flag) => flags.includes(flag)));
           if (cases.size === 1) state.cases.set(variable, [...cases][0]);
           else if (cases.size > 1 || options.some((option) => option?.startsWith('+') && /[ulc]/.test(option)))
             state.cases.delete(variable);
-          if (flags.includes('n')) {
-            // A nameref: its value is the name of the variable it stands for, which isn't assigned.
+          if (flags.includes('n') && name !== 'export' && name !== 'readonly') {
+            // A nameref: its value is the name of the variable it stands for, which isn't assigned. (`export -n`
+            // takes the export away.)
             state.refs.add(variable);
             state.vars.set(variable, { kind: 'dynamic' });
             continue;
@@ -1406,7 +1461,10 @@ class Walker {
           else if (state.refs.has(value))
             this.anyVariable(state, ctx, call, `${value} may be a nameref: unsetting it unsets another variable`);
           if (sensitive.test(value)) this.finding(ctx, 'sensitive-variable', `Unsetting ${value} changes what runs or how`, call.span);
-          state.vars.set(value, { kind: 'static', value: '' });
+          // In a function, a variable that isn't its own local may be a caller's: unsetting that one shows the value
+          // it hid (unless localvar_unset).
+          const hidden = ctx.calls.length > 0 && !ctx.locals?.has(value);
+          state.vars.set(value, hidden ? { kind: 'dynamic' } : { kind: 'static', value: '' });
           // Bash leaves POSIX mode, turning expand_aliases off, even when it wasn't in it.
           if (!functions && value === 'POSIXLY_CORRECT') {
             state.posix = false;
@@ -1521,17 +1579,13 @@ class Walker {
   }
 
   /**
-   * `set`, as far as it turns POSIX mode on or off. Bash reads the options twice. First as getopt does, with `-o`
-   * taking the rest of its word, or the next word unless that looks like an option: a bad letter there makes `set`
-   * change nothing. Then one at a time, `-o` taking the next word as an option's name (unless it looks like an option:
-   * then it lists them): a bad letter or name stops there, and what came before stays.
+   * `set`, as far as it changes the options `shellOption` knows. Bash reads the options twice. First as getopt does,
+   * with `-o` taking the rest of its word, or the next word unless that looks like an option: a bad letter there makes
+   * `set` change nothing. Then one at a time, `-o` taking the next word as an option's name (unless it looks like an
+   * option: then it lists them): a bad letter or name stops there, and what came before stays.
    */
   set(values: (string | undefined)[], state: State, ctx: Context, call: Call): void {
-    const unknown = () => {
-      state.expandAliases = undefined;
-      state.posix = undefined;
-      this.historyExpansion(ctx, call);
-    };
+    const unknown = () => this.anyOption(state, ctx, call);
     const option = (value: string | undefined) => value === undefined || (/^[-+]./.test(value) && value !== '--');
     for (let i = 0; i < values.length && option(values[i]); i++) {
       const value = values[i];
@@ -1546,24 +1600,19 @@ class Walker {
     let sure = true;
     for (let i = 0; i < values.length && option(values[i]); i++) {
       const value = values[i]!;
+      const on = value.startsWith('-');
       for (const letter of value.slice(1)) {
         if (letter !== 'o') {
           if (!'abefhkmnptuvxBCEHPT'.includes(letter)) return;
-          if (letter === 'H' && value.startsWith('-')) this.historyExpansion(ctx, call);
+          if (setLetters[letter]) this.shellOption('set', setLetters[letter], on, sure, state, ctx, call);
           continue;
         }
         const name = values[i + 1];
         if (i + 1 === values.length || /^[-+]|^$/.test(name ?? 'x')) continue;
         if (name === undefined) return unknown();
         i++;
-        if (name === 'posix') {
-          if (sure) setPosix(state, value.startsWith('-'));
-          else maybePosix(state, value.startsWith('-'));
-        } else if (name === 'histexpand' && value.startsWith('-')) {
-          this.historyExpansion(ctx, call);
-        } else if (!setOptions.has(name)) {
-          sure = false;
-        }
+        if (setOptions.has(name)) this.shellOption('set', name, on, sure, state, ctx, call);
+        else sure = false;
       }
     }
   }
@@ -1571,6 +1620,38 @@ class Walker {
   /** History expansion turned on: a `!` in a later line may become any earlier command line (`!!`), which isn't followed. */
   historyExpansion(ctx: Context, call: Call): void {
     this.finding(ctx, 'dynamic-script', 'History expansion may run earlier command lines again', call.span);
+  }
+
+  /**
+   * A shell option turned on or off by `set`, `shopt` or a shell's own options (`kind` says whose name it is), or only
+   * maybe (`sure` false). Those that change how Bash reads or expands code, which the analysis doesn't follow, are
+   * findings: a compatibility level, `keyword` (assignments anywhere in a command), and `braceexpand` off.
+   */
+  shellOption(kind: 'set' | 'shopt', name: string, on: boolean, sure: boolean, state: State, ctx: Context, call: Call): void {
+    const unfollowed =
+      (kind === 'shopt' && /^compat\d+$/.test(name)) || (kind === 'set' && name === 'keyword')
+        ? on
+        : kind === 'set' && name === 'braceexpand' && !on;
+    if (unfollowed) {
+      const message = `\`${name}\` ${on ? 'on' : 'off'} changes how Bash reads or expands code, which the analysis doesn't follow`;
+      return this.finding(ctx, 'unknown-syntax', message, call.span);
+    }
+    if (kind === 'set' && name === 'histexpand' && on) return this.historyExpansion(ctx, call);
+    if (kind === 'set' && name === 'posix') return sure ? setPosix(state, on) : maybePosix(state, on);
+    if (kind === 'shopt' && name === 'expand_aliases') {
+      state.expandAliases = sure || state.expandAliases === on ? on : undefined;
+      return;
+    }
+    if (followed[kind].has(name)) state.options.set(name, sure || option(state, name) === on ? on : undefined);
+  }
+
+  /** Options `set` (or `shopt`) was given that are only known at run time: any may have changed. */
+  anyOption(state: State, ctx: Context, call: Call): void {
+    state.expandAliases = undefined;
+    state.posix = undefined;
+    for (const name of [...followed.set, ...followed.shopt]) state.options.set(name, undefined);
+    this.historyExpansion(ctx, call);
+    this.finding(ctx, 'unknown-syntax', 'Shell options only known at run time may change how Bash reads or expands code', call.span);
   }
 
   /**
@@ -1707,14 +1788,7 @@ class Walker {
       }
       const remote = parsed.effects.has('exec:remote');
       const shell = remote ? freshState(undefined) : childState(state, cwd);
-      if (!remote && specFor(program) === specFor('bash')) {
-        shell.expandAliases = childAliases(program, parsed, shell);
-        shell.posix = childPosix(program, parsed, shell);
-        // An interactive shell expands history too.
-        const named = (parsed.options['-o'] ?? []).filter((value) => value !== true);
-        if (parsed.options['-H'] || parsed.options['-i'] || named.some((value) => value.kind === 'dynamic' || value.value === 'histexpand'))
-          this.historyExpansion(ctx, call);
-      }
+      if (!remote && specFor(program) === specFor('bash')) this.childOptions(program, parsed, state, shell, ctx, call);
       this.code(
         script.value,
         shell,
@@ -1726,6 +1800,42 @@ class Walker {
     // After what it reads first: `git config k v` reads the config, then writes it.
     this.wrote(parsed.writes, call, writeKind(program));
     if (writesUnknown(program, parsed, followed)) this.wroteAnything();
+  }
+
+  /**
+   * The options of a shell this one starts: its own (`-o`, `+O`, set's letters), and this shell's when it exports
+   * BASHOPTS or SHELLOPTS, which a starting Bash reads from its environment.
+   */
+  childOptions(program: string, parsed: Parsed, state: State, shell: State, ctx: Context, call: Call): void {
+    shell.expandAliases = childAliases(program, parsed, shell);
+    shell.posix = childPosix(program, parsed, shell);
+    // An interactive shell expands history too.
+    if (parsed.options['-i']) this.historyExpansion(ctx, call);
+    const passed = (variable: string, on: boolean | undefined) =>
+      !state.exported.has(variable) ? false : state.maybeExported.has(variable) && on !== false ? undefined : on;
+    shell.expandAliases = either(shell.expandAliases, passed('BASHOPTS', state.expandAliases));
+    shell.posix = either(shell.posix, passed('SHELLOPTS', state.posix));
+    // POSIX mode turns expand_aliases on.
+    shell.expandAliases = either(shell.expandAliases, shell.posix);
+    for (const name of followed.shopt) shell.options.set(name, passed('BASHOPTS', option(state, name)));
+    for (const name of followed.set) shell.options.set(name, passed('SHELLOPTS', option(state, name)));
+    const named = [
+      ['-o', 'set', true],
+      ['+o', 'set', false],
+      ['-O', 'shopt', true],
+      ['+O', 'shopt', false],
+    ] as const;
+    for (const [flag, kind, on] of named) {
+      for (const value of parsed.options[flag] ?? []) {
+        if (value === true) continue;
+        if (value.kind === 'dynamic') this.anyOption(shell, ctx, call);
+        else this.shellOption(kind, value.value, on, true, shell, ctx, call);
+      }
+    }
+    for (const [letter, name] of Object.entries(setLetters)) {
+      if (parsed.options[`-${letter}`]) this.shellOption('set', name, true, true, shell, ctx, call);
+      if (parsed.options[`+${letter}`]) this.shellOption('set', name, false, true, shell, ctx, call);
+    }
   }
 
   /**
@@ -2041,6 +2151,15 @@ class Walker {
       for (const name of state.hashed.keys()) state.hashed.set(name, undefined);
       state.hashUnknown = true;
     }
+    if (variable === 'BASH_COMPAT') {
+      this.finding(
+        ctx,
+        'unknown-syntax',
+        "BASH_COMPAT changes how Bash reads or expands code, which the analysis doesn't follow",
+        call.span,
+      );
+    }
+    if (shell && bash) exportAll(state, variable, state.exported, state.maybeExported);
     const prompt = /^PS[0124]$/.test(variable);
     if ((prompt || variable === 'PROMPT_COMMAND') && value.kind === 'static') {
       const text = value.value;
@@ -2446,6 +2565,9 @@ function equal(a: State, b: State): boolean {
     sameMap(a.hashed, b.hashed) &&
     a.hashUnknown === b.hashUnknown &&
     sameSet(a.refs, b.refs) &&
+    sameMap(a.options, b.options) &&
+    sameSet(a.maybeExported, b.maybeExported) &&
+    sameSet(a.maybeExportedFunctions, b.maybeExportedFunctions) &&
     sameSet(a.disabled, b.disabled) &&
     sameSet(a.integers, b.integers) &&
     sameMap(a.cases, b.cases) &&
@@ -2560,6 +2682,9 @@ function clone(state: State): State {
     hashed: new Map(state.hashed),
     hashUnknown: state.hashUnknown,
     refs: new Set(state.refs),
+    options: new Map(state.options),
+    maybeExported: new Set(state.maybeExported),
+    maybeExportedFunctions: new Set(state.maybeExportedFunctions),
     disabled: new Set(state.disabled),
     integers: new Set(state.integers),
     cases: new Map(state.cases),
@@ -2568,18 +2693,51 @@ function clone(state: State): State {
   };
 }
 
+/**
+ * Shell options the walk follows besides POSIX mode and `expand_aliases`, by `set -o` or `shopt` name, each off in a
+ * clean shell. `lastpipe` (unless `monitor`) runs a pipeline's last command in the shell, `localvar_inherit` gives a
+ * local its outer value, `allexport` exports what's assigned or defined, and `physical` and `cdable_vars` change where
+ * `cd` goes.
+ */
+const followed = {
+  set: new Set(['allexport', 'monitor', 'physical']),
+  shopt: new Set(['lastpipe', 'localvar_inherit', 'cdable_vars']),
+};
+/** The letters of `set` (and a shell's options) for the options `shellOption` knows. */
+const setLetters: Record<string, string> = { a: 'allexport', m: 'monitor', P: 'physical', k: 'keyword', B: 'braceexpand', H: 'histexpand' };
+
+/** Whether a followed option is on: `undefined` when it may be either. */
+function option(state: State, name: string): boolean | undefined {
+  return state.options.has(name) ? state.options.get(name) : false;
+}
+
+/** With `allexport`, what's assigned or defined is exported: `maybe` holds names exported only if it's on. */
+function exportAll(state: State, name: string, exported: Set<string>, maybe: Set<string>): void {
+  const on = option(state, 'allexport');
+  if (on === true) maybe.delete(name);
+  else if (on === false || exported.has(name)) return;
+  else maybe.add(name);
+  exported.add(name);
+}
+
+/** `undefined` when either may be: on when either is. */
+function either(a: boolean | undefined, b: boolean | undefined): boolean | undefined {
+  return a === true || b === true ? true : a === false && b === false ? false : undefined;
+}
+
 /** A shell started by this one (`bash -c`): exported variables and functions only, aliases off. */
 function childState(state: State, cwd: string | undefined): State {
   const child = freshState(cwd);
   for (const name of state.exported) {
     const value = state.vars.get(name);
-    if (value) child.vars.set(name, value);
+    if (value) child.vars.set(name, state.maybeExported.has(name) ? { kind: 'dynamic' } : value);
   }
   for (const name of state.exportedFunctions) {
     const fn = state.functions.get(name);
-    if (fn) child.functions.set(name, fn);
+    if (fn) child.functions.set(name, state.maybeExportedFunctions.has(name) ? { ...fn, maybeUndefined: true } : fn);
   }
   child.exported = new Set(state.exported);
+  child.maybeExported = new Set(state.maybeExported);
   return child;
 }
 
@@ -2634,6 +2792,9 @@ function freshState(cwd: string | undefined): State {
     hashed: new Map(),
     hashUnknown: false,
     refs: new Set(),
+    options: new Map(),
+    maybeExported: new Set(),
+    maybeExportedFunctions: new Set(),
     disabled: new Set(),
     integers: new Set(),
     cases: new Map(),
@@ -2658,6 +2819,15 @@ function join(state: State, other: State): void {
     if (!a || !b || a.kind === 'dynamic' || b.kind === 'dynamic' || a.value !== b.value)
       state.vars.set(name, { kind: 'dynamic', ...(a && b && numericValue(a) && numericValue(b) ? { numeric: true } : {}) });
   }
+  // Exported on one way only, a name may not be.
+  for (const [mine, theirs, maybe] of [
+    [state.exported, other.exported, state.maybeExported],
+    [state.exportedFunctions, other.exportedFunctions, state.maybeExportedFunctions],
+  ] as const)
+    for (const name of new Set([...mine, ...theirs])) if (!mine.has(name) || !theirs.has(name)) maybe.add(name);
+
+  for (const name of other.maybeExported) state.maybeExported.add(name);
+  for (const name of other.maybeExportedFunctions) state.maybeExportedFunctions.add(name);
   for (const name of other.exported) state.exported.add(name);
   for (const name of other.integers) state.integers.add(name);
   for (const name of new Set([...state.cases.keys(), ...other.cases.keys()]))
@@ -2686,6 +2856,8 @@ function join(state: State, other: State): void {
   }
   state.hashUnknown ||= other.hashUnknown;
   for (const name of other.refs) state.refs.add(name);
+  for (const name of new Set([...state.options.keys(), ...other.options.keys()]))
+    if (option(state, name) !== option(other, name)) state.options.set(name, undefined);
   for (const name of other.disabled) state.disabled.add(name);
   if (state.cwd !== other.cwd) state.cwd = undefined;
   // Code set in a slot on either way may be what runs there.

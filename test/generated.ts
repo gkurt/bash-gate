@@ -6,6 +6,11 @@ const variables = ['v1', 'v2', 'v3'];
 const functions = ['f1', 'f2'];
 const aliases = ['a1', 'a2'];
 const values = ['a', '-rf', 'x y', 'cat', 'rm -rf', 'f1', 'a1', ''];
+/**
+ * Options that change what runs, some passed on to the shells it starts. Not `set -m`: job control would put pipelines
+ * in process groups of their own, out of the harness's reach.
+ */
+const options = ['shopt -s lastpipe', 'shopt -s localvar_inherit', 'set -a', 'set -o posix', 'export BASHOPTS', 'export SHELLOPTS'];
 /** Variables Bash sets itself: assigning one doesn't decide what it holds. None holds a path. */
 const specials = ['RANDOM', 'LINENO', 'OPTIND', 'PIPESTATUS', 'BASH_REMATCH'];
 const expansions = [
@@ -96,7 +101,19 @@ export const { script: generatedScript } = fc.letrec<{ word: string; command: st
       // Run in place of a command that isn't found (f1 before it's defined, h1). One command, which may not be found
       // either: FUNCNEST bounds the subshells it nests, and more would fork exponentially many.
       literalCommand.map((body) => `command_not_found_handle() {\n${body} "$@"\n}`),
+      fc.constantFrom(...options, 'shopt -u lastpipe', 'set +a'),
       fc.tuple(variable, word).map(([v, value]) => `read -r ${v} <<< ${value}`),
+      // The stubs print nothing: echo gives read something, which only lastpipe keeps. Each of these uses the variable
+      // right after, with a value known before, so a wrong guess shows.
+      fc.tuple(variable, literal, literal).map(([v, before, after]) => `${v}=${before}\necho ${after} | read -r ${v}\ncat "$${v}"`),
+      // A local with no value: unset in the function, or what it was outside with localvar_inherit. And unset in a
+      // function, which shows the value a caller's local hid.
+      fc
+        .tuple(variable, literal, fc.constantFrom(...functions), fc.constantFrom('local', 'declare'))
+        .map(([v, value, f, how]) => `${v}=${value}\n${f}() {\n${how} ${v}\ncat "$${v}"\n}\n${f}`),
+      fc
+        .tuple(variable, literal, literal, fc.constantFrom(...functions))
+        .map(([v, outer, inner, f]) => `${v}=${outer}\n${f}() {\nunset ${v}\nls "$${v}"\n}\nf0() {\nlocal ${v}=${inner}\n${f}\n}\nf0`),
       words.map((list) => `set -- ${list}`),
       fc.constant('shift'),
       fc.tuple(fc.constantFrom('env v1=a', 'sudo', 'exec'), simple).map((parts) => parts.join(' ')),
@@ -122,8 +139,9 @@ export const { script: generatedScript } = fc.letrec<{ word: string; command: st
       word.map((value) => `[[ -n ${value} ]]`),
     ),
     block: fc.array(command, { minLength: 1, maxLength: 3 }).map((list) => list.join('\n')),
+    // Options first, so that what they change is likely to come after.
     script: fc
-      .tuple(fc.boolean(), fc.array(command, { minLength: 1, maxLength: 5 }))
-      .map(([aliasing, list]) => [...(aliasing ? ['shopt -s expand_aliases'] : []), ...list].join('\n')),
+      .tuple(fc.boolean(), fc.subarray(options), fc.array(command, { minLength: 1, maxLength: 5 }))
+      .map(([aliasing, set, list]) => [...(aliasing ? ['shopt -s expand_aliases'] : []), ...set, ...list].join('\n')),
   };
 });

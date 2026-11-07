@@ -50,7 +50,14 @@ analyze('sudo -u root rm -rf "$dir"').invocations.map((i) => [i.shape, i.via, i.
    and so does `unset`, which removes a function when no variable has the name. Assigning or unsetting a variable named
    only at run time, or a nameref (`declare -n`), may change any variable: every value, both tables and `PS4` become
    unknown. A command Bash can't find runs `command_not_found_handle` if one is defined, so it's walked in place of
-   each program.
+   each program. An assignment before a function or builtin is a variable while it runs, and a `local` of the same name
+   starts with its value.
+   Shell options that change what runs are state as well, from `set`, `shopt` and a child shell's own options (`+O`
+   too), and passed on to it when BASHOPTS or SHELLOPTS is exported: `lastpipe` keeps what a pipeline's last command
+   changes (unless `set -m`), `localvar_inherit` gives a local its outer value, `allexport` exports what's assigned or
+   defined, and `cd` goes where nothing can say under `set -P`, `cd -P` past `..`, or `cdable_vars`. Those whose effect
+   isn't followed are `unknown-syntax` findings: a compatibility level (`compat31`…, `BASH_COMPAT`), `set -k` and
+   `set +B`. The rest only make Bash run less, matter only interactively, or change globs, which are unknown anyway.
 4. **Dispatch** as Bash does: alias, then function, then builtin, then program. `command`, `builtin` and `exec` change
    that order. `eval`, `trap`, `mapfile -C`, `compgen -C`, `bash -c`, a shell's here-document or here-string, `ssh host
    cmd`, `watch`, git aliases, git config commands, gh aliases and config, prompt strings (`PS4`) and `PROMPT_COMMAND`
@@ -101,7 +108,7 @@ const policy: Policy = {
   `exec:remote`, `shell-state`.
 - An allow rule never applies to a program given by a non-system path (`./ls`).
 - Findings (`parse-error`, `dynamic-command`, `dynamic-script`, `dynamic-arithmetic`, `sensitive-variable`,
-  `exec-config`, `loads-code`, `unknown-alias`, `too-deep`, `unknown-file`) ask unless `policy.findings` says
+  `exec-config`, `loads-code`, `unknown-alias`, `too-deep`, `unknown-syntax`, `unknown-file`) ask unless `policy.findings` says
   otherwise.
 
 `recommended` (`src/recommended.ts`) is a starting point. It allows reading and everyday git, denies force pushes and
@@ -238,7 +245,8 @@ bun run checks   # tsc, then bun test
   This is the check that keeps the analysis honest. Extend it before trusting a new construct. Besides the
   hand-written scripts, it generates scripts that mix variables, functions,
   aliases, `hash -p`, loops, substitutions, `eval`, `bash -c` and traps over a few shared names, along with namerefs,
-  `unset`, `command_not_found_handle`, `BASH_ALIASES`, `BASH_CMDS` and variables Bash sets itself. Set `BASH_RUNS` to
+  `unset`, `command_not_found_handle`, `BASH_ALIASES`, `BASH_CMDS` and variables Bash sets itself, under shell options
+  (`lastpipe`, `localvar_inherit`, `allexport`, POSIX mode, exported BASHOPTS and SHELLOPTS). Set `BASH_RUNS` to
   change the number of generated scripts.
   The generator only writes what the analysis already follows, so the parser is fuzzed apart from it: mutants
   (`test/mutated.ts`) of the hand-written and generated scripts, changed a few characters or tokens at a time

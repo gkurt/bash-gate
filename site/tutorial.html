@@ -116,6 +116,11 @@ check('git status', recommended).decision; // 'allow'</pre>
             run time, is a finding.
           </p>
           <p>
+            So are shell options. With <code>shopt -s lastpipe</code>, what a pipeline's last command assigns stays in the shell; with
+            <code>set -a</code>, what's assigned or defined is exported to the shells it starts. An option whose effect isn't followed, such
+            as a compatibility level, is a finding.
+          </p>
+          <p>
             Aliases expand only where Bash would expand them: with <code>expand_aliases</code>, from the next line on. Try the alias example
             with the <code>alias</code> and its use on one line.
           </p>
