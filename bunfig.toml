@@ -9,3 +9,5 @@ linker = "isolated"
 # Only re-print failing tests on reruns.
 [test]
 onlyFailures = true
+# FUZZ_SEED and FUZZ_PATH replay a property-test failure.
+preload = ["./test/replay.ts"]

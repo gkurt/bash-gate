@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import * as fc from 'fast-check';
 import { analyze } from '#src/index.ts';
 import { buildSupervisor, run, type RunOptions } from '#src/trace/index.ts';
-import { generatedScript } from './generated.ts';
+import { seenScript } from './generated.ts';
 import { hiding, scripts } from './scripts.ts';
 
 /**
@@ -55,7 +55,7 @@ describe.skipIf(!supported)('trace', () => {
     'covers generated scripts',
     async () => {
       await fc.assert(
-        fc.asyncProperty(generatedScript, async (script) => {
+        fc.asyncProperty(seenScript, async (script) => {
           // A function calling itself twice per loop pass forks thousands of processes by FUNCNEST=8, each stopped by
           // the supervisor. A lower limit only makes Bash run less than the analysis predicts.
           const result = await traced(script, '4');

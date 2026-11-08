@@ -176,11 +176,18 @@ describe('invocations', () => {
   });
 
   test('cd is tracked for where commands run', () => {
-    expect(analyze('cd /srv; cd app; ls').invocations.at(-1)!.cwd).toBe('/srv/app');
-    expect(analyze('cd /srv && ls').invocations.at(-1)!.cwd).toBe('/srv');
-    // After `a && b`, either may have been the last to run, so a cd in `b` leaves the directory unknown.
-    expect(analyze('cd /srv && cd app; ls').invocations.at(-1)!.cwd).toBeUndefined();
-    expect(analyze('cd "$d"; ls').invocations.at(-1)!.cwd).toBeUndefined();
+    const cwd = (source: string) => analyze(source).invocations.at(-1)!.cwd;
+    expect(cwd('cd /srv && cd app && ls')).toBe('/srv/app');
+    expect(cwd('cd /srv && ls')).toBe('/srv');
+    // A cd fails on a directory that isn't there, and the shell stays: after `;`, either may hold.
+    expect(cwd('cd /srv; ls')).toBeUndefined();
+    expect(cwd('cd /srv && cd app; ls')).toBeUndefined();
+    expect(cwd('cd /srv || ls')).toBe('.');
+    expect(cwd('! cd /srv && ls')).toBe('.');
+    expect(cwd('cd /srv || cd /opt && ls')).toBeUndefined();
+    expect(cwd('if cd /srv; then ls; fi')).toBe('/srv');
+    expect(cwd('if cd /srv; then :; else ls; fi')).toBe('.');
+    expect(cwd('cd "$d" && ls')).toBeUndefined();
   });
 
   test('a loop is walked until it settles, so a value three iterations away is seen', () => {

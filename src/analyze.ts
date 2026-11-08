@@ -90,6 +90,11 @@ interface State {
   cases: Map<string, Case | undefined>;
   cwd: string | undefined;
   /**
+   * Set by a `cd` that may fail: where the shell still is if the command that just ran failed, while `cwd` is where it
+   * is if it succeeded. `&&`, `||`, `!` and `if` read the status; any other next command makes it either.
+   */
+  failedCwd: { cwd: string | undefined } | undefined;
+  /**
    * Code that may run between any two commands from now on (a trap action, a prompt string), by where it's set (a
    * signal, a variable). Each slot may hold several: what was set on different ways through the script.
    */
@@ -231,6 +236,7 @@ export function analyze(source: string, environment: Environment = {}): Analysis
       integers: new Set(startingIntegers),
       cases: new Map(),
       cwd: environment.cwd ?? '.',
+      failedCwd: undefined,
       later: new Map(),
     };
     const context: Context = {
@@ -451,16 +457,25 @@ class Walker {
       this.alarm('The script is too large for the analysis to follow', [0, this.analysis.source.length]);
       return;
     }
+    // Nothing reads the last command's status here: a `cd` before may or may not have changed directory.
+    decided(state, 'either');
     switch (node.type) {
       case 'CompoundList':
         return this.list(node.commands, state, ctx);
       case 'AndOr': {
         const [first, ...rest] = node.commands;
         if (first) this.node(first, state, ctx);
-        for (const command of rest) {
+        for (const [i, command] of rest.entries()) {
           this.between(state, ctx);
+          const and = node.operators[i] === '&&';
           const branch = clone(state);
+          decided(branch, and ? 'success' : 'failure');
           this.node(command, branch, ctx);
+          // Skipped, the list's status is the one that skipped it: where the shell is on the other status never
+          // happens there, so it takes the branch's.
+          decided(state, and ? 'failure' : 'success');
+          if (and) [state.failedCwd, state.cwd] = [{ cwd: state.cwd }, branch.cwd];
+          else state.failedCwd = { cwd: (branch.failedCwd ?? branch).cwd };
           join(state, branch);
         }
         return;
@@ -483,17 +498,31 @@ class Walker {
           if (lastpipe) Object.assign(state, shell);
           else join(state, shell);
         }
+        // With pipefail, another command's failure may be the status.
+        if (together) decided(state, 'either');
+        if (node.prefixes.filter((prefix) => prefix.type === 'Negation').length % 2 === 1 && state.failedCwd)
+          [state.cwd, state.failedCwd.cwd] = [state.failedCwd.cwd, state.cwd];
         return;
       }
       case 'Command':
         return this.simple(node, state, ctx);
       case 'If': {
         this.list(node.clause.commands, state, ctx);
-        const outcomes = [this.branch(state, ctx, (s, c) => this.list(node.then.commands, s, c))];
-        for (const elif of node.elif)
-          outcomes.push(this.branch(state, ctx, (s, c) => this.list([...elif.clause.commands, ...elif.then.commands], s, c)));
-        outcomes.push(node.else ? this.branch(state, ctx, (s, c) => this.list(node.else!.commands, s, c)) : clone(state));
-        return settle(state, outcomes);
+        const then = (list: CompoundList) => (s: State, c: Context) => {
+          decided(s, 'success');
+          this.list(list.commands, s, c);
+        };
+        const outcomes = [this.branch(state, ctx, then(node.then))];
+        // Each elif's clause, and the else, run after every clause before failed, with what those changed.
+        const failed = clone(state);
+        decided(failed, 'failure');
+        for (const elif of node.elif) {
+          this.list(elif.clause.commands, failed, ctx);
+          outcomes.push(this.branch(failed, ctx, then(elif.then)));
+          decided(failed, 'failure');
+        }
+        if (node.else) this.list(node.else.commands, failed, ctx);
+        return settle(state, [...outcomes, failed]);
       }
       case 'For':
       case 'Select': {
@@ -530,9 +559,12 @@ class Walker {
         this.substitutions(node.redirects, state, ctx);
         const files = redirections(node.redirects, lookupIn(state));
         // Bash opens the files before it runs what's in the group, and runs none of it when one can't be opened.
-        this.wrote(files.writes, this.at(ctx, state, node), 'contents');
+        const call = { ...this.at(ctx, state, node), writes: files.writes, reads: files.reads };
+        this.wrote(files.writes, call, 'contents');
         const inner = { ...ctx, writes: [...ctx.writes, ...files.writes], reads: [...ctx.reads, ...files.reads] };
         if (files.writes.length === 0 && files.reads.length === 0) return this.node(node.command, state, inner);
+        // Opened even when nothing in the group runs (`case a in b) ;; esac >f`, `(( 0 )) >f`), as `>f` alone is.
+        this.emit(ctx, call, ':', 'builtin', [{ kind: 'static', value: ':' }], emptyParsed());
         return settle(state, [clone(state), this.branch(state, inner, (s, c) => this.node(node.command, s, c))]);
       }
       case 'Function': {
@@ -631,6 +663,7 @@ class Walker {
       [...state.integers].sort(),
       sorted(state.cases).map(([name, how]) => [name, how ?? null]),
       state.cwd ?? null,
+      state.failedCwd ? [state.failedCwd.cwd ?? null] : null,
       sorted(state.later).map(([slot, code]) => [slot, code.map((later) => later.key).sort()]),
     ]);
   }
@@ -1407,6 +1440,8 @@ class Walker {
           arg?.kind === 'static' &&
           ((physical && arg.value.split('/').includes('..')) ||
             (option(state, 'cdable_vars') !== false && /^[A-Za-z_]\w*$/.test(arg.value)));
+        // It fails on a directory that isn't there, and the shell stays where it was.
+        state.failedCwd = { cwd: state.cwd };
         if (args.length === 0) state.cwd = homeOf(state) ?? '~';
         else if (arg?.kind === 'static' && arg.value !== '-' && !elsewhere) state.cwd = resolvePath(state.cwd, arg.value, homeOf(state));
         else state.cwd = undefined;
@@ -2667,6 +2702,8 @@ function equal(a: State, b: State): boolean {
     sameSet(a.integers, b.integers) &&
     sameMap(a.cases, b.cases) &&
     a.cwd === b.cwd &&
+    !a.failedCwd === !b.failedCwd &&
+    a.failedCwd?.cwd === b.failedCwd?.cwd &&
     sameMap(a.later, b.later, (x, y) => sameSet(new Set(x.map((later) => later.key)), new Set(y.map((later) => later.key))))
   );
 }
@@ -2794,6 +2831,7 @@ function clone(state: State): State {
     integers: new Set(state.integers),
     cases: new Map(state.cases),
     cwd: state.cwd,
+    failedCwd: state.failedCwd && { ...state.failedCwd },
     later: new Map([...state.later].map(([slot, code]) => [slot, [...code]])),
   };
 }
@@ -2904,8 +2942,18 @@ function freshState(cwd: string | undefined): State {
     integers: new Set(startingIntegers),
     cases: new Map(),
     cwd,
+    failedCwd: undefined,
     later: new Map(),
   };
+}
+
+/** What the status of the command that just ran says about where the shell is (see `State.failedCwd`). */
+function decided(state: State, status: 'success' | 'failure' | 'either'): void {
+  const failed = state.failedCwd;
+  if (!failed) return;
+  state.failedCwd = undefined;
+  if (status === 'failure') state.cwd = failed.cwd;
+  else if (status === 'either' && state.cwd !== failed.cwd) state.cwd = undefined;
 }
 
 /** `state` becomes what may hold after any one of `outcomes`. */
@@ -2964,6 +3012,10 @@ function join(state: State, other: State): void {
   for (const name of new Set([...state.options.keys(), ...other.options.keys()]))
     if (option(state, name) !== option(other, name)) state.options.set(name, undefined);
   for (const name of other.disabled) state.disabled.add(name);
+  if (state.failedCwd || other.failedCwd) {
+    const [mine, theirs] = [(state.failedCwd ?? state).cwd, (other.failedCwd ?? other).cwd];
+    state.failedCwd = { cwd: mine === theirs ? mine : undefined };
+  }
   if (state.cwd !== other.cwd) state.cwd = undefined;
   // Code set in a slot on either way may be what runs there.
   for (const [slot, code] of other.later) {

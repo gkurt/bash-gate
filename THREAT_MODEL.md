@@ -125,6 +125,7 @@ execs kill the process, and so does any x32 system call.
 | S1      | Scripts run in real Bash with logging stubs: everything that ran must be covered    | `test/bash.test.ts`        |
 | S1      | The same, for generated scripts mixing the constructs the analysis follows          | `test/bash.test.ts`        |
 | S1      | The same, for mutants of both the parser accepts: a parser that disagrees with Bash | `test/bash.test.ts`        |
+| S1      | The same runs: each program in the directory predicted, each file written predicted | `test/bash.test.ts`        |
 | S1      | Known escapes, one per construct                                                    | `test/escapes.test.ts`     |
 | S1      | The hand-written scripts with real programs: every exec the kernel sees is covered  | `test/trace.test.ts`       |
 | S1      | The same, for the generated scripts                                                 | `test/trace.test.ts`       |

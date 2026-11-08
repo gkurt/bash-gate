@@ -1,7 +1,6 @@
 import * as fc from 'fast-check';
-import { unseen } from '#src/cover.ts';
-import { analyze, type Analysis } from '#src/index.ts';
-import { generatedScript } from './generated.ts';
+import { analyze } from '#src/index.ts';
+import { blind, generatedScript } from './generated.ts';
 import { hiding, scripts } from './scripts.ts';
 
 /**
@@ -162,9 +161,6 @@ function mutate(script: string, { op, at, length, pick, other }: Mutation): stri
     }
   }
 }
-
-/** Whether the analysis already accounts for anything the script may run, through a finding. */
-const blind = (analysis: Analysis) => analysis.findings.some((finding) => unseen.has(finding.kind));
 
 /**
  * Mutants the analysis claims to see through: confined to the run's directory, and with no finding that leaves code

@@ -120,6 +120,9 @@ export const scripts = [
   "set -a; x=cat; f() { ls fn; }; /bin/bash -c '$x a; f'",
   "shopt -s expand_aliases; export BASHOPTS; /bin/bash -c 'alias l=cat\nl a'",
   'x=ls; f() { $x a; }; x=cat f; g() { local x; $x b; }; x=sort g; $x c; set -o posix; x=grep :; $x d',
+  'x=ls; if false; then :; elif x=cat; false; then :; else $x elif; fi',
+  'case a in b) ;; esac >c1; (( 0 )) >c2; [[ 0 ]] >c3; { x=1; } >c4; for x in; do :; done >c5; ls',
+  'cd nope; ls a; cd bin && ls b; cd nope || ls c; ! cd nope && ls d; cd; ls e; cd -; ls f; pushd nope; ls g',
 ];
 
 /** Scripts that run what the analysis can't see, behind a finding: the finding must account for it. */

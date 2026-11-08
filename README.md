@@ -57,7 +57,9 @@ analyze('sudo -u root rm -rf "$dir"').invocations.map((i) => [i.shape, i.via, i.
    Shell options that change what runs are state as well, from `set`, `shopt` and a child shell's own options (`+O`
    too), and passed on to it when BASHOPTS or SHELLOPTS is exported: `lastpipe` keeps what a pipeline's last command
    changes (unless `set -m`), `localvar_inherit` gives a local its outer value, `allexport` exports what's assigned or
-   defined, and `cd` goes where nothing can say under `set -P`, `cd -P` past `..`, or `cdable_vars`. Those whose effect
+   defined, and `cd` goes where nothing can say under `set -P`, `cd -P` past `..`, or `cdable_vars`. A `cd` fails on a
+   directory that isn't there and the shell stays, so the working directory is only known after it where the status
+   says it succeeded (`cd a && …`, `if cd a; then …`), or failed (`cd a || …`). Those whose effect
    isn't followed are `unknown-syntax` findings: a compatibility level (`compat31`…, `BASH_COMPAT`), `set -k` and
    `set +B`. The rest only make Bash run less, matter only interactively, or change globs, which are unknown anyway.
 4. **Dispatch** as Bash does: alias, then function, then builtin, then program. `command`, `builtin` and `exec` change
@@ -243,7 +245,9 @@ bun run checks   # tsc, then bun test
   hide values, checked under strict and non-strict policies. Set `METAMORPHIC_RUNS` to change the number of cases.
 - `test/bash.test.ts`: runs scripts (the hand-written ones are in `test/scripts.ts`, the generator in `test/generated.ts`) in real Bash with a `PATH` of
   logging stubs. Every program that ran must be one
-  the analysis predicted, with those arguments, or one a finding hides (the `hiding` scripts and generated ones).
+  the analysis predicted, with those arguments, in the directory it predicted, or one a finding hides (the `hiding`
+  scripts and mutants). Every file the shell wrote must be one the analysis says it writes. Generated scripts with a
+  finding that leaves code unseen are skipped, since nothing they run could fail the check.
   This is the check that keeps the analysis honest. Extend it before trusting a new construct. Besides the
   hand-written scripts, it generates scripts that mix variables, functions,
   aliases, `hash -p`, loops, substitutions, `eval`, `bash -c` and traps over a few shared names, along with namerefs,
@@ -256,7 +260,8 @@ bun run checks   # tsc, then bun test
   (quotes, `$'…'`, here-documents and their delimiters, case patterns, extglob, comments, line continuations, lines
   of other scripts). Any the analysis claims to see through, with no finding that leaves code unseen, runs in Bash,
   and everything it starts must be covered. Mutants may loop forever: each runs in a process group that's killed
-  after a few seconds. Set `MUTATION_RUNS` to change their number.
+  after a few seconds. Set `MUTATION_RUNS` to change their number. A failure prints fast-check's seed and path:
+  `FUZZ_SEED=<seed> FUZZ_PATH=<path> bun test test/bash.test.ts -t 'generated scripts'` replays it.
 - `test/trace.test.ts`: on x86_64 Linux with a C compiler, the hand-written and generated scripts again, with real
   programs under the supervisor: every exec the kernel sees, by any path, must be covered. Plus what enforcement
   refuses and what it leaves to the programs it doesn't follow. Set `TRACE_RUNS` to change the number of generated

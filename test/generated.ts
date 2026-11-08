@@ -1,4 +1,6 @@
 import * as fc from 'fast-check';
+import { unseen } from '#src/cover.ts';
+import { analyze, type Analysis } from '#src/index.ts';
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const programs = ['cat', 'ls', 'rm', 'sort', 'grep', 'git'];
@@ -132,6 +134,9 @@ export const { script: generatedScript } = fc.letrec<{ word: string; command: st
         .map(([v, outer, inner, f]) => `${v}=${outer}\n${f}() {\nunset ${v}\nls "$${v}"\n}\nf0() {\nlocal ${v}=${inner}\n${f}\n}\nf0`),
       words.map((list) => `set -- ${list}`),
       fc.constant('shift'),
+      // Where later commands run and write. A cd to a directory that isn't there fails, and the shell stays. Not `..`:
+      // repeated, it would leave the run's directory, where test/trace.test.ts runs real programs.
+      fc.constantFrom('cd bin', 'cd nope', 'cd', 'cd -', 'pushd bin', 'popd'),
       fc.tuple(fc.constantFrom('env v1=a', 'sudo', 'exec'), simple).map((parts) => parts.join(' ')),
       simple.map((code) => `xargs ${code} </dev/null`),
       fc.constantFrom(...programs).map((program) => `hash -p bin/${program} h1`),
@@ -161,3 +166,12 @@ export const { script: generatedScript } = fc.letrec<{ word: string; command: st
       .map(([aliasing, set, list]) => [...(aliasing ? ['shopt -s expand_aliases'] : []), ...set, ...list].join('\n')),
   };
 });
+
+/** Whether the analysis already accounts for anything the script may run, through a finding. */
+export const blind = (analysis: Analysis) => analysis.findings.some((finding) => unseen.has(finding.kind));
+
+/**
+ * Generated scripts the analysis claims to see through. A finding that leaves code unseen accounts for whatever runs,
+ * so a script with one can't fail a check: about a third of them would test nothing.
+ */
+export const seenScript = generatedScript.filter((script) => !blind(analyze(script)));

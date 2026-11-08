@@ -408,6 +408,13 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['x=ls; f() { $x -rf /; }; x=rm f', 'deny', 'an assignment before a function call, which the function sees'],
   ['x=ls; f() { local x; $x -rf /; }; x=rm f', 'ask', 'a local starting with the value of an assignment before the call'],
   ['set -o posix; x=ls; x=rm :; $x -rf /', 'ask', 'an assignment before a special builtin, which POSIX mode keeps'],
+  ['case a in b) ;; esac > .git/config', 'ask', "a case's redirection, which opens the file when no arm runs"],
+  ['(( 0 )) > .git/config', 'ask', 'an arithmetic command with a redirection'],
+  ['[[ 0 ]] > .git/config', 'ask', 'a conditional command with a redirection'],
+  ['{ x=1; } > .git/config', 'ask', 'a group of assignments with a redirection'],
+  ['x=ls; if false; then :; elif x=rm; false; then :; else $x -rf /; fi', 'deny', 'an else after what an elif clause changed'],
+  ['cd sub; cd ..; echo hi > x', 'ask', 'a cd that may fail, leaving the shell where it was'],
+  ['cd sub && cd .. && echo hi > x', 'allow', 'cds that succeeded, as && says'],
 ];
 
 /**

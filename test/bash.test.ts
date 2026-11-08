@@ -2,10 +2,11 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { accessSync, constants, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, join, relative, sep } from 'node:path';
 import * as fc from 'fast-check';
-import { analyze, covers } from '#src/index.ts';
-import { generatedScript } from './generated.ts';
+import { analyze, covers, predicting, type Analysis, type Arg, type Invocation } from '#src/index.ts';
+import { relativePath, resolvePath } from '#src/paths.ts';
+import { blind, seenScript } from './generated.ts';
 import { mutatedScript } from './mutated.ts';
 import { hiding, scripts } from './scripts.ts';
 
@@ -61,12 +62,12 @@ kill -KILL -- -"$job" 2>/dev/null && : >../timeout
 kill -KILL -- -"$watchdog" 2>/dev/null
 `;
 /**
- * Logs the argv to a file of its own, even when the process execs another (`exec bash -c 'exec cat'`): substitutions
- * run alongside the command, and their writes would interleave. Each ends with \x1e, so a log cut short by a kill
- * isn't read as a shorter argv.
+ * Logs the directory it runs in (before \x1d) and the argv to a file of its own, even when the process execs another
+ * (`exec bash -c 'exec cat'`): substitutions run alongside the command, and their writes would interleave. Each ends
+ * with \x1e, so a log cut short by a kill isn't read as a shorter argv.
  */
 const log = `n=$$; while ! { set -C; : > "$BASH_GATE_LOGS/$n"; } 2>/dev/null; do n=$n.; done
-{ printf '%s' "\${0##*/}"; for a in "$@"; do printf '\\037%s' "$a"; done; printf '\\036'; } >| "$BASH_GATE_LOGS/$n"
+{ printf '%s\\035%s' "$(pwd -P)" "\${0##*/}"; for a in "$@"; do printf '\\037%s' "$a"; done; printf '\\036'; } >| "$BASH_GATE_LOGS/$n"
 `;
 /**
  * A stub named `name`, which logs and then runs `then`, only when it was run as a program: its `$0` is then the path
@@ -100,8 +101,18 @@ describe.skipIf(!compatibleBash)('against bash', () => {
     }
   });
 
-  /** Undoes what the last script wrote. Only stubs it changed are written again: Windows scans a new executable first. */
+  /** `path` as Bash sees it, symlinks resolved: what a stub's `pwd -P` says. */
+  const physical = (path: string) =>
+    compatibleBash ? spawnSync(bash, ['-c', 'pwd -P'], { cwd: path, encoding: 'utf8' }).stdout.trim() : path;
+  const shellWork = physical(work);
+
+  /**
+   * Undoes what the last script wrote, in the run's home too (`cd`). Only stubs it changed are written again: Windows
+   * scans a new executable first.
+   */
   function fresh() {
+    for (const entry of readdirSync(dir)) if (!['work', 'home', 'harness.sh'].includes(entry)) remove(join(dir, entry));
+    for (const entry of readdirSync(home)) remove(join(home, entry));
     for (const entry of readdirSync(work)) if (entry !== 'bin') remove(join(work, entry));
     for (const entry of readdirSync(bin)) if (!programs.has(entry)) remove(join(bin, entry));
     for (const [name, text] of programs) {
@@ -110,17 +121,34 @@ describe.skipIf(!compatibleBash)('against bash', () => {
     }
   }
 
+  /** Every file under `dir` but the harness's own, by its path from `work` (`/`-separated), with its contents. */
+  function files(): Map<string, string> {
+    const found = new Map<string, string>();
+    const visit = (path: string) => {
+      for (const entry of readdirSync(path, { withFileTypes: true })) {
+        if (path === dir && (entry.name.startsWith('logs-') || entry.name === 'timeout')) continue;
+        const full = join(path, entry.name);
+        if (entry.isDirectory()) visit(full);
+        else found.set(relative(work, full).split(sep).join('/'), readFileSync(full, 'latin1'));
+      }
+    };
+    visit(dir);
+    return found;
+  }
+
   /**
-   * Runs the script in Bash and returns the argv of every stub that ran. Past `seconds`, what's still running is killed:
-   * an error, unless the run is `bounded` (a mutant may loop forever), when logs cut short are left out.
+   * Runs the script in Bash and returns what it did: the argv of every stub that ran, with the directory it ran in (from
+   * `work`), and the files it wrote. Past `seconds`, what's still running is killed: an error, unless the run is
+   * `bounded` (a mutant may loop forever), when logs cut short are left out.
    */
-  function run(script: string, { seconds = 10, bounded = false } = {}): string[][] {
+  function run(script: string, { seconds = 10, bounded = false } = {}): Run {
     fresh();
     const logs = mkdtempSync(join(dir, 'logs-'));
     // From a file: Git Bash's runtime expands braces and globs in the arguments a Windows process gives it.
     writeFileSync(join(dir, 'script.sh'), script);
     const timeout = join(dir, 'timeout');
     remove(timeout);
+    const before = files();
     // FUNCNEST only stops runaway recursion: it can make Bash run less than the analysis predicts, never more.
     const result = spawnSync(bash!, ['--noprofile', '--norc', '../harness.sh', String(seconds)], {
       cwd: work,
@@ -136,29 +164,58 @@ describe.skipIf(!compatibleBash)('against bash', () => {
     remove(logs);
     const cut = texts.filter((text) => !text.endsWith('\x1e'));
     if (cut.length > 0 && !timedOut) throw new Error(`A stub never finished its log: ${JSON.stringify(cut)}`);
-    return texts.filter((text) => text.endsWith('\x1e')).map((text) => text.slice(0, -1).split('\x1f'));
+    const ran = texts
+      .filter((text) => text.endsWith('\x1e'))
+      .map((text) => {
+        const [cwd = '', argv = ''] = text.slice(0, -1).split('\x1d');
+        return { argv: argv.split('\x1f'), cwd: relativePath(cwd, shellWork) };
+      });
+    const after = files();
+    return { ran, written: [...after].filter(([path, text]) => before.get(path) !== text).map(([path]) => path) };
   }
 
-  /** What ran that the analysis doesn't cover; `excuse` lets findings account for what they hide. */
-  function missed(script: string, ran: string[][], excuse: boolean): string[] {
+  /**
+   * What the run did that the analysis doesn't account for: a process no invocation predicts, one predicted only in
+   * another directory, or a file no invocation writes. `excuse` lets findings account for what they hide.
+   */
+  function faults(script: string, { ran, written }: Run, excuse: boolean): string[] {
     const analysis = analyze(script);
-    const checked = excuse ? analysis : { ...analysis, findings: [] };
-    return ran.filter((argv) => !covers(checked, argv)).map((argv) => argv.join(' '));
+    if (excuse && blind(analysis)) return [];
+    const checked: Analysis = excuse ? analysis : { ...analysis, findings: [] };
+    const missed = ran.filter(({ argv }) => !covers(checked, argv));
+    const misplaced = ran.filter(({ argv, cwd }) => {
+      const predicted = predicting(checked, argv);
+      return predicted.length > 0 && !predicted.some((invocation) => [undefined, cwd].includes(place(invocation)));
+    });
+    const unwritten = written.filter(
+      (path) =>
+        !analysis.invocations.some((invocation) =>
+          invocation.writes.some((write) => [undefined, path].includes(target(invocation, write))),
+        ),
+    );
+    return [
+      ...missed.map(({ argv }) => `ran but not predicted: ${argv.join(' ')}`),
+      ...misplaced.map(({ argv, cwd }) => `ran in ${cwd}, not where predicted: ${argv.join(' ')}`),
+      ...unwritten.map((path) => `wrote but not predicted: ${path}`),
+    ];
+  }
+
+  function expectFaithful(script: string, excuse: boolean, options?: { seconds?: number; bounded?: boolean }): Run {
+    const result = run(script, options);
+    const found = faults(script, result, excuse);
+    if (found.length > 0) throw new Error(`${found.join('\n')}\n--- script ---\n${script}`);
+    return result;
   }
 
   for (const script of scripts) {
     test(JSON.stringify(script), () => {
-      const ran = run(script);
-      expect(ran.length).toBeGreaterThan(0);
-      expect(missed(script, ran, false)).toEqual([]);
+      expect(expectFaithful(script, false).ran.length).toBeGreaterThan(0);
     });
   }
 
   for (const script of hiding) {
     test(`hiding ${JSON.stringify(script)}`, () => {
-      const ran = run(script);
-      expect(ran.length).toBeGreaterThan(0);
-      expect(missed(script, ran, true)).toEqual([]);
+      expect(expectFaithful(script, true).ran.length).toBeGreaterThan(0);
     });
   }
 
@@ -166,9 +223,8 @@ describe.skipIf(!compatibleBash)('against bash', () => {
     'generated scripts',
     () => {
       fc.assert(
-        fc.property(generatedScript, (script) => {
-          const misses = missed(script, run(script), true);
-          if (misses.length > 0) throw new Error(`Ran but not predicted: ${misses.join(' | ')}\n--- script ---\n${script}`);
+        fc.property(seenScript, (script) => {
+          expectFaithful(script, true);
         }),
         { numRuns: runs, includeErrorInReport: true },
       );
@@ -183,8 +239,7 @@ describe.skipIf(!compatibleBash)('against bash', () => {
     () => {
       fc.assert(
         fc.property(mutatedScript, (script) => {
-          const misses = missed(script, run(script, { seconds: mutantSeconds, bounded: true }), true);
-          if (misses.length > 0) throw new Error(`Ran but not predicted: ${misses.join(' | ')}\n--- script ---\n${script}`);
+          expectFaithful(script, true, { seconds: mutantSeconds, bounded: true });
         }),
         { numRuns: mutationRuns, includeErrorInReport: true },
       );
@@ -192,3 +247,21 @@ describe.skipIf(!compatibleBash)('against bash', () => {
     { timeout: Math.max(5_000, mutationRuns * (mutantSeconds + 1) * 1000) },
   );
 });
+
+/** What a run did: each stub's argv and the directory it ran in (from `work`, `/`-separated), and the files written. */
+interface Run {
+  ran: { argv: string[]; cwd: string }[];
+  written: string[];
+}
+
+/** A path of the analysis's, from `work`: `~` is the run's home, beside it. */
+const fromWork = (path: string) => (/^~(\/|$)/.test(path) ? `../home${path.slice(1)}` : path);
+
+/** Where an invocation runs, from `work`; `undefined` when the analysis doesn't know. */
+const place = (invocation: Invocation) => (invocation.cwd === undefined ? undefined : resolvePath(fromWork(invocation.cwd), '.'));
+
+/** The file a write lands on, from `work`; `undefined` when it may be any. */
+function target(invocation: Invocation, write: Arg): string | undefined {
+  if (write.kind === 'dynamic' || invocation.cwd === undefined) return undefined;
+  return resolvePath(fromWork(invocation.cwd), fromWork(write.value));
+}
