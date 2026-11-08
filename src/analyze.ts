@@ -228,7 +228,7 @@ export function analyze(source: string, environment: Environment = {}): Analysis
       maybeExported: new Set(),
       maybeExportedFunctions: new Set(),
       disabled: new Set(),
-      integers: new Set(),
+      integers: new Set(startingIntegers),
       cases: new Map(),
       cwd: environment.cwd ?? '.',
       later: new Map(),
@@ -761,6 +761,7 @@ class Walker {
           this.arithmeticWord(node.operation.offset, state, ctx, true);
           if (node.operation.length) this.arithmeticWord(node.operation.length, state, ctx, true);
         }
+        this.indirection(node, state, ctx);
       }
       if (
         node.type === 'Word' &&
@@ -817,6 +818,12 @@ class Walker {
       if (node.type === 'TestBinary' && ['-eq', '-ne', '-lt', '-le', '-gt', '-ge'].includes(node.operator)) {
         this.arithmeticWord(node.left, state, ctx);
         this.arithmeticWord(node.right, state, ctx);
+      }
+      if (node.type === 'TestUnary' && node.operator === '-v') {
+        // `[[` neither splits nor globs its operands.
+        const value = resolveValue(node.operand, lookupIn(state));
+        const arg = value.kind === 'static' ? value : dynamicArg(node.operand.text, 'variable', false, '');
+        this.nameWord(arg, state, ctx, this.at(ctx, state, node));
       }
       const inner = node.type === 'HereDocBody' ? { ...ctx, late: true } : ctx;
       // Backquotes are parsed as they run, like a process substitution.
@@ -924,7 +931,8 @@ class Walker {
           );
         }
       }
-      if (node.type === 'ArithmeticWord') return this.operand(node, reads.get(node) ?? true, state, ctx, seen, where(node));
+      if (node.type === 'ArithmeticWord')
+        return this.operand(node, reads.get(node) ?? true, state, ctx, seen, where(node), span !== undefined);
       forEachChild(node, visit);
     };
     visit(expression);
@@ -934,7 +942,11 @@ class Walker {
     }
   }
 
-  /** An operand: its subscript is evaluated, and so is the value it reads (`reads`: not the target of a plain `=`). */
+  /**
+   * An operand: its subscript is evaluated, and so is the value it reads (`reads`: not the target of a plain `=`). In
+   * text from elsewhere (`fromText`: a variable's value), Bash expands the subscript first, and the substitutions in it
+   * run: `x='a[$(ls)]'; echo $((x))` runs `ls`. In the source, they were walked with the expression.
+   */
   operand(
     word: { value: string; parts?: Word['parts'] },
     reads: boolean,
@@ -942,10 +954,13 @@ class Walker {
     ctx: Context,
     seen: Set<string>,
     span: [number, number],
+    fromText = false,
   ): void {
     const subscript = /^[^[]*?\[([\s\S]*)\]\}?$/.exec(word.value)?.[1];
-    if (subscript !== undefined && subscript !== '@' && subscript !== '*')
+    if (subscript !== undefined && subscript !== '@' && subscript !== '*') {
+      if (fromText && /[$`]/.test(subscript)) this.expansions(subscript, state, ctx, this.spanned(ctx, state, span), 'subscript');
       this.arithmeticText(subscript, state, ctx, word.value, span, seen);
+    }
     if (!reads) return;
     const item = operand(word.value, word.parts, lookupIn(state));
     if (item.kind === 'name') this.arithmeticVariable(item.name, state, ctx, span, seen);
@@ -953,6 +968,67 @@ class Walker {
       this.arithmeticText(item.text, state, ctx, word.value, span, new Set([...seen, `\0${seen.size}`]));
     else if (item.kind !== 'number')
       this.finding(ctx, 'dynamic-arithmetic', `Arithmetic operand is only known at run time: ${word.value}`, span);
+  }
+
+  /**
+   * A variable's name as a builtin reads it (`read`, `printf -v`, `unset`, `test -v`, what `${!x}` refers to): Bash
+   * expands a subscript in it, quotes in it quoting nothing, so the substitutions there run, then evaluates it.
+   */
+  subscript(name: string, state: State, ctx: Context, call: Call): void {
+    const subscript = /^[A-Za-z_]\w*\[([\s\S]*)\]$/.exec(name)?.[1];
+    if (subscript === undefined || subscript === '@' || subscript === '*') return;
+    // With a `'` in it, `unquoted` walks it as a here-document's body, as this would.
+    if (/[$`]/.test(subscript) && !subscript.includes("'")) this.expansions(subscript, state, ctx, call, 'subscript');
+    this.unquoted(subscript, state, ctx, { pos: call.span[0], end: call.span[1] });
+    this.arithmeticText(subscript, state, ctx, name, call.span);
+  }
+
+  /** A word Bash reads as a variable's name (`[[ -v x ]]`): one only known at run time may hold any subscript. */
+  nameWord(arg: Arg | undefined, state: State, ctx: Context, call: Call): void {
+    if (!arg) return;
+    if (arg.kind === 'static') return this.subscript(arg.value, state, ctx, call);
+    this.finding(ctx, 'dynamic-script', `A variable name only known at run time, whose subscript Bash evaluates: ${arg.text}`, call.span);
+  }
+
+  /**
+   * `${!x}` reads the variable x names, subscript and all: `x='a[$(ls)]'; echo "${!x}"` runs `ls`. `${x@P}` expands
+   * x's value as a prompt string.
+   */
+  indirection(node: Extract<WordPart, { type: 'ParameterExpansion' }>, state: State, ctx: Context): void {
+    const call = this.at(ctx, state, node);
+    const lookup = lookupIn(state);
+    const value = (name: string, index?: Word): Arg => {
+      const known = index ? undefined : lookup(name);
+      return known?.kind === 'static' ? { kind: 'static', value: known.value } : dynamicArg(`\${${name}}`, 'variable', false, '');
+    };
+    const elements = node.index !== undefined && /^[@*]$/.test(node.index.value);
+    const indirect = node.prefix === '!' && node.operation?.type !== 'Names' && !elements;
+    if (indirect) this.nameWord(value(node.parameter, node.index), state, ctx, call);
+    if (node.operation?.type !== 'Transform' || node.operation.operand.value !== 'P') return;
+    const target = indirect ? value(node.parameter, node.index) : undefined;
+    const text =
+      target === undefined
+        ? value(node.parameter, node.index)
+        : target.kind === 'static' && /^[A-Za-z_]\w*$/.test(target.value)
+          ? value(target.value)
+          : dynamicArg(node.text, 'variable', false, '');
+    if (text.kind === 'static') this.prompt(text.value, state, ctx, call, node.text);
+    else this.finding(ctx, 'dynamic-script', `${node.text} expands a prompt string only known at run time`, call.span);
+  }
+
+  /**
+   * A prompt string: Bash decodes its escapes, then expands it, running the substitutions in it. An octal escape may
+   * make one: `\044(ls)` runs `ls`.
+   */
+  prompt(text: string, state: State, ctx: Context, call: Call, label: string): void {
+    this.expansions(text, state, ctx, call, label);
+    const decoded = decodePrompt(text);
+    if (decoded !== text && /[$`]/.test(decoded)) this.expansions(decoded, state, ctx, call, label);
+  }
+
+  /** A call at `span`, for code found in text from elsewhere. */
+  spanned(ctx: Context, state: State, span: [number, number]): Call {
+    return { ...this.at(ctx, state, { pos: span[0], end: span[1] }), span };
   }
 
   /** A variable read in arithmetic: Bash evaluates its value as an expression, recursively. */
@@ -1375,6 +1451,10 @@ class Walker {
         for (const arg of args) {
           const text = arg.kind === 'static' ? arg.value : arg.prefix;
           if (text.startsWith('-')) continue;
+          // `declare 'a[$(ls)]=1'` runs `ls`: the subscript is expanded, then evaluated.
+          const open = arg.kind === 'static' ? /^[A-Za-z_]\w*\[/.exec(text)?.[0].length : undefined;
+          const close = open === undefined ? -1 : subscriptEnd(text.slice(open - 1));
+          if (open !== undefined && close !== -1) this.subscript(text.slice(0, open + close), state, ctx, call);
           // `y!=d` is no name to Bash, which refuses it and goes on to the next. A word only known at run time names a
           // variable only once `[` or `=` ends the name: before that, it may be any.
           const match =
@@ -1452,6 +1532,8 @@ class Walker {
             continue;
           }
           if (value.startsWith('-')) continue;
+          // `unset 'a[$(ls)]'` runs `ls` when a is an array.
+          if (!functions) this.subscript(value, state, ctx, call);
           if (functions) {
             state.functions.delete(value);
             continue;
@@ -1480,6 +1562,14 @@ class Walker {
       case 'printf':
       case 'wait':
         this.assigns(name, args, state, ctx, call);
+        break;
+      case 'test':
+      case '[':
+        // `-v` reads the next word as a variable's name, and a word only known at run time may be `-v`, or both.
+        args.forEach((arg, i) => {
+          const after = i > 0 && (values[i - 1] === '-v' || args[i - 1]!.kind === 'dynamic');
+          if (after || (arg.kind === 'dynamic' && arg.split)) this.nameWord(arg, state, ctx, call);
+        });
         break;
       case 'let':
         for (const arg of args) {
@@ -1539,6 +1629,7 @@ class Walker {
   setNamed(name: string, variable: string | null | undefined, state: State, ctx: Context, call: Call, numeric = false): void {
     if (variable === null) return this.anyVariable(state, ctx, call, `${name} sets a variable named only at run time`);
     if (!variable) return;
+    this.subscript(variable, state, ctx, call);
     const base = variable.replace(/\[.*$/, '');
     state.vars.set(base, this.assigned(base, { kind: 'dynamic', ...(numeric ? { numeric } : {}) }, state, ctx, call, true));
   }
@@ -2164,7 +2255,7 @@ class Walker {
     if ((prompt || variable === 'PROMPT_COMMAND') && value.kind === 'static') {
       const text = value.value;
       const walk: Later['walk'] = (s, silent) =>
-        prompt ? this.expansions(text, s, { ...ctx, silent }, call, variable) : this.code(text, s, { ...ctx, silent }, call, variable);
+        prompt ? this.prompt(text, s, { ...ctx, silent }, call, variable) : this.code(text, s, { ...ctx, silent }, call, variable);
       if (shell) this.later(state, [variable], variable, text, call, walk);
       else walk(clone(state), ctx.silent);
     } else if (prompt || variable === 'PROMPT_COMMAND') {
@@ -2190,10 +2281,12 @@ class Walker {
 
   /**
    * A variable named only at run time is assigned or unset (`printf -v "$name"`, a nameref): it may be any of them, so
-   * every value is unknown, and so are the alias and `hash` tables, POSIX mode, and the code `PS4` holds.
+   * every value is unknown, and so are the alias and `hash` tables, POSIX mode, and the code `PS4` holds. The name may
+   * have a subscript, which Bash expands: code only known at run time.
    */
   anyVariable(state: State, ctx: Context, call: Call, message: string): void {
     this.finding(ctx, 'sensitive-variable', message, call.span);
+    this.finding(ctx, 'dynamic-script', 'A variable named only at run time may have a subscript with code in it', call.span);
     for (const name of state.vars.keys()) state.vars.set(name, { kind: 'dynamic' });
     state.aliasesUnknown = true;
     for (const name of state.hashed.keys()) state.hashed.set(name, undefined);
@@ -2504,6 +2597,8 @@ const computed = new Map<string, Value>([
     .split(' ')
     .map((name): [string, Value] => [name, { kind: 'dynamic' }]),
 ]);
+/** Variables Bash starts with the integer attribute: what's assigned to one is evaluated as arithmetic. */
+const startingIntegers = ['RANDOM', 'SRANDOM', 'OPTIND', 'HISTCMD', 'BASHPID'];
 
 function lookupIn(state: State): Lookup {
   return (name) => computed.get(name) ?? state.vars.get(name);
@@ -2617,6 +2712,16 @@ function unquote(text: string): string {
       if (ansi.startsWith("$'")) return decodeAnsiC(ansi);
       return single ?? (double === undefined ? escaped! : double.replaceAll(/\\([$`"\\\n])/g, '$1'));
     },
+  );
+}
+
+/**
+ * A prompt string with its octal escapes decoded, as Bash decodes them before expanding it: three digits, the low byte
+ * of their value (`\444` is `$` too). A `\\` stays, escaping what follows.
+ */
+function decodePrompt(text: string): string {
+  return text.replaceAll(/\\(\\|[0-7]{3})/g, (escape, digits: string) =>
+    digits === '\\' ? escape : String.fromCharCode(Number.parseInt(digits, 8) & 0xff),
   );
 }
 
@@ -2796,7 +2901,7 @@ function freshState(cwd: string | undefined): State {
     maybeExported: new Set(),
     maybeExportedFunctions: new Set(),
     disabled: new Set(),
-    integers: new Set(),
+    integers: new Set(startingIntegers),
     cases: new Map(),
     cwd,
     later: new Map(),

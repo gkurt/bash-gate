@@ -49,7 +49,9 @@ analyze('sudo -u root rm -rf "$dir"').invocations.map((i) => [i.shape, i.via, i.
    assigned. Every way to assign counts (`${x:=v}`, `printf -v`, `read`, `wait -p`, `exec {fd}>`, `coproc`, `select`),
    and so does `unset`, which removes a function when no variable has the name. Assigning or unsetting a variable named
    only at run time, or a nameref (`declare -n`), may change any variable: every value, both tables and `PS4` become
-   unknown. A command Bash can't find runs `command_not_found_handle` if one is defined, so it's walked in place of
+   unknown. A name a builtin reads (`read`, `printf -v`, `unset`, `test -v`, `declare`, what `${!x}` refers to) or a
+   value evaluated as arithmetic may have a subscript, which Bash expands: its substitutions are walked, and one only
+   known at run time is code unseen. A command Bash can't find runs `command_not_found_handle` if one is defined, so it's walked in place of
    each program. An assignment before a function or builtin is a variable while it runs, and a `local` of the same name
    starts with its value.
    Shell options that change what runs are state as well, from `set`, `shopt` and a child shell's own options (`+O`
@@ -60,8 +62,8 @@ analyze('sudo -u root rm -rf "$dir"').invocations.map((i) => [i.shape, i.via, i.
    `set +B`. The rest only make Bash run less, matter only interactively, or change globs, which are unknown anyway.
 4. **Dispatch** as Bash does: alias, then function, then builtin, then program. `command`, `builtin` and `exec` change
    that order. `eval`, `trap`, `mapfile -C`, `compgen -C`, `bash -c`, a shell's here-document or here-string, `ssh host
-   cmd`, `watch`, git aliases, git config commands, gh aliases and config, prompt strings (`PS4`) and `PROMPT_COMMAND`
-   parse their strings and walk them as code. Once set, a trap action or prompt string may run between any two commands (a signal, a failing command,
+   cmd`, `watch`, git aliases, git config commands, gh aliases and config, prompt strings (`PS4`, `${x@P}`, octal escapes
+   decoded) and `PROMPT_COMMAND` parse their strings and walk them as code. Once set, a trap action or prompt string may run between any two commands (a signal, a failing command,
    `set -x`), so it's walked at each of those points with the state there, until `trap -` resets it, and what it
    changes carries on. Code for other shells (`zsh -c`, `fish -c`, `pwsh`) is never parsed as Bash: it's code the
    analysis can't see into, and so are command lines run again from the history (`fc`, or history expansion turned
@@ -245,7 +247,8 @@ bun run checks   # tsc, then bun test
   This is the check that keeps the analysis honest. Extend it before trusting a new construct. Besides the
   hand-written scripts, it generates scripts that mix variables, functions,
   aliases, `hash -p`, loops, substitutions, `eval`, `bash -c` and traps over a few shared names, along with namerefs,
-  `unset`, `command_not_found_handle`, `BASH_ALIASES`, `BASH_CMDS` and variables Bash sets itself, under shell options
+  `unset`, `command_not_found_handle`, `BASH_ALIASES`, `BASH_CMDS`, variables Bash sets itself, names with subscripts
+  that builtins read, and values Bash may read as code (a subscript, a prompt string), under shell options
   (`lastpipe`, `localvar_inherit`, `allexport`, POSIX mode, exported BASHOPTS and SHELLOPTS). Set `BASH_RUNS` to
   change the number of generated scripts.
   The generator only writes what the analysis already follows, so the parser is fuzzed apart from it: mutants

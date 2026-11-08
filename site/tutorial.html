@@ -131,8 +131,9 @@ check('git status', recommended).decision; // 'allow'</pre>
           <h2><span class="num">06</span>Code inside strings</h2>
           <p>
             <code>eval</code>, <code>trap</code>, <code>bash -c</code>, <code>ssh host cmd</code>, <code>watch</code>, git aliases and
-            prompt strings like <code>PS4</code> all run a string as code, so the string is parsed and walked too. A trap action may run
-            between any two commands, so it's walked at each of those points.
+            prompt strings like <code>PS4</code> all run a string as code, so the string is parsed and walked too. So does a subscript in a
+            name a builtin reads: <code>read 'a[$(ls)]'</code> runs <code>ls</code>. A trap action may run between any two commands, so it's
+            walked at each of those points.
           </p>
           <p>
             When the string itself is only known at run time, there's nothing to walk: that's a <em>finding</em>, which asks. So is code for

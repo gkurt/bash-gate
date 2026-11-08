@@ -60,7 +60,8 @@ Out of scope:
 **S1. The analysis over-approximates execution.** For every command line `c`, and every run of `c` in a clean Bash,
 every process the shell starts, with its program and argv, is _covered_ by an invocation in `analyze(c)`. Covered
 means the same program, with each static argument equal and each dynamic argument standing for any words. Code the
-shell runs from strings (`eval`, `trap`, `bash -c`, a shell's here-document, aliases, git config, the history) counts,
+shell runs from strings (`eval`, `trap`, `bash -c`, a shell's here-document, aliases, git config, the history, a prompt
+string, a subscript in a name a builtin reads or in a value evaluated as arithmetic) counts,
 and so does `command_not_found_handle`, which Bash runs for a command it can't find. A construct the analysis can't follow
 must become a finding, or a dynamic argument, command, option or `open` invocation. It must never disappear.
 

@@ -5,7 +5,21 @@ const programs = ['cat', 'ls', 'rm', 'sort', 'grep', 'git'];
 const variables = ['v1', 'v2', 'v3'];
 const functions = ['f1', 'f2'];
 const aliases = ['a1', 'a2'];
-const values = ['a', '-rf', 'x y', 'cat', 'rm -rf', 'f1', 'a1', ''];
+/**
+ * The last three are data Bash may read as code: a subscript it expands where a value is a name (`${!v}`, `$((v))`),
+ * and substitutions in a prompt string (`${v@P}`), one made by an octal escape.
+ */
+const values = ['a', '-rf', 'x y', 'cat', 'rm -rf', 'f1', 'a1', '', 'v1[$(cat n)]', '$(ls p)', '\\044(sort o)'];
+/** Names a builtin reads with their subscript, which Bash expands: `read 'v1[$(cat n)]'` runs `cat`. */
+const names = ['v2', 'v1[1]', 'v1[v2]', 'v1[$(cat n)]'];
+const nameUses = [
+  (name: string) => `read -r ${name} <<< x`,
+  (name: string) => `printf -v ${name} %s x`,
+  (name: string) => `unset ${name}`,
+  (name: string) => `[[ -v ${name} ]]`,
+  (name: string) => `test -v ${name}`,
+  (name: string) => `declare ${name}=1`,
+];
 /**
  * Options that change what runs, some passed on to the shells it starts. Not `set -m`: job control would put pipelines
  * in process groups of their own, out of the harness's reach.
@@ -29,6 +43,7 @@ const expansions = [
   '${#v}',
   '"${v[@]}"',
   '${v[1]}',
+  '"${v@P}"',
 ];
 const depth = { depthIdentifier: 'script', maxDepth: 4, depthSize: 'small' } as const;
 
@@ -92,6 +107,7 @@ export const { script: generatedScript } = fc.letrec<{ word: string; command: st
       // A nameref: what's assigned through it lands on the variable it names.
       fc.tuple(variable, variable).map(([ref, target]) => `declare -n ${ref}=${target}`),
       fc.tuple(variable, word).map(([v, value]) => `printf -v ${v} %s ${value}`),
+      fc.tuple(fc.constantFrom(...names).chain(spelled), fc.constantFrom(...nameUses)).map(([name, use]) => use(name)),
       variable.map((v) => `exec {${v}}>/dev/null`),
       // The alias and hash tables, as arrays.
       fc.tuple(fc.constantFrom(...aliases), literalCommand).map(([a, code]) => `BASH_ALIASES[${a}]=${quote(code)}`),

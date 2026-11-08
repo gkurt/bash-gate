@@ -6,6 +6,8 @@ export const unseen = new Set<FindingKind>([
   'too-deep',
   'unknown-syntax',
   'dynamic-script',
+  // An arithmetic value only known at run time may hold a subscript, which Bash expands.
+  'dynamic-arithmetic',
   'exec-config',
   'dynamic-command',
   'unknown-alias',
