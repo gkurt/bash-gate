@@ -135,9 +135,25 @@ interface Body {
   outer?: [number, number];
 }
 
+/** Where `break` and `continue` leave a loop: the state at each, which holds after it or as it goes round. */
+interface Jumps {
+  breaks: State[];
+  continues: State[];
+}
+
+/** A loop settled from some state: what held then, and the jumps its walks left at the loops and call outside it. */
+interface Settled {
+  state: State;
+  escapes: State[][];
+}
+
 /** Where the walk is: the source positions index, and how it got there. */
 interface Context {
   source: string;
+  /** The loops it's in, innermost last, in this function or shell: `break` and `continue` reach them. */
+  loops: Jumps[];
+  /** In a function call, the states at each `return`: they hold after the call, as the end of the body does. */
+  returns?: State[];
   /** For code parsed from a string, the span of what holds it in the top-level source. */
   outer?: [number, number];
   aliases: Aliases;
@@ -247,6 +263,7 @@ export function analyze(source: string, environment: Environment = {}): Analysis
       via: [],
       depth: 0,
       calls: [],
+      loops: [],
       externalOnly: false,
       writes: [],
       reads: [],
@@ -315,7 +332,7 @@ class Walker {
   /** Each function definition once per alias table, so that a loop defining a function settles. */
   bodies = new Map<FunctionNode, Body[]>();
   /** Where each loop settles, by what held when it began (see `loop`). */
-  settled = new Map<object, Map<string, State>>();
+  settled = new Map<object, Map<string, Settled>>();
   ids = new Map<object, number>();
   /** What code that runs later left, by the code, whether it was walked silently, and the state it ran in. */
   ran = new Map<string, State>();
@@ -537,8 +554,13 @@ class Walker {
         return this.loop(state, ctx, node, (s, c) => this.list(node.body.commands, s, c));
       }
       case 'ArithmeticFor':
-        for (const expression of [node.initialize, node.test, node.update]) if (expression) this.arithmetic(expression, state, ctx);
-        return this.loop(state, ctx, node, (s, c) => this.list(node.body.commands, s, c));
+        if (node.initialize) this.arithmetic(node.initialize, state, ctx);
+        if (node.test) this.arithmetic(node.test, state, ctx);
+        // The update and the test run again after each pass, with what the body changed.
+        return this.loop(state, ctx, node, (s, c) => {
+          this.list(node.body.commands, s, c);
+          for (const expression of [node.update, node.test]) if (expression) this.arithmetic(expression, s, c);
+        });
       case 'While':
         return this.loop(state, ctx, node, (s, c) => this.list([...node.clause.commands, ...node.body.commands], s, c));
       case 'Case': {
@@ -606,16 +628,29 @@ class Walker {
    * round, mostly from the same few states, and walking it again each time would cost exponentially in the depth.
    */
   loop(state: State, ctx: Context, node: { pos: number; end: number }, walk: (state: State, ctx: Context) => void): void {
-    const memo = this.settled.get(node) ?? new Map<string, State>();
+    const memo = this.settled.get(node) ?? new Map<string, Settled>();
     this.settled.set(node, memo);
     const key = this.key(state, ctx);
     const known = memo.get(key);
+    // A jump past this loop (`break 2`, `return`) leaves its state outside: a settled loop isn't walked again, so the
+    // ones its walks left are left again.
+    const outside = [...ctx.loops.flatMap((jumps) => [jumps.breaks, jumps.continues]), ...(ctx.returns ? [ctx.returns] : [])];
+    const breaks: State[] = [];
+    const once = (s: State, c: Context) => {
+      const jumps: Jumps = { breaks: [], continues: [] };
+      walk(s, { ...c, loops: [...c.loops, jumps] });
+      for (const other of jumps.continues) join(s, other);
+      breaks.push(...jumps.breaks);
+    };
     if (known) {
-      Object.assign(state, clone(known));
+      Object.assign(state, clone(known.state));
+      outside.forEach((list, i) => list.push(...known.escapes[i]!.map(clone)));
     } else {
+      const before = outside.map((list) => list.length);
       for (let i = 0; ; i++) {
         const next = clone(state);
-        join(next, this.branch(state, { ...ctx, silent: true }, walk));
+        join(next, this.branch(state, { ...ctx, silent: true }, once));
+        for (const other of breaks.splice(0)) join(next, other);
         if (equal(next, state)) break;
         Object.assign(state, next);
         if (i === maxIterations) {
@@ -623,10 +658,12 @@ class Walker {
           break;
         }
       }
-      memo.set(key, clone(state));
+      memo.set(key, { state: clone(state), escapes: outside.map((list, i) => list.slice(before[i]).map(clone)) });
     }
     // Settled, a silent walk has nothing more to learn: one more would only double the cost at every level.
-    if (!ctx.silent) join(state, this.branch(state, ctx, walk));
+    if (ctx.silent) return;
+    join(state, this.branch(state, ctx, once));
+    for (const other of breaks.splice(0)) join(state, other);
   }
 
   /** What a silent walk's outcome depends on: the state, and the parts of the context that change what it does. */
@@ -636,6 +673,8 @@ class Walker {
       ctx.depth,
       ctx.externalOnly,
       ctx.calls.map((node) => this.id(node)),
+      ctx.loops.length,
+      ctx.returns !== undefined,
       aliasesKey(ctx.aliases.table),
       ctx.aliases.unknown,
       ctx.aliases.expand ?? null,
@@ -1200,9 +1239,12 @@ class Walker {
         }
         // The body was parsed, aliases and all, when it was defined.
         const locals = new Set<string>();
-        const inner = { ...ctx, source, outer, calls: [...ctx.calls, node], locals, aliases, expanding: [] };
+        const returns: State[] = [];
+        // A loop around the call is out of reach of a `break` in the body.
+        const inner = { ...ctx, source, outer, calls: [...ctx.calls, node], locals, aliases, expanding: [], loops: [], returns };
         return this.branch(state, inner, (s, c) => {
           this.node(node.body, s, c);
+          for (const other of returns) join(s, other);
           restore(s, state, locals);
         });
       });
@@ -1349,6 +1391,18 @@ class Walker {
       case '.':
       case 'source':
         effects.push('exec:file');
+        break;
+      case 'break':
+      case 'continue': {
+        // `break n` leaves n loops (all, past the outermost); one Bash refuses (`break 0`) or only known at run
+        // time may leave any of them.
+        const count = values.length === 0 ? 1 : values.length === 1 && /^d+$/.test(values[0] ?? '') ? Number(values[0]) : 0;
+        const targets = count > 0 ? [ctx.loops[Math.max(0, ctx.loops.length - count)]] : ctx.loops;
+        for (const jumps of targets) if (jumps) (name === 'break' ? jumps.breaks : jumps.continues).push(clone(state));
+        break;
+      }
+      case 'return':
+        ctx.returns?.push(clone(state));
         break;
       case 'trap': {
         // `-l`, `-p` and `-P` print; `-` (an action) resets.
@@ -1918,7 +1972,7 @@ class Walker {
       this.code(
         script.value,
         shell,
-        { ...ctx, via: [...ctx.via, program], externalOnly: false, calls: [] },
+        { ...ctx, via: [...ctx.via, program], externalOnly: false, calls: [], loops: [], returns: undefined },
         call,
         remote ? `${program} (remote)` : script === stdin ? `${program} <<` : `${program} -c`,
       );
@@ -2005,7 +2059,7 @@ class Walker {
       this.code(
         risk.script,
         childState(state, state.cwd),
-        { ...ctx, via: [...ctx.via, 'git'], externalOnly: false, calls: [] },
+        { ...ctx, via: [...ctx.via, 'git'], externalOnly: false, calls: [], loops: [], returns: undefined },
         call,
         `git ${key}`,
         true,

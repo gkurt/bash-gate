@@ -39,7 +39,7 @@ analyze('sudo -u root rm -rf "$dir"').invocations.map((i) => [i.shape, i.via, i.
    expansions split. A word is either static strings or one dynamic argument that says why (`variable`, `glob`,
    `substitution`…) and whether it may become several words.
 3. **Walk with shell state** (`src/analyze.ts`): variables (constant propagation, joined across branches, loops walked
-   until they settle), functions, aliases, `hash -p`, `enable -n/-f`, `cd`, exports into child shells. Aliases expand
+   until they settle, with what holds at each `break`, `continue` and `return`), functions, aliases, `hash -p`, `enable -n/-f`, `cd`, exports into child shells. Aliases expand
    as Bash parses: with `expand_aliases`, POSIX mode, `sh` or an interactive shell, from the next line, and in a
    function body as they were when it was defined. Entering POSIX mode turns `expand_aliases` on and leaving turns it
    off. In POSIX mode a substitution has the aliases of the line it was parsed with, and one Bash only parses as it
@@ -250,7 +250,8 @@ bun run checks   # tsc, then bun test
   finding that leaves code unseen are skipped, since nothing they run could fail the check.
   This is the check that keeps the analysis honest. Extend it before trusting a new construct. Besides the
   hand-written scripts, it generates scripts that mix variables, functions,
-  aliases, `hash -p`, loops, substitutions, `eval`, `bash -c` and traps over a few shared names, along with namerefs,
+  aliases, `hash -p`, loops (`break`, `continue`, `return`), `case` fallthrough, `cd`, here-documents, substitutions,
+  `eval`, `bash -c` and traps over a few shared names, along with namerefs,
   `unset`, `command_not_found_handle`, `BASH_ALIASES`, `BASH_CMDS`, variables Bash sets itself, names with subscripts
   that builtins read, and values Bash may read as code (a subscript, a prompt string), under shell options
   (`lastpipe`, `localvar_inherit`, `allexport`, POSIX mode, exported BASHOPTS and SHELLOPTS). Set `BASH_RUNS` to

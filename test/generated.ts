@@ -152,18 +152,29 @@ export const { script: generatedScript } = fc.letrec<{ word: string; command: st
       block.map((body) => `(\n${body}\n)`),
       block.map((body) => `{\n${body}\n}`),
       fc.tuple(command, block, block).map(([test, yes, no]) => `if ${test}\nthen\n${yes}\nelse\n${no}\nfi`),
-      fc.tuple(word, block, block).map(([subject, a, other]) => `case ${subject} in\na)\n${a}\n;;\n*)\n${other}\n;;\nesac`),
+      // An arm ending in ;& runs the next one too, and ;;& tests the next pattern.
+      fc
+        .tuple(word, block, fc.constantFrom(';;', ';&', ';;&'), block)
+        .map(([subject, a, end, other]) => `case ${subject} in\na)\n${a}\n${end}\n*)\n${other}\n;;\nesac`),
       fc.tuple(variable, words, block).map(([v, list, body]) => `for ${v} in ${list}; do\n${body}\ndone`),
-      // One counter for every loop: a nested loop leaves it at 2, so the outer one ends too. Grouped, so a nested loop
-      // in a subshell (a pipeline) resets only its own copy.
-      block.map((body) => `{\nc=0\nwhile (( c < 2 )); do\n${body}\nc=$((c + 1))\ndone\n}`),
+      // One counter for every loop, counted in the loop's test so that a continue can't skip it, and never reset:
+      // every loop in a shell ends after a few passes of all of them.
+      fc
+        .tuple(fc.constantFrom('while c=$((c + 1)); (( c < 4 ))', 'until c=$((c + 1)); (( c >= 4 ))', 'for (( ; c++ < 4 ; ))'), block)
+        .map(([head, body]) => `${head}; do\n${body}\ndone`),
+      // Leaving a loop or function early: what comes after in it doesn't run.
+      fc.constantFrom('break', 'continue', 'break 2', 'continue 2', 'return', 'exit'),
+      // A here-document's body is expanded; a quoted one fed to a shell is code.
+      fc.tuple(name, word).map(([program, value]) => `${program} <<EOF\n${value}\nEOF`),
+      block.map((code) => `/bin/bash <<'SH'\n${code}\nSH`),
+      fc.constant('set -e'),
       word.map((value) => `[[ -n ${value} ]]`),
     ),
     block: fc.array(command, { minLength: 1, maxLength: 3 }).map((list) => list.join('\n')),
     // Options first, so that what they change is likely to come after.
     script: fc
       .tuple(fc.boolean(), fc.subarray(options), fc.array(command, { minLength: 1, maxLength: 5 }))
-      .map(([aliasing, set, list]) => [...(aliasing ? ['shopt -s expand_aliases'] : []), ...set, ...list].join('\n')),
+      .map(([aliasing, set, list]) => ['c=0', ...(aliasing ? ['shopt -s expand_aliases'] : []), ...set, ...list].join('\n')),
   };
 });
 

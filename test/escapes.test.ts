@@ -415,6 +415,13 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['x=ls; if false; then :; elif x=rm; false; then :; else $x -rf /; fi', 'deny', 'an else after what an elif clause changed'],
   ['cd sub; cd ..; echo hi > x', 'ask', 'a cd that may fail, leaving the shell where it was'],
   ['cd sub && cd .. && echo hi > x', 'allow', 'cds that succeeded, as && says'],
+  ['f() { x=rm; return; x=ls; }; f; $x -rf /', 'ask', 'a return, past which the rest of the function never runs'],
+  ['f() { for i in 1; do x=rm; return; done; x=ls; }; f; $x -rf /', 'ask', 'a return from inside a loop'],
+  ["f() { eval 'x=rm; return'; x=ls; }; f; $x -rf /", 'ask', 'a return in code eval runs'],
+  ['x=ls; for i in 1; do x=rm; break; x=ls; done; $x -rf /', 'ask', 'a break, which leaves the rest of the loop'],
+  ['x=ls; for i in 1; do x=rm; continue; x=ls; done; $x -rf /', 'ask', 'a continue, which skips the rest of the body'],
+  ['x=ls; for i in 1; do for j in 1; do x=rm; break 2; done; x=ls; done; $x -rf /', 'ask', 'a break out of two loops'],
+  ["x=1; for (( i=0; i < 2 && x; i++ )); do x='a[$(rm -rf /)]'; done", 'deny', "an arithmetic for loop's test, after the body"],
 ];
 
 /**

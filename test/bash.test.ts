@@ -129,7 +129,7 @@ describe.skipIf(!compatibleBash)('against bash', () => {
         if (path === dir && (entry.name.startsWith('logs-') || entry.name === 'timeout')) continue;
         const full = join(path, entry.name);
         if (entry.isDirectory()) visit(full);
-        else found.set(relative(work, full).split(sep).join('/'), readFileSync(full, 'latin1'));
+        else found.set(unmapped(relative(work, full).split(sep).join('/')), readFileSync(full, 'latin1'));
       }
     };
     visit(dir);
@@ -253,6 +253,10 @@ interface Run {
   ran: { argv: string[]; cwd: string }[];
   written: string[];
 }
+
+/** A file name as Bash wrote it: Cygwin keeps characters Windows refuses (`"`, `*`, `:`…) as U+F000 plus the code. */
+const unmapped = (path: string) =>
+  process.platform === 'win32' ? path.replaceAll(/[-]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xf000)) : path;
 
 /** A path of the analysis's, from `work`: `~` is the run's home, beside it. */
 const fromWork = (path: string) => (/^~(\/|$)/.test(path) ? `../home${path.slice(1)}` : path);
