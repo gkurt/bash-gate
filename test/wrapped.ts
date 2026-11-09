@@ -111,7 +111,11 @@ const wrappers: Record<string, fc.Arbitrary<Wrap>> = {
           `find ${before}${path} ${test} ${action} ${inner} {} ${end}`,
     ),
   setsid: around(fc.constantFrom('setsid -w', 'setsid --wait', 'setsid -w --')),
-  flock: around(fc.constantFrom('flock lk', 'flock -n lk', 'flock -s lk', 'flock -w 1 lk', 'flock --shared lk')),
+  // A flock inside another on the same file waits forever, so each takes a file named after what it wraps, which is
+  // longer for each one further out.
+  flock: fc
+    .constantFrom('flock', 'flock -n', 'flock -s', 'flock -w 1', 'flock --shared')
+    .map((words) => (inner: string) => `${words} lk${inner.length} ${inner}`),
   ionice: around(fc.constantFrom('ionice -c 3', 'ionice -c3', 'ionice --class 3', 'ionice --cl 3', 'ionice -t -c 2 -n 7')),
   taskset: around(fc.constantFrom('taskset 1', 'taskset -a 1', 'taskset -c 0', 'taskset --cpu-list 0')),
 };
