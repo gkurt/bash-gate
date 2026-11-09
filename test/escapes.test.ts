@@ -422,6 +422,21 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['x=ls; for i in 1; do x=rm; continue; x=ls; done; $x -rf /', 'ask', 'a continue, which skips the rest of the body'],
   ['x=ls; for i in 1; do for j in 1; do x=rm; break 2; done; x=ls; done; $x -rf /', 'ask', 'a break out of two loops'],
   ["x=1; for (( i=0; i < 2 && x; i++ )); do x='a[$(rm -rf /)]'; done", 'deny', "an arithmetic for loop's test, after the body"],
+  ['env --uns ls tee .git/config', 'ask', 'an abbreviated long option taking the next word, as getopt_long reads it'],
+  ['env - tee .git/config', 'ask', "env's lone -, which is -i"],
+  ['env --frob ls cat a', 'ask', 'an option the spec does not know, which may take the next word'],
+  ['nice --adj 5 cat a', 'allow', 'an abbreviated long option with its value'],
+  ['env -S"sort -o" .git/config a', 'ask', "env -S's words, which come before the rest of env's arguments"],
+  ["env -S'ls' tee .git/config", 'allow', 'env -S naming the program, with the rest its arguments'],
+  ['env -- X-Y=1 cat a', 'allow', 'env, which takes any word with = as an assignment'],
+  ['sudo -- X-Y=1 cat a', 'ask', 'a word with = that is no name, which a program may take as an assignment or the command'],
+  ['xargs -I{} {} a', 'ask', "xargs' replacement string as the command"],
+  ['env X="$y" cat a', 'allow', 'an assignment only known at run time, by its start'],
+  ['env PATH="$x" ls', 'ask', 'a PATH only known at run time, passed to the command'],
+  ['env --split-string="cat $x"', 'ask', 'an env -S string only known at run time, which is an option, not an assignment'],
+  ['case a in a) cd .git ;;& *) echo x > config ;; esac', 'ask', 'a case arm after ;;&, which runs after the one before'],
+  ['x=ls; case a in a) x=rm ;& b) $x -rf / ;; esac', 'ask', 'a case arm after ;&, which runs after the one before'],
+  ['find . -name x -execdir tee y \\;', 'ask', 'find -execdir, which runs in each found directory'],
 ];
 
 /**

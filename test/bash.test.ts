@@ -9,6 +9,7 @@ import { relativePath, resolvePath } from '#src/paths.ts';
 import { blind, seenScript } from './generated.ts';
 import { mutatedScript } from './mutated.ts';
 import { hiding, scripts } from './scripts.ts';
+import { wrappedScript, wrappedScripts, wrapperNames } from './wrapped.ts';
 
 /**
  * The analysis against real Bash: each script runs with a `PATH` of stubs that only log their arguments, and every
@@ -42,6 +43,7 @@ const compatibleBash = bash !== null && !(process.platform === 'win32' && /\\Win
 
 const runs = Number(process.env.BASH_RUNS ?? 100);
 const mutationRuns = Number(process.env.MUTATION_RUNS ?? 100);
+const wrappedRuns = Number(process.env.WRAPPED_RUNS ?? 100);
 /** How long a mutant may run: one may loop forever, and what it ran until then is still checked. */
 const mutantSeconds = 3;
 
@@ -62,19 +64,26 @@ kill -KILL -- -"$job" 2>/dev/null && : >../timeout
 kill -KILL -- -"$watchdog" 2>/dev/null
 `;
 /**
- * Logs the directory it runs in (before \x1d) and the argv to a file of its own, even when the process execs another
- * (`exec bash -c 'exec cat'`): substitutions run alongside the command, and their writes would interleave. Each ends
- * with \x1e, so a log cut short by a kill isn't read as a shorter argv.
+ * Logs the log of the wrapper it inherited (`BASH_GATE_VIA`, which each stub that runs another sets to its own) and the
+ * directory it runs in (each before \x1d), and the argv, to a file named by its own process ID, with a dot more for each
+ * program that process ran before (`exec bash -c 'exec cat'`, a wrapper):
+ * substitutions run alongside the command, and their writes would interleave. Each ends with \x1e, so a log cut short
+ * by a kill isn't read as a shorter argv. The directory is in the stub itself, so that a program run with no environment
+ * (`env -i`) still logs; `true`, not `:`, claims a name, as POSIX `sh` exits when a special builtin's redirection fails.
  */
-const log = `n=$$; while ! { set -C; : > "$BASH_GATE_LOGS/$n"; } 2>/dev/null; do n=$n.; done
-{ printf '%s\\035%s' "$(pwd -P)" "\${0##*/}"; for a in "$@"; do printf '\\037%s' "$a"; done; printf '\\036'; } >| "$BASH_GATE_LOGS/$n"
+const log = (logs: string) => `n=$$; while ! { set -C; true > '${logs}'/$n; } 2>/dev/null; do n=$n.; [ \${#n} -lt 99 ] || exit 125; done
+{ printf '%s\\035%s\\035%s' "\${BASH_GATE_VIA-}" "$(pwd -P)" "\${0##*/}"; for a in "$@"; do printf '\\037%s' "$a"; done; printf '\\036'; } >| '${logs}'/$n
 `;
 /**
- * A stub named `name`, which logs and then runs `then`, only when it was run as a program: its `$0` is then the path
+ * A stub named `name`, which logs only when it was run as a program: its `$0` is then the path
  * it was found at. A shell running it as a script by name (`bash grep`, which looks for a script on `PATH`) or
- * sourcing it leaves another `$0`, and does what a real program wouldn't: run it as shell code.
+ * sourcing it leaves another `$0`, and does what a real program wouldn't: run it as shell code. One given `runs`, a
+ * program's path, runs it in its place, and what that starts inherits this stub's log.
  */
-const program = (name: string, then = '') => `#!/bin/sh\ncase $0 in\n*/${name})\n${log}${then};;\nesac\n`;
+const program = (logs: string, name: string, runs?: string) => {
+  const then = runs ? `export BASH_GATE_VIA=$n\nexec ${runs} "$@"\n` : '';
+  return `#!/bin/sh\ncase $0 in\n*/${name})\n${log(logs)}${then};;\nesac\n`;
+};
 
 describe.skipIf(!compatibleBash)('against bash', () => {
   const dir = mkdtempSync(join(tmpdir(), 'bash-gate-'));
@@ -86,10 +95,24 @@ describe.skipIf(!compatibleBash)('against bash', () => {
   const bin = join(work, 'bin');
   mkdirSync(bin, { recursive: true });
   writeFileSync(join(dir, 'harness.sh'), harness);
+  /** `path` as Bash sees it, symlinks resolved: what a stub's `pwd -P` says. */
+  const physical = (path: string) =>
+    compatibleBash ? spawnSync(bash, ['-c', 'pwd -P'], { cwd: path, encoding: 'utf8' }).stdout.trim() : path;
+  const logs = join(dir, 'logs');
+  const stub = (name: string, runs?: string) => program(`${physical(dir)}/logs`, name, runs);
   const programs = new Map([
-    ...stubs.map((name) => [name, program(name)] as const),
-    ...Object.entries(shells).map(([name, path]) => [name, program(name, `exec ${path} "$@"\n`)] as const),
+    ...stubs.map((name) => [name, stub(name)] as const),
+    ...Object.entries(shells).map(([name, path]) => [name, stub(name, path)] as const),
   ]);
+  /** The wrappers this machine has, by where Bash finds them. */
+  const real = compatibleBash
+    ? wrapperNames.flatMap((name) => {
+        const path = spawnSync(bash, ['-c', `type -P ${name}`], { encoding: 'utf8' }).stdout.trim();
+        return path ? [[name, path] as const] : [];
+      })
+    : [];
+  /** The stubs, with each wrapper logged and then run for real, so that what it starts is logged too. */
+  const wrapping = new Map([...programs, ...real.map(([name, path]) => [name, stub(name, path)] as const)]);
   // On Windows a process just killed holds the directory for a moment (EBUSY).
   const remove = (path: string) => rmSync(path, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 });
   // A mutant's process Windows didn't kill may hold it past the retries: leaving the temporary directory is harmless.
@@ -101,21 +124,18 @@ describe.skipIf(!compatibleBash)('against bash', () => {
     }
   });
 
-  /** `path` as Bash sees it, symlinks resolved: what a stub's `pwd -P` says. */
-  const physical = (path: string) =>
-    compatibleBash ? spawnSync(bash, ['-c', 'pwd -P'], { cwd: path, encoding: 'utf8' }).stdout.trim() : path;
   const shellWork = physical(work);
 
   /**
    * Undoes what the last script wrote, in the run's home too (`cd`). Only stubs it changed are written again: Windows
    * scans a new executable first.
    */
-  function fresh() {
+  function fresh(stubbed: Map<string, string>) {
     for (const entry of readdirSync(dir)) if (!['work', 'home', 'harness.sh'].includes(entry)) remove(join(dir, entry));
     for (const entry of readdirSync(home)) remove(join(home, entry));
     for (const entry of readdirSync(work)) if (entry !== 'bin') remove(join(work, entry));
-    for (const entry of readdirSync(bin)) if (!programs.has(entry)) remove(join(bin, entry));
-    for (const [name, text] of programs) {
+    for (const entry of readdirSync(bin)) if (!stubbed.has(entry)) remove(join(bin, entry));
+    for (const [name, text] of stubbed) {
       const path = join(bin, name);
       if (!statSync(path, { throwIfNoEntry: false }) || readFileSync(path, 'utf8') !== text) writeFileSync(path, text, { mode: 0o755 });
     }
@@ -126,7 +146,7 @@ describe.skipIf(!compatibleBash)('against bash', () => {
     const found = new Map<string, string>();
     const visit = (path: string) => {
       for (const entry of readdirSync(path, { withFileTypes: true })) {
-        if (path === dir && (entry.name.startsWith('logs-') || entry.name === 'timeout')) continue;
+        if (path === dir && ['logs', 'timeout'].includes(entry.name)) continue;
         const full = join(path, entry.name);
         if (entry.isDirectory()) visit(full);
         else found.set(unmapped(relative(work, full).split(sep).join('/')), readFileSync(full, 'latin1'));
@@ -141,9 +161,9 @@ describe.skipIf(!compatibleBash)('against bash', () => {
    * `work`), and the files it wrote. Past `seconds`, what's still running is killed: an error, unless the run is
    * `bounded` (a mutant may loop forever), when logs cut short are left out.
    */
-  function run(script: string, { seconds = 10, bounded = false } = {}): Run {
-    fresh();
-    const logs = mkdtempSync(join(dir, 'logs-'));
+  function run(script: string, { seconds = 10, bounded = false, stubbed = programs } = {}): Run {
+    fresh(stubbed);
+    mkdirSync(logs);
     // From a file: Git Bash's runtime expands braces and globs in the arguments a Windows process gives it.
     writeFileSync(join(dir, 'script.sh'), script);
     const timeout = join(dir, 'timeout');
@@ -152,7 +172,7 @@ describe.skipIf(!compatibleBash)('against bash', () => {
     // FUNCNEST only stops runaway recursion: it can make Bash run less than the analysis predicts, never more.
     const result = spawnSync(bash!, ['--noprofile', '--norc', '../harness.sh', String(seconds)], {
       cwd: work,
-      env: { PATH: [bin, process.env.PATH].join(delimiter), HOME: home, BASH_GATE_LOGS: logs, FUNCNEST: '8' },
+      env: { PATH: [bin, process.env.PATH].join(delimiter), HOME: home, FUNCNEST: '8' },
       stdio: 'ignore',
       timeout: (seconds + 10) * 1000,
     });
@@ -160,16 +180,37 @@ describe.skipIf(!compatibleBash)('against bash', () => {
     if (result.error && !(stuck && bounded)) throw result.error;
     const timedOut = stuck || statSync(timeout, { throwIfNoEntry: false }) !== undefined;
     if (timedOut && !bounded) throw new Error(`Bash didn't finish:\n${script}`);
-    const texts = readdirSync(logs).map((file) => readFileSync(join(logs, file), 'utf8'));
+    const texts = readdirSync(logs).map((file) => [file, readFileSync(join(logs, file), 'utf8')] as const);
     remove(logs);
-    const cut = texts.filter((text) => !text.endsWith('\x1e'));
+    const cut = texts.filter(([, text]) => !text.endsWith('\x1e'));
     if (cut.length > 0 && !timedOut) throw new Error(`A stub never finished its log: ${JSON.stringify(cut)}`);
-    const ran = texts
-      .filter((text) => text.endsWith('\x1e'))
-      .map((text) => {
-        const [cwd = '', argv = ''] = text.slice(0, -1).split('\x1d');
-        return { argv: argv.split('\x1f'), cwd: relativePath(cwd, shellWork) };
+    const logged = texts
+      .filter(([, text]) => text.endsWith('\x1e'))
+      .map(([file, text]) => {
+        const [via = '', cwd = '', argv = ''] = text.slice(0, -1).split('\x1d');
+        const pid = file.replaceAll('.', '');
+        return { file, pid, execs: file.length - pid.length, via, cwd, argv: argv.split('\x1f') };
       });
+    const byFile = new Map(logged.map((entry) => [entry.file, entry]));
+    type Logged = (typeof logged)[number];
+    /**
+     * The programs an entry ran under, outermost first: those its process started under, by the log the first program
+     * in it inherited, then those that process ran before it. A wrapper that clears the environment (`env -i`) passes
+     * nothing on, but runs what it runs in its own process.
+     */
+    const wrappersOf = (entry: Logged, seen = new Set<string>()): string[] => {
+      if (seen.has(entry.file)) return [];
+      seen.add(entry.file);
+      const own = logged.filter((other) => other.pid === entry.pid).sort((a, b) => a.execs - b.execs);
+      const parent = byFile.get(own[0]!.via);
+      const before = own.filter((other) => other.execs < entry.execs).map((other) => other.argv[0]!);
+      return [...(parent ? [...wrappersOf(parent, seen), parent.argv[0]!] : []), ...before];
+    };
+    const ran = logged.map((entry) => ({
+      argv: entry.argv,
+      cwd: relativePath(entry.cwd, shellWork),
+      via: wrappersOf(entry).filter((name) => !(name in shells)),
+    }));
     const after = files();
     return { ran, written: [...after].filter(([path, text]) => before.get(path) !== text).map(([path]) => path) };
   }
@@ -182,9 +223,9 @@ describe.skipIf(!compatibleBash)('against bash', () => {
     const analysis = analyze(script);
     if (excuse && blind(analysis)) return [];
     const checked: Analysis = excuse ? analysis : { ...analysis, findings: [] };
-    const missed = ran.filter(({ argv }) => !covers(checked, argv));
-    const misplaced = ran.filter(({ argv, cwd }) => {
-      const predicted = predicting(checked, argv);
+    const missed = ran.filter(({ argv, via }) => !covers(checked, argv, via));
+    const misplaced = ran.filter(({ argv, cwd, via }) => {
+      const predicted = predicting(checked, argv, via);
       return predicted.length > 0 && !predicted.some((invocation) => [undefined, cwd].includes(place(invocation)));
     });
     const unwritten = written.filter(
@@ -194,16 +235,21 @@ describe.skipIf(!compatibleBash)('against bash', () => {
         ),
     );
     return [
-      ...missed.map(({ argv }) => `ran but not predicted: ${argv.join(' ')}`),
-      ...misplaced.map(({ argv, cwd }) => `ran in ${cwd}, not where predicted: ${argv.join(' ')}`),
+      ...missed.map(({ argv, via }) => `ran but not predicted: ${shown(argv, via)}`),
+      ...misplaced.map(({ argv, cwd, via }) => `ran in ${cwd}, not where predicted: ${shown(argv, via)}`),
       ...unwritten.map((path) => `wrote but not predicted: ${path}`),
     ];
   }
 
-  function expectFaithful(script: string, excuse: boolean, options?: { seconds?: number; bounded?: boolean }): Run {
+  function expectFaithful(
+    script: string,
+    excuse: boolean,
+    options?: { seconds?: number; bounded?: boolean; stubbed?: Map<string, string> },
+  ): Run {
     const result = run(script, options);
     const found = faults(script, result, excuse);
-    if (found.length > 0) throw new Error(`${found.join('\n')}\n--- script ---\n${script}`);
+    const ran = result.ran.map(({ argv, cwd, via }) => `${shown(argv, via)} (in ${cwd})`);
+    if (found.length > 0) throw new Error(`${found.join('\n')}\n--- script ---\n${script}\n--- ran ---\n${ran.join('\n')}`);
     return result;
   }
 
@@ -246,17 +292,41 @@ describe.skipIf(!compatibleBash)('against bash', () => {
     },
     { timeout: Math.max(5_000, mutationRuns * (mutantSeconds + 1) * 1000) },
   );
+
+  // The specs against the programs: real wrappers run what they're given, and it must be what the spec predicts.
+  for (const [script, needs] of wrappedScripts) {
+    test.skipIf(!needs.every((name) => real.some(([found]) => found === name)))(`wrapped ${JSON.stringify(script)}`, () => {
+      expect(expectFaithful(script, false, { stubbed: wrapping }).ran.length).toBeGreaterThan(needs.length);
+    });
+  }
+
+  test.skipIf(real.length === 0)(
+    'wrapped commands',
+    () => {
+      fc.assert(
+        fc.property(wrappedScript(real.map(([name]) => name)), (script) => void expectFaithful(script, true, { stubbed: wrapping })),
+        { numRuns: wrappedRuns, includeErrorInReport: true },
+      );
+    },
+    { timeout: Math.max(5_000, wrappedRuns * 1_000) },
+  );
 });
 
-/** What a run did: each stub's argv and the directory it ran in (from `work`, `/`-separated), and the files written. */
+/**
+ * What a run did: each stub's argv, the directory it ran in (from `work`, `/`-separated) and the wrappers it ran under,
+ * outermost first, and the files written.
+ */
 interface Run {
-  ran: { argv: string[]; cwd: string }[];
+  ran: { argv: string[]; cwd: string; via: string[] }[];
   written: string[];
 }
 
 /** A file name as Bash wrote it: Cygwin keeps characters Windows refuses (`"`, `*`, `:`…) as U+F000 plus the code. */
 const unmapped = (path: string) =>
   process.platform === 'win32' ? path.replaceAll(/[-]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xf000)) : path;
+
+/** A process as it ran, under its wrappers: `env > timeout > cat a`. */
+const shown = (argv: string[], via: string[]) => [...via, argv.join(' ')].join(' > ');
 
 /** A path of the analysis's, from `work`: `~` is the run's home, beside it. */
 const fromWork = (path: string) => (/^~(\/|$)/.test(path) ? `../home${path.slice(1)}` : path);

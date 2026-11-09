@@ -107,6 +107,7 @@ execs kill the process, and so does any x32 system call.
   write too: mutants of the others, broken a few characters at a time. Builds of Bash disagree as well: Git Bash drops
   a carriage return from code it parses, where Bash on Linux and the parser keep it in a word, so one is a parse error.
 - **The specs.** A wrong spec, such as a missed option that takes a value or runs code, breaks S1 for that program.
+  The wrappers' specs are fuzzed against the real programs; the rest are checked by hand-written cases.
 - **The integration.** It must run exactly the string that was analysed, in the shell the assumptions describe, with
   nothing from an earlier command still running. `bash-gate/trace` does that itself, given the analysis that was
   checked.
@@ -126,6 +127,7 @@ execs kill the process, and so does any x32 system call.
 | S1      | The same, for generated scripts mixing the constructs the analysis follows          | `test/bash.test.ts`        |
 | S1      | The same, for mutants of both the parser accepts: a parser that disagrees with Bash | `test/bash.test.ts`        |
 | S1      | The same runs: each program in the directory predicted, each file written predicted | `test/bash.test.ts`        |
+| S1      | Real wrappers run nested: what each starts, under which, is what the spec predicts  | `test/bash.test.ts`        |
 | S1      | Known escapes, one per construct                                                    | `test/escapes.test.ts`     |
 | S1      | The hand-written scripts with real programs: every exec the kernel sees is covered  | `test/trace.test.ts`       |
 | S1      | The same, for the generated scripts                                                 | `test/trace.test.ts`       |

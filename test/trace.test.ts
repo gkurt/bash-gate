@@ -8,6 +8,7 @@ import { analyze } from '#src/index.ts';
 import { buildSupervisor, run, type RunOptions } from '#src/trace/index.ts';
 import { seenScript } from './generated.ts';
 import { hiding, scripts } from './scripts.ts';
+import { wrappedScript, wrappedScripts, wrapperNames } from './wrapped.ts';
 
 /**
  * Layer 3 against the kernel: every exec in the process tree is seen, not only programs on a stub `PATH`, so this is
@@ -59,6 +60,33 @@ describe.skipIf(!supported)('trace', () => {
           // A function calling itself twice per loop pass forks thousands of processes by FUNCNEST=8, each stopped by
           // the supervisor. A lower limit only makes Bash run less than the analysis predicts.
           const result = await traced(script, '4');
+          if (result.timedOut) throw new Error(`Timed out:\n${script}`);
+          const misses = shown(result.execs.filter((exec) => exec.covered === false));
+          if (misses.length > 0) throw new Error(`Ran but not predicted: ${misses.join(' | ')}\n--- script ---\n${script}`);
+        }),
+        { numRuns: runs },
+      );
+    },
+    { timeout: Math.max(5_000, runs * 1_000) },
+  );
+
+  // The wrappers this machine has: what each starts, the kernel sees, and the spec must predict.
+  const wrappers = wrapperNames.filter((name) => spawnSync('sh', ['-c', `command -v ${name}`]).status === 0);
+
+  for (const [script, needs] of wrappedScripts) {
+    test.skipIf(!needs.every((name) => wrappers.includes(name)))(`covers wrapped ${JSON.stringify(script)}`, async () => {
+      const result = await traced(script);
+      expect(result.timedOut).toBe(false);
+      expect(shown(result.execs.filter((exec) => exec.covered === false))).toEqual([]);
+    });
+  }
+
+  test.skipIf(wrappers.length === 0)(
+    'covers wrapped commands',
+    async () => {
+      await fc.assert(
+        fc.asyncProperty(wrappedScript(wrappers), async (script) => {
+          const result = await traced(script);
           if (result.timedOut) throw new Error(`Timed out:\n${script}`);
           const misses = shown(result.execs.filter((exec) => exec.covered === false));
           if (misses.length > 0) throw new Error(`Ran but not predicted: ${misses.join(' | ')}\n--- script ---\n${script}`);

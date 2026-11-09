@@ -1,5 +1,6 @@
-import { normalize, readCobra, type CommandSpec, type OptionSpec, type Parsed } from './argv.ts';
+import { isOption, normalize, readCobra, type CommandSpec, type OptionSpec, type Parsed } from './argv.ts';
 import type { Arg, Effect } from './types.ts';
+import { dynamicArg, resolveWords } from './words.ts';
 
 /**
  * An option from its spellings, space-separated: a trailing `=` takes a value (`-n= --lines=`), `=?` an attached one
@@ -1746,6 +1747,8 @@ const find: CommandSpec = {
         // The command it runs is an invocation of its own, judged on its own; `exec:arbitrary` on the options is
         // only for a dynamic word that may be one of them.
         if (argv.length > 0) parsed.nested.push({ argv, open: false });
+        // -execdir runs it in the directory of each file found.
+        if (value.endsWith('dir')) parsed.cwd = { kind: 'dynamic', text: '{}', reason: 'placeholder', split: false, prefix: '' };
         add(value);
         i = end;
       } else if (value === '-delete') {
@@ -1767,6 +1770,78 @@ const find: CommandSpec = {
     }
   },
 };
+
+const envSpec: CommandSpec = {
+  abbreviations: true,
+  posix: true,
+  command: { assignments: 'any' },
+  options: opts(
+    '-i --ignore-environment',
+    '-u= --unset=',
+    o('-C= --chdir=', { role: 'cwd' }),
+    // Split by `splitEnv`: one left here had no value, or nothing to split.
+    o('-S= --split-string=', { role: 'argv' }),
+    '-0 --null',
+    '-v --debug',
+    '--block-signal=?',
+    '--default-signal=?',
+    '--ignore-signal=?',
+  ),
+  finish(parsed) {
+    // A lone `-` is `-i`: assignments and the command come after it.
+    const [nested] = parsed.nested;
+    if (nested?.argv[0]?.kind !== 'static' || nested.argv[0].value !== '-') return;
+    const rest = nested.argv.slice(1);
+    const command = rest.findIndex((arg) => arg.kind === 'dynamic' || !arg.value.includes('='));
+    parsed.env.push(...rest.slice(0, command === -1 ? rest.length : command));
+    parsed.nested = command === -1 ? [] : [{ ...nested, argv: rest.slice(command) }];
+  },
+};
+
+/** A long option of env's, by any unique prefix getopt takes: `--sp` is `--split-string`. */
+const envLong = (name: string, full: string) => name.length >= 3 && full.startsWith(name);
+
+/**
+ * env's arguments as it reads them: each `-S` string split into words in its place, among env's own arguments, so
+ * options, assignments and the command may come from it (`env -S'-i cat a' b` runs `cat a b`). Variables in it
+ * (`${HOME}`) are only known at run time.
+ */
+function splitEnv(args: Arg[]): Arg[] {
+  for (let i = 0; i < args.length; i++) {
+    const value = staticValue(args[i]);
+    if (value === undefined || value === '--' || !isOption(value)) return args;
+    let string: Arg | undefined;
+    let used = 1;
+    const long = /^(--[^=]+)(?:=([\s\S]*))?$/.exec(value);
+    if (long) {
+      const [, name = '', attached] = long;
+      if (!envLong(name, '--split-string')) {
+        if (attached === undefined && (envLong(name, '--unset') || envLong(name, '--chdir'))) i++;
+        continue;
+      }
+      string = attached === undefined ? args[i + 1] : { kind: 'static', value: attached };
+      used = attached === undefined ? 2 : 1;
+    } else {
+      // Letters up to S, or one that takes the rest as its value (`-uS` unsets S).
+      const at = value.split('').findIndex((letter, j) => j > 0 && 'uCS'.includes(letter));
+      if (at === -1 || value[at] !== 'S') {
+        if (at !== -1 && at === value.length - 1) i++;
+        continue;
+      }
+      const rest = value.slice(at + 1);
+      string = rest ? { kind: 'static', value: rest } : args[i + 1];
+      used = rest ? 1 : 2;
+      if (at > 1) args = [...args.slice(0, i), { kind: 'static', value: value.slice(0, at) }, ...args.slice(i)];
+      if (at > 1) i++;
+    }
+    if (!string) return args;
+    const lookup = () => ({ kind: 'dynamic' as const });
+    const words = string.kind === 'static' ? resolveWords(string.value, lookup) : undefined;
+    const split = words ?? [dynamicArg(string.kind === 'static' ? string.value : string.text, 'variable', true, '')];
+    return [...args.slice(0, i), ...splitEnv([...split, ...args.slice(i + used)])];
+  }
+  return args;
+}
 
 /** `cp`: the last positional is written, the others read. `mv` writes (and so removes) all of them. */
 const copy = (all: boolean): CommandSpec => ({
@@ -1826,6 +1901,7 @@ const programs: Record<string, CommandSpec> = {
   ),
   'pwsh|powershell|pwsh.exe|powershell.exe|cmd|cmd.exe|nu|xonsh|elvish': { effects: ['exec:arbitrary'] },
   sudo: {
+    abbreviations: true,
     posix: true,
     effects: ['privilege'],
     command: { assignments: true },
@@ -1855,39 +1931,38 @@ const programs: Record<string, CommandSpec> = {
   },
   doas: { posix: true, effects: ['privilege'], command: {}, options: opts('-u=', '-s', '-n', o('-C=', { role: 'read' })) },
   su: {
+    abbreviations: true,
     effects: ['privilege'],
     options: opts(o('-c= --command=', { role: 'script' }), '-l --login', '-s= --shell=', '-m -p --preserve-environment', '-g= --group='),
   },
   env: {
-    posix: true,
-    command: { assignments: true },
-    options: opts(
-      '-i --ignore-environment',
-      '-u= --unset=',
-      o('-C= --chdir=', { role: 'cwd' }),
-      o('-S= --split-string=', { role: 'argv' }),
-      '-0 --null',
-      '-v --debug',
-      '--block-signal=?',
-      '--default-signal=?',
-      '--ignore-signal=?',
-    ),
+    ...envSpec,
+    parse: (args, parsed) => void Object.assign(parsed, normalize(splitEnv(args), envSpec)),
   },
-  nice: { posix: true, command: {}, options: opts('-n= --adjustment=') },
-  nohup: { posix: true, command: {} },
+  nice: { posix: true, abbreviations: true, command: {}, options: opts('-n= --adjustment=') },
+  nohup: { posix: true, abbreviations: true, command: {} },
   timeout: {
+    abbreviations: true,
     posix: true,
     command: { skip: 1 },
     options: opts('-s= --signal=', '-k= --kill-after=', '--preserve-status', '--foreground', '-v --verbose'),
   },
-  stdbuf: { posix: true, command: {}, options: opts('-i= --input=', '-o= --output=', '-e= --error=') },
+  stdbuf: { posix: true, abbreviations: true, command: {}, options: opts('-i= --input=', '-o= --output=', '-e= --error=') },
   time: {
+    abbreviations: true,
     posix: true,
     command: {},
     options: opts(o('-o= --output=', { role: 'write' }), '-f= --format=', '-a --append', '-p --portability', '-v --verbose', '-q --quiet'),
   },
-  chroot: { posix: true, effects: ['privilege'], command: { skip: 1 }, options: opts('--userspec=', '--groups=', '--skip-chdir') },
+  chroot: {
+    posix: true,
+    abbreviations: true,
+    effects: ['privilege'],
+    command: { skip: 1 },
+    options: opts('--userspec=', '--groups=', '--skip-chdir'),
+  },
   xargs: {
+    abbreviations: true,
     posix: true,
     command: { open: true, fallback: 'echo' },
     options: opts(
@@ -1895,9 +1970,9 @@ const programs: Record<string, CommandSpec> = {
       o('-a= --arg-file=', { role: 'read' }),
       '-d= --delimiter=',
       '-E=',
-      '-e --eof=?',
+      '-e=? --eof=?',
       '-I=',
-      '-i --replace=?',
+      '-i=? --replace=?',
       '-L= --max-lines=',
       '-l=?',
       '-n= --max-args=',
@@ -1910,8 +1985,28 @@ const programs: Record<string, CommandSpec> = {
       '-o --open-tty',
       '--process-slot-var=',
     ),
+    finish(parsed) {
+      // With -I R (or -i, whose R is `{}`), each line of input takes R's place in any word of the command, its name too.
+      const known = [
+        ...(parsed.options['-I'] ?? []).map((value) => (value === true ? undefined : staticValue(value))),
+        ...(parsed.options['--replace'] ?? []).map((value) => (value === true ? '{}' : staticValue(value))),
+      ];
+      if (known.length === 0) return;
+      for (const nested of parsed.nested) {
+        nested.argv = nested.argv.map((arg) => {
+          const text = arg.kind === 'static' ? arg.value : arg.text;
+          const at = known.some((value) => value === undefined)
+            ? 0
+            : Math.min(...known.map((value) => text.indexOf(value!)).filter((i) => i >= 0));
+          if (!Number.isFinite(at)) return arg;
+          const prefix = arg.kind === 'static' ? arg.value.slice(0, at) : arg.prefix.slice(0, at);
+          return dynamicArg(text, 'stdin', false, prefix);
+        });
+      }
+    },
   },
   watch: {
+    abbreviations: true,
     posix: true,
     options: opts(
       '-n= --interval=',
@@ -1942,8 +2037,9 @@ const programs: Record<string, CommandSpec> = {
     options: sshOptions,
     finish: (parsed) => sshRuns(parsed.options, parsed.positionals.slice(1), parsed),
   },
-  setsid: { posix: true, command: {}, options: opts('-w --wait', '-f --fork', '-c --ctty') },
+  setsid: { posix: true, abbreviations: true, command: {}, options: opts('-w --wait', '-f --fork', '-c --ctty') },
   strace: {
+    abbreviations: true,
     posix: true,
     command: {},
     options: opts(
@@ -1971,6 +2067,7 @@ const programs: Record<string, CommandSpec> = {
     ),
   },
   unshare: {
+    abbreviations: true,
     posix: true,
     command: {},
     options: opts(
@@ -1992,9 +2089,15 @@ const programs: Record<string, CommandSpec> = {
       '--kill-child=?',
     ),
   },
-  ionice: { posix: true, command: {}, options: opts('-c= --class=', '-n= --classdata=', '-p= --pid=', '-P= --pgid=', '-u= --uid=') },
+  ionice: {
+    posix: true,
+    abbreviations: true,
+    command: {},
+    options: opts('-c= --class=', '-n= --classdata=', '-p= --pid=', '-P= --pgid=', '-u= --uid='),
+  },
   // `chrt -p` and `taskset -p` change a running process: there's no command. `taskset -c` reads the mask as a list; it's still a positional.
   chrt: {
+    abbreviations: true,
     posix: true,
     command: { skip: 1 },
     options: opts(
@@ -2012,8 +2115,15 @@ const programs: Record<string, CommandSpec> = {
     ),
     finish: noCommandWithPid,
   },
-  taskset: { posix: true, command: { skip: 1 }, options: opts('-c --cpu-list', '-p --pid', '-a --all-tasks'), finish: noCommandWithPid },
+  taskset: {
+    posix: true,
+    abbreviations: true,
+    command: { skip: 1 },
+    options: opts('-c --cpu-list', '-p --pid', '-a --all-tasks'),
+    finish: noCommandWithPid,
+  },
   flock: {
+    abbreviations: true,
     posix: true,
     command: { skip: 1 },
     options: opts(
@@ -2039,6 +2149,7 @@ const programs: Record<string, CommandSpec> = {
     },
   },
   script: {
+    abbreviations: true,
     options: opts(
       o('-c= --command=', { role: 'script' }),
       '-q --quiet',

@@ -263,8 +263,12 @@ bun run checks   # tsc, then bun test
   and everything it starts must be covered. Mutants may loop forever: each runs in a process group that's killed
   after a few seconds. Set `MUTATION_RUNS` to change their number. A failure prints fast-check's seed and path:
   `FUZZ_SEED=<seed> FUZZ_PATH=<path> bun test test/bash.test.ts -t 'generated scripts'` replays it.
-- `test/trace.test.ts`: on x86_64 Linux with a C compiler, the hand-written and generated scripts again, with real
-  programs under the supervisor: every exec the kernel sees, by any path, must be covered. Plus what enforcement
+  The specs are fuzzed against the programs they describe (`test/wrapped.ts`): the wrappers the machine has (`env`,
+  `nice`, `nohup`, `timeout`, `stdbuf`, `xargs`, `find -exec`, `setsid`, `flock`, `ionice`, `taskset`) run for real
+  around the stubs, nested, with options spelled every way getopt reads them. What each starts, and under which
+  wrappers, must be what the spec predicts. Set `WRAPPED_RUNS` to change their number.
+- `test/trace.test.ts`: on x86_64 Linux with a C compiler, the hand-written, generated and wrapped scripts again, with
+  real programs under the supervisor: every exec the kernel sees, by any path, must be covered. Plus what enforcement
   refuses and what it leaves to the programs it doesn't follow. Set `TRACE_RUNS` to change the number of generated
   scripts.
 

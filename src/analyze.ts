@@ -16,7 +16,7 @@ import {
   type Word,
   type WordPart,
 } from 'unbash';
-import { emptyParsed, normalize, type Parsed } from './argv.ts';
+import { assignment, emptyParsed, normalize, type Parsed } from './argv.ts';
 import { Changes, Probe, type FileSystem } from './files.ts';
 import { basename, isSystemPath, resolvePath } from './paths.ts';
 import { gitConfig, specFor } from './specs.ts';
@@ -565,8 +565,20 @@ class Walker {
         return this.loop(state, ctx, node, (s, c) => this.list([...node.clause.commands, ...node.body.commands], s, c));
       case 'Case': {
         this.substitutions([node.word, ...node.items.flatMap((item) => item.pattern)], state, ctx);
-        const outcomes = node.items.map((item) => this.branch(state, ctx, (s, c) => this.list(item.body.commands, s, c)));
-        return settle(state, [...outcomes, clone(state)]);
+        // An arm ending in ;& runs the next one too, and one ending in ;;& tests the patterns after it until one
+        // matches: either way, what it changed holds there.
+        const outcomes = [clone(state)];
+        let testing: State | undefined;
+        let falling: State | undefined;
+        for (const item of node.items) {
+          const start = clone(state);
+          for (const carried of [testing, falling]) if (carried) join(start, carried);
+          const end = this.branch(start, ctx, (s, c) => this.list(item.body.commands, s, c));
+          outcomes.push(end);
+          if (item.terminator === ';;&') testing = testing ? (join(testing, end), testing) : clone(end);
+          falling = item.terminator === ';&' ? end : undefined;
+        }
+        return settle(state, outcomes);
       }
       case 'Subshell':
         return this.list(node.body.commands, clone(state), ctx);
@@ -1913,9 +1925,12 @@ class Walker {
     if (specFor(program) === specFor('bash') && ((options['-i'] && !options['--norc']) || (options['--login'] && !options['--noprofile'])))
       this.finding(ctx, 'exec-config', `${program} runs its startup files, which the analysis doesn't see`, call.span);
     for (const entry of parsed.env) {
-      if (entry.kind !== 'static') continue;
-      const equals = entry.value.indexOf('=');
-      this.assigned(entry.value.slice(0, equals), { kind: 'static', value: entry.value.slice(equals + 1) }, state, ctx, call, false, false);
+      // env sets a name no shell variable has (`--x=1`) too: no program reads it as one.
+      const start = entry.kind === 'static' ? entry.value : entry.prefix;
+      if (!assignment.test(start)) continue;
+      const equals = start.indexOf('=');
+      const value: Value = entry.kind === 'static' ? { kind: 'static', value: entry.value.slice(equals + 1) } : { kind: 'dynamic' };
+      this.assigned(start.slice(0, equals), value, state, ctx, call, false, false);
     }
     this.emit(ctx, call, program, 'external', argv, parsed, path);
     const cwd = parsed.cwd?.kind === 'static' ? resolvePath(call.cwd, parsed.cwd.value, call.home) : parsed.cwd ? undefined : call.cwd;

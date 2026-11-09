@@ -178,8 +178,13 @@ export const { script: generatedScript } = fc.letrec<{ word: string; command: st
   };
 });
 
-/** Whether the analysis already accounts for anything the script may run, through a finding. */
-export const blind = (analysis: Analysis) => analysis.findings.some((finding) => unseen.has(finding.kind));
+/**
+ * Whether the analysis already accounts for anything the script may run: through a finding, or because a script file
+ * runs (`sh x`), which is out of scope. A stub run as one looks to the harness like the program it stands for.
+ */
+export const blind = (analysis: Analysis) =>
+  analysis.findings.some((finding) => unseen.has(finding.kind)) ||
+  analysis.invocations.some((invocation) => invocation.effects.includes('exec:file'));
 
 /**
  * Generated scripts the analysis claims to see through. A finding that leaves code unseen accounts for whatever runs,

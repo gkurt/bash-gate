@@ -26,10 +26,10 @@ export interface CommandSpec {
   positionals?: 'read' | 'write' | 'delete';
   /**
    * A command line to run starts after `skip` positionals (`timeout 5 cmd …`). `assignments` takes `NAME=value` words
-   * before it as environment (`env`); `open` says arguments are appended at run time (`xargs`); `fallback` is the
-   * command when none is given.
+   * before it as environment (`sudo`), or with `'any'` every word with an `=` (`env`, which sets `--x=1` too); `open`
+   * says arguments are appended at run time (`xargs`); `fallback` is the command when none is given.
    */
-  command?: { skip?: number; assignments?: boolean; open?: boolean; fallback?: string };
+  command?: { skip?: number; assignments?: boolean | 'any'; open?: boolean; fallback?: string };
   effects?: Effect[];
   /** For programs whose arguments aren't options and positionals (`find`): parses them in place of the generic parser. */
   parse?: (args: Arg[], parsed: Parsed) => void;
@@ -64,7 +64,9 @@ export interface Parsed {
   cwd?: Arg;
 }
 
-const assignment = /^[A-Za-z_][A-Za-z0-9_]*=/;
+export const assignment = /^[A-Za-z_][A-Za-z0-9_]*=/;
+/** Words only known at run time, standing for a command line whose start isn't known. */
+const anyWords: Arg = { kind: 'dynamic', text: '…', reason: 'placeholder', split: true, prefix: '' };
 
 export function emptyParsed(effects: Effect[] = []): Parsed {
   return {
@@ -131,12 +133,21 @@ export function normalize(args: Arg[], spec: CommandSpec | undefined): Parsed {
     }
     const command = current?.command;
     if (command) {
-      if (command.assignments && arg.kind === 'static' && assignment.test(arg.value)) {
+      // A word only known at run time is an assignment by its start (`PATH="$PATH"`), unless it may split, or be an
+      // option (`--split-string="$x"`).
+      const start = arg.kind === 'static' ? arg.value : arg.prefix;
+      const equals = start.includes('=');
+      const whole = arg.kind === 'static' || (!arg.split && !(optionsOpen && start.startsWith('-')));
+      const assigns = command.assignments === 'any' || (command.assignments === true && assignment.test(start));
+      if (equals && whole && assigns) {
         parsed.env.push(arg);
         continue;
       }
       if (seen >= (command.skip ?? 0)) {
-        parsed.nested.push({ argv: args.slice(i), open: !!command.open });
+        // An option the spec doesn't know may have taken the next word as its value, and a word with an `=` that's no
+        // name may be taken as an assignment: the command may start anywhere.
+        const unsure = parsed.unknownOptions.length > 0 || (command.assignments !== undefined && command.assignments !== false && equals);
+        parsed.nested.push({ argv: unsure ? [anyWords, ...args.slice(i)] : args.slice(i), open: !!command.open });
         break;
       }
     }
