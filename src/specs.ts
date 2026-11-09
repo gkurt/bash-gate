@@ -2143,9 +2143,15 @@ const programs: Record<string, CommandSpec> = {
       // `flock FILE -c CODE`: -c after the lock file gives shell code, not a program.
       const [nested] = parsed.nested;
       const first = nested?.argv[0];
-      if (first?.kind !== 'static' || (first.value !== '-c' && first.value !== '--command')) return;
-      parsed.nested = [];
-      if (nested!.argv[1]) parsed.scripts.push(nested!.argv[1]);
+      if (first?.kind === 'static' && (first.value === '-c' || first.value === '--command')) {
+        parsed.nested = [];
+        if (nested!.argv[1]) parsed.scripts.push(nested!.argv[1]);
+      }
+      // With a command to run, the positional is a lock file, created when missing. Alone, it's a descriptor.
+      const lock = parsed.positionals[0];
+      if (!lock || (nested === undefined && parsed.scripts.length === 0)) return;
+      parsed.writes.push(lock);
+      parsed.effects.add('fs:write');
     },
   },
   script: {
