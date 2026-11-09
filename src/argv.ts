@@ -66,7 +66,7 @@ export interface Parsed {
 
 export const assignment = /^[A-Za-z_][A-Za-z0-9_]*=/;
 /** Words only known at run time, standing for a command line whose start isn't known. */
-const anyWords: Arg = { kind: 'dynamic', text: '…', reason: 'placeholder', split: true, prefix: '' };
+export const anyWords: Arg = { kind: 'dynamic', text: '…', reason: 'placeholder', split: true, prefix: '' };
 
 export function emptyParsed(effects: Effect[] = []): Parsed {
   return {

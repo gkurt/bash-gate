@@ -127,6 +127,7 @@ export const wrappedScripts: [script: string, needs: string[]][] = [
   ['env -S"env -Snice cat" a; env -S"sort -n" b', ['env', 'nice']],
   ["xargs -I{} cat {} <<< 'p q'; xargs --replace sort x{} <<< 'r'", ['xargs']],
   ['find . -name cat -execdir ls {} \\;', ['find']],
+  ['nice -- -n 1 cat a; nice -- --adj 1 ls b', ['nice']],
   [`env -i PATH="$PATH" timeout 5 xargs cat <<< 'p q'`, ['env', 'timeout', 'xargs']],
 ];
 

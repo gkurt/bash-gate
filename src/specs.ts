@@ -1,4 +1,4 @@
-import { isOption, normalize, readCobra, type CommandSpec, type OptionSpec, type Parsed } from './argv.ts';
+import { anyWords, isOption, normalize, readCobra, type CommandSpec, type OptionSpec, type Parsed } from './argv.ts';
 import type { Arg, Effect } from './types.ts';
 import { dynamicArg, resolveWords } from './words.ts';
 
@@ -1939,7 +1939,20 @@ const programs: Record<string, CommandSpec> = {
     ...envSpec,
     parse: (args, parsed) => void Object.assign(parsed, normalize(splitEnv(args), envSpec)),
   },
-  nice: { posix: true, abbreviations: true, command: {}, options: opts('-n= --adjustment=') },
+  nice: {
+    posix: true,
+    abbreviations: true,
+    command: {},
+    options: opts('-n= --adjustment='),
+    finish(parsed) {
+      // uutils' nice rewrites `-n N`, `--adj N` and `-N` into `-nN` up to the first word without a dash, `--` too:
+      // `nice -- -n 1 cmd` runs `-n` in GNU's, `-n1` in uutils'.
+      const [nested] = parsed.nested;
+      const first = nested?.argv[0];
+      if (!first || !(first.kind === 'static' ? first.value : first.prefix).startsWith('-')) return;
+      nested.argv = [anyWords, ...nested.argv];
+    },
+  },
   nohup: { posix: true, abbreviations: true, command: {} },
   timeout: {
     abbreviations: true,

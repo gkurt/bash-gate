@@ -437,6 +437,7 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['case a in a) cd .git ;;& *) echo x > config ;; esac', 'ask', 'a case arm after ;;&, which runs after the one before'],
   ['x=ls; case a in a) x=rm ;& b) $x -rf / ;; esac', 'ask', 'a case arm after ;&, which runs after the one before'],
   ['find . -name x -execdir tee y \\;', 'ask', 'find -execdir, which runs in each found directory'],
+  ['nice -- -n 1 tee .git/config', 'ask', "a command after nice's -- that starts with a dash, which uutils' nice rewrites"],
   ['flock .git/config cat a', 'ask', "flock's lock file, which it creates when missing"],
   ['flock .git/config -c "cat a"', 'ask', "flock's lock file before -c"],
 ];
