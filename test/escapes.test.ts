@@ -438,6 +438,10 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['x=ls; case a in a) x=rm ;& b) $x -rf / ;; esac', 'ask', 'a case arm after ;&, which runs after the one before'],
   ['find . -name x -execdir tee y \\;', 'ask', 'find -execdir, which runs in each found directory'],
   ['nice -- -n 1 tee .git/config', 'ask', "a command after nice's -- that starts with a dash, which uutils' nice rewrites"],
+  ['env --split cat tee .git/config', 'ask', "an abbreviated --split-string, which uutils' env ignores and runs the rest"],
+  ['env -iScat tee .git/config', 'ask', "-S in a cluster, which uutils' env ignores"],
+  ["env -Scat -S'tee .git/config'", 'ask', "a second -S, which GNU's env passes to the command and uutils' splits"],
+  ["env -S'cat a' b", 'allow', 'a -S string both envs split the same way'],
   ['flock .git/config cat a', 'ask', "flock's lock file, which it creates when missing"],
   ['flock .git/config -c "cat a"', 'ask', "flock's lock file before -c"],
 ];

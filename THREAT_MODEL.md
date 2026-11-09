@@ -107,7 +107,8 @@ execs kill the process, and so does any x32 system call.
   write too: mutants of the others, broken a few characters at a time. Builds of Bash disagree as well: Git Bash drops
   a carriage return from code it parses, where Bash on Linux and the parser keep it in a word, so one is a parse error.
 - **The specs.** A wrong spec, such as a missed option that takes a value or runs code, breaks S1 for that program.
-  The wrappers' specs are fuzzed against the real programs; the rest are checked by hand-written cases.
+  The wrappers' specs are fuzzed against the real programs; the rest are checked by hand-written cases. Where GNU
+  coreutils and uutils (Ubuntu's since 25.10) read a wrapper's arguments differently, the command it runs is unknown.
 - **The integration.** It must run exactly the string that was analysed, in the shell the assumptions describe, with
   nothing from an earlier command still running. `bash-gate/trace` does that itself, given the analysis that was
   checked.

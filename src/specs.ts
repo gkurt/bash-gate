@@ -1801,12 +1801,28 @@ const envSpec: CommandSpec = {
 /** A long option of env's, by any unique prefix getopt takes: `--sp` is `--split-string`. */
 const envLong = (name: string, full: string) => name.length >= 3 && full.startsWith(name);
 
+/** Whether uutils' env splits another `-S` among the arguments after one, which GNU's may give the command. */
+function splitsAgain(rest: Arg[]): boolean {
+  for (const arg of rest) {
+    const value = staticValue(arg);
+    if (value === undefined) return true;
+    if (value === '--' || !(value.startsWith('-') || value.includes('='))) return false;
+    if (/^-v{0,2}S|^--split-string(?:=|$)/.test(value)) return true;
+  }
+  return false;
+}
+
 /**
  * env's arguments as it reads them: each `-S` string split into words in its place, among env's own arguments, so
  * options, assignments and the command may come from it (`env -S'-i cat a' b` runs `cat a b`). Variables in it
  * (`${HOME}`) are only known at run time.
+ *
+ * uutils' env splits only `-S`, `-vS`, `-vvS` and `--split-string` as spelled, among the arguments it hasn't stopped
+ * at (the value of an abbreviated long option stops it), and not again in what it split; clap reads any other and
+ * ignores it. `uutils.differs` says one of those came up, and then what runs depends on which env it is.
  */
-function splitEnv(args: Arg[]): Arg[] {
+function splitEnv(args: Arg[], uutils: { differs: boolean }, nested = false): Arg[] {
+  let stopped = false;
   for (let i = 0; i < args.length; i++) {
     const value = staticValue(args[i]);
     if (value === undefined || value === '--' || !isOption(value)) return args;
@@ -1816,9 +1832,14 @@ function splitEnv(args: Arg[]): Arg[] {
     if (long) {
       const [, name = '', attached] = long;
       if (!envLong(name, '--split-string')) {
-        if (attached === undefined && (envLong(name, '--unset') || envLong(name, '--chdir'))) i++;
+        if (attached !== undefined || !(envLong(name, '--unset') || envLong(name, '--chdir'))) continue;
+        const next = staticValue(args[i + 1]);
+        if (name !== '--unset' && name !== '--chdir' && !(next !== undefined && (next.startsWith('-') || next.includes('='))))
+          stopped = true;
+        i++;
         continue;
       }
+      if (name !== '--split-string') uutils.differs = true;
       string = attached === undefined ? args[i + 1] : { kind: 'static', value: attached };
       used = attached === undefined ? 2 : 1;
     } else {
@@ -1828,6 +1849,7 @@ function splitEnv(args: Arg[]): Arg[] {
         if (at !== -1 && at === value.length - 1) i++;
         continue;
       }
+      if (at > 1 && value.slice(0, at) !== '-v' && value.slice(0, at) !== '-vv') uutils.differs = true;
       const rest = value.slice(at + 1);
       string = rest ? { kind: 'static', value: rest } : args[i + 1];
       used = rest ? 1 : 2;
@@ -1835,10 +1857,11 @@ function splitEnv(args: Arg[]): Arg[] {
       if (at > 1) i++;
     }
     if (!string) return args;
+    if (stopped || nested || splitsAgain(args.slice(i + used))) uutils.differs = true;
     const lookup = () => ({ kind: 'dynamic' as const });
     const words = string.kind === 'static' ? resolveWords(string.value, lookup) : undefined;
     const split = words ?? [dynamicArg(string.kind === 'static' ? string.value : string.text, 'variable', true, '')];
-    return [...args.slice(0, i), ...splitEnv([...split, ...args.slice(i + used)])];
+    return [...args.slice(0, i), ...splitEnv([...split, ...args.slice(i + used)], uutils, true)];
   }
   return args;
 }
@@ -1937,7 +1960,11 @@ const programs: Record<string, CommandSpec> = {
   },
   env: {
     ...envSpec,
-    parse: (args, parsed) => void Object.assign(parsed, normalize(splitEnv(args), envSpec)),
+    parse(args, parsed) {
+      const uutils = { differs: false };
+      Object.assign(parsed, normalize(splitEnv(args, uutils), envSpec));
+      if (uutils.differs) parsed.nested = [{ argv: [anyWords], open: true }];
+    },
   },
   nice: {
     posix: true,
