@@ -107,7 +107,13 @@ export function normalize(args: Arg[], spec: CommandSpec | undefined): Parsed {
         continue;
       }
       if (isOption(arg.value)) {
-        i = readOption(args, i, current, parsed);
+        const last = readOption(args, i, current, parsed);
+        // A value that may be no word or several (`nice -n $x cat`) leaves where the command starts unknown.
+        if (current?.command && last > i && mayBeSeveral(args[last]!)) {
+          parsed.nested.push({ argv: [anyWords, ...args.slice(last + 1)], open: !!current.command.open });
+          break;
+        }
+        i = last;
         continue;
       }
       if (current?.plus && arg.value.length > 1 && arg.value.startsWith('+')) {
@@ -142,6 +148,13 @@ export function normalize(args: Arg[], spec: CommandSpec | undefined): Parsed {
       if (equals && whole && assigns) {
         parsed.env.push(arg);
         continue;
+      }
+      // Before the command (`timeout $x cat`), a word that may be several holds its start, and one that may be an
+      // option moves it.
+      const unplaced = seen < (command.skip ?? 0) && arg.kind === 'dynamic' && (mayBeSeveral(arg) || (optionsOpen && mayBeOption(arg)));
+      if (unplaced) {
+        parsed.nested.push({ argv: [anyWords, ...args.slice(i + 1)], open: !!command.open });
+        break;
       }
       if (seen >= (command.skip ?? 0)) {
         // An option the spec doesn't know may have taken the next word as its value, and a word with an `=` that's no
@@ -233,6 +246,11 @@ export function isOption(value: string): boolean {
 /** A dynamic word that may begin an option: one with no static start, or one that starts with `-`. */
 function mayBeOption(arg: Extract<Arg, { kind: 'dynamic' }>): boolean {
   return arg.prefix === '' || arg.prefix.startsWith('-');
+}
+
+/** A word only known at run time that may be no word at all, or several. */
+function mayBeSeveral(arg: Arg): boolean {
+  return arg.kind === 'dynamic' && arg.split;
 }
 
 function readOption(args: Arg[], i: number, spec: CommandSpec | undefined, parsed: Parsed): number {

@@ -130,6 +130,8 @@ export const wrappedScripts: [script: string, needs: string[]][] = [
   ['env --split cat a; env -iScat b; env -Scat -Sls c', ['env']],
   ['nice -- -n 1 cat a; nice -- --adj 1 ls b', ['nice']],
   [`env -i PATH="$PATH" timeout 5 xargs cat <<< 'p q'`, ['env', 'timeout', 'xargs']],
+  ["xargs env <<< 'cat a'; xargs timeout <<< '5 ls b'; xargs nice -n <<< '1 sort c'", ['xargs', 'env', 'timeout', 'nice']],
+  ['x=$(echo 5 cat a); timeout $x; nice -n $(echo 1 ls b)', ['timeout', 'nice']],
 ];
 
 /** Programs that run the command they're given, which the harness puts in place of logging stubs. */

@@ -227,6 +227,8 @@ const sensitive =
 
 /** Files a redirection may name without touching the file system. */
 const devices = /^\/dev\/(null|stdin|stdout|stderr|tty|fd\/\d+)$/;
+/** The words a run adds after a command's own (`xargs` appends its input's). */
+const appended = dynamicArg('…', 'stdin', true, '');
 
 /** Statically analyses a Bash script: every program it may run, with what, and what the analysis couldn't follow. */
 export function analyze(source: string, environment: Environment = {}): Analysis {
@@ -1227,7 +1229,7 @@ class Walker {
     if (head.kind === 'dynamic') {
       this.finding(ctx, 'dynamic-command', `The command name is only known at run time: ${head.text}`, call.span);
       const parsed = emptyParsed();
-      parsed.positionals = argv.slice(1);
+      parsed.positionals = this.withAppended(argv.slice(1), ctx, call);
       parsed.maybeOptions = true;
       this.emit(ctx, call, null, 'external', argv, parsed);
       // A word that expands to nothing leaves the next one as the command, past alias expansion.
@@ -1712,7 +1714,7 @@ class Walker {
         break;
       }
     }
-    const parsed = normalize(args, specFor(name));
+    const parsed = normalize(this.withAppended(args, ctx, call), specFor(name));
     for (const effect of effects) parsed.effects.add(effect);
     if (name === '.' || name === 'source') parsed.reads.push(...args.slice(0, 1));
     if (historyWrites.length > 0) {
@@ -1918,7 +1920,7 @@ class Walker {
   run(argv: Arg[], state: State, ctx: Context, call: Call, path: string | undefined): void {
     const name = (argv[0] as Extract<Arg, { kind: 'static' }>).value;
     const program = path ? basename(path) : name;
-    const parsed = normalize(argv.slice(1), specFor(program));
+    const parsed = normalize(this.withAppended(argv.slice(1), ctx, call), specFor(program));
     if (path && !isSystemPath(path)) parsed.effects.add('exec:file');
     // An interactive shell reads ~/.bashrc, a login shell /etc/profile and ~/.profile: code the analysis doesn't see.
     const { options } = parsed;
@@ -2440,6 +2442,14 @@ class Walker {
     if (at !== -1) this.finding(ctx, 'parse-error', 'A carriage return in code: Git Bash drops it, Bash on Linux keeps it', [at, at + 1]);
   }
 
+  /**
+   * `args` with the words a run adds after them (`xargs`, a callback's arguments), so that they're read as the rest
+   * are: one may be an option, a file the program writes, or the command a wrapper runs.
+   */
+  withAppended(args: Arg[], ctx: Context, call: Call): Arg[] {
+    return (call.open || ctx.open) && args.at(-1) !== appended ? [...args, appended] : args;
+  }
+
   emit(ctx: Context, call: Call, program: string | null, kind: Invocation['kind'], argv: Arg[], parsed: Parsed, path?: string): void {
     if (ctx.silent) return;
     const writes = [...parsed.writes, ...call.writes, ...ctx.writes];
@@ -2456,7 +2466,7 @@ class Walker {
       ...(parsed.unknownSubcommand ? { unknownSubcommand: parsed.unknownSubcommand } : {}),
       options: parsed.options,
       unknownOptions: parsed.unknownOptions,
-      positionals: open ? [...parsed.positionals, dynamicArg('…', 'stdin', true, '')] : parsed.positionals,
+      positionals: parsed.positionals,
       maybeOptions: parsed.maybeOptions || open,
       open,
       specified: !!program && !!specFor(program),
