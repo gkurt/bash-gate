@@ -9,7 +9,7 @@ export const recommended: Policy = {
   default: 'ask',
   rules: [
     allow(
-      'cat|head|tail|wc|stat|file|nl|od|strings|md5sum|sha1sum|sha256sum|sha512sum|cmp|tac|rev|base64|grep|egrep|fgrep|rg|ls|du|sort|cut|tr|paste|join|fold|fmt|column|diff|comm|jq|yq|realpath|readlink|basename|dirname|find|which|type|echo|printf|true|false|:|test|[|pwd|cd|pushd|popd|whoami|id|uname|seq|sleep|exit|return|set|shift|local|declare|export|read|unset|wait|mkdir|touch|cp|mv|tee',
+      'cat|head|tail|wc|stat|file|nl|od|strings|md5sum|sha1sum|sha224sum|sha256sum|sha384sum|sha512sum|b2sum|cksum|cmp|tac|rev|base64|grep|egrep|fgrep|rg|ls|du|df|sort|uniq|cut|tr|paste|join|fold|fmt|column|expand|unexpand|diff|comm|jq|yq|sed|awk|gawk|mawk|nawk|realpath|readlink|basename|dirname|find|which|type|echo|printf|true|false|:|test|[|pwd|cd|pushd|popd|whoami|id|uname|date|nproc|uptime|free|ps|pgrep|printenv|seq|sleep|exit|return|set|shift|local|declare|export|read|unset|wait|mkdir|touch|cp|mv|tee',
     ),
     // Wrappers: what they run is judged on its own. Aliases are followed, so defining them is harmless.
     allow('env|xargs|timeout|nice|nohup|time|stdbuf|watch|alias|unalias|shopt'),
@@ -35,6 +35,7 @@ export const recommended: Policy = {
     // Relative globs match from where the script starts: an absolute path may be outside it when that isn't given.
     ask({ writes: ['..', '../**', '~', '~/**'], reason: 'Writes outside the working directory' }),
     ask('uniq|xxd|tree', { writes: ['**'], reason: 'Writes through an output-file argument' }),
+    ask('sed|awk|gawk|mawk|nawk', { writes: ['**'], reason: 'Writes files its script names, or edits them in place' }),
     ask({
       writes: ['.git', '**/.git', '.git/config', '**/.git/config', '.git/hooks', '**/.git/hooks', '.git/hooks/**', '**/.git/hooks/**'],
       reason: 'Changes Git configuration or hooks that can run code later',

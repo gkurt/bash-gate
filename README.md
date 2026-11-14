@@ -75,6 +75,9 @@ analyze('sudo -u root rm -rf "$dir"').invocations.map((i) => [i.shape, i.via, i.
    command lines that wrappers run (`sudo`, `env`, `timeout`, `xargs`, `find -exec`, `git bisect run`…). `gh` is read
    as cobra reads it: a flag before a subcommand takes the next word unless it's a known boolean, so
    `gh -R o/r pr merge` is `pr merge`, and a first word gh doesn't know is an alias or extension (`exec:arbitrary`).
+   The words `xargs` appends are read with the rest: `xargs env` runs them as a command, `xargs tee` writes them. A
+   word that may be several, or an option, before a wrapper's command (`timeout $x`, `nice -n $x`) leaves the command
+   unknown. A `sed` script is read command by command, for the commands it runs and the files it names.
 6. **Decide** (`src/policy.ts`). Every condition has three outcomes: it matches, it doesn't, or it may (a dynamic word
    could match it). Deny beats ask, and ask beats allow. A deny rule that only may match asks, or denies with
    `strict: true`.
@@ -118,8 +121,9 @@ const policy: Policy = {
 `recommended` (`src/recommended.ts`) is a starting point. It allows reading and everyday git, denies force pushes and
 deleting top-level directories, and asks about deleting, network, privilege, code it can't see, writes outside the
 working directory (`..`, `../**`, `~/**`: an absolute path counts as outside unless `cwd` shows it's inside), and
-writes to `.git`, `.git/config` or `.git/hooks`. It does not ask about `exec:project` (`npm test`,
-`make`, git hooks); add that if it matters.
+writes to `.git`, `.git/config` or `.git/hooks`. `sed` and `awk` run when their script only edits what they read
+(`sed -n '1,40p'`, `awk '{print $1}'`): one that runs a command, writes a file, edits in place or isn't followed asks.
+It does not ask about `exec:project` (`npm test`, `make`, git hooks); add that if it matters.
 
 ## The environment
 
@@ -277,7 +281,10 @@ bun run checks   # tsc, then bun test
 - **Program specs are intentionally conservative.** The listed `sed`, `awk`, `tar`, `rsync`, `vim`, `zip`, `ssh`,
   output-file and command-wrapper forms are flagged or followed where their arguments identify code or paths. Some
   language-specific snippets are effect findings rather than fully interpreted programs, and other programs remain
-  unspecified. `less` and `more` are not on the recommended read allowlist because their command modes can run code.
+  unspecified. A `sed` script is followed only in the forms every sed reads alike: text for `a`, `i` and `c`, a
+  delimiter inside a bracket expression, or an option the spec doesn't know make it `exec:arbitrary`. An `awk` program
+  is searched as text for what it needs to run a command or write a file (`system`, `|`, `getline`, `@`, a `>` after
+  a `print`), strings included, so `awk '/a|b/'` asks. `less` and `more` are not on the recommended read allowlist because their command modes can run code.
 - **Project code depends on the integration.** Without `fs`, npm scripts, Git hooks and config includes cannot be
   followed; commands remain `exec:project`, and the recommended policy asks about direct writes to `.git`,
   `.git/config` and `.git/hooks`. `make` is `exec:project` and Makefiles aren't parsed.

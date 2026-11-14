@@ -1905,6 +1905,184 @@ const ownership: CommandSpec = {
   },
 };
 
+/** What a sed script does besides editing what it reads. */
+interface SedScript {
+  /** Whether `e`, or the `e` flag of `s`, runs a command. */
+  runs: boolean;
+  reads: string[];
+  writes: string[];
+}
+
+/**
+ * Reads a sed script command by command, or returns `undefined` where it can't say how sed would. Seds differ on a
+ * delimiter inside a bracket expression (GNU sed 4.9 carries on, older ones end the text there), on where a file name
+ * or a label ends, and on the text of `a`, `i` and `c`: those aren't followed.
+ */
+function scanSed(script: string): SedScript | undefined {
+  const found: SedScript = { runs: false, reads: [], writes: [] };
+  let i = 0;
+  const blanks = () => {
+    while (script[i] === ' ' || script[i] === '\t') i++;
+  };
+  const digits = () => {
+    const start = i;
+    while (/[0-9]/.test(script[i] ?? '')) i++;
+    return i > start;
+  };
+  /** The rest of the line: a file name, or the command `e` runs. */
+  const line = () => {
+    blanks();
+    const start = i;
+    const end = script.indexOf('\n', i);
+    i = end === -1 ? script.length : end;
+    return script.slice(start, i);
+  };
+  /** Whether the command ends here: nothing more, a newline, `;`, `}` or a comment. */
+  const ends = () => {
+    blanks();
+    return i >= script.length || '\n;}#'.includes(script[i]!);
+  };
+  /** A file name every sed ends at the same place: BusyBox stops at a blank or a `;`. */
+  const file = (files: string[]) => {
+    const name = line();
+    if (name === '' || /[\s;}]/.test(name)) return false;
+    files.push(name);
+    return true;
+  };
+  const delimiter = () => {
+    const c = script[i];
+    if (c === undefined || !/^[ -Z^-~]$/.test(c)) return undefined;
+    i++;
+    return c;
+  };
+  /** A bracket expression, up to its `]`, with nothing in it that seds read differently. */
+  const bracket = (closing: string) => {
+    i++;
+    if (script[i] === '^' && closing !== '^') i++;
+    if (script[i] === ']') i++;
+    for (; i < script.length; i++) {
+      const c = script[i]!;
+      if (c === ']') return true;
+      if (c === closing || c === '\n') return false;
+      if (c === '\\' && /^[[\]\n]?$/.test(script[++i] ?? '')) return false;
+      if (c !== '[') continue;
+      if (script[i + 1] === '.' || script[i + 1] === '=') return false;
+      if (script[i + 1] !== ':') continue;
+      const end = script.indexOf(':]', i + 2);
+      if (end === -1 || script.slice(i, end + 2).includes(closing)) return false;
+      i = end + 1;
+    }
+    return false;
+  };
+  /** Past the next `closing` that isn't escaped. */
+  const until = (closing: string, regex: boolean) => {
+    for (; i < script.length; i++) {
+      const c = script[i]!;
+      if (c === '\n') return false;
+      if (c === closing) {
+        i++;
+        return true;
+      }
+      if (c === '\\' && /^\n?$/.test(script[++i] ?? '')) return false;
+      if (regex && c === '[' && !bracket(closing)) return false;
+    }
+    return false;
+  };
+  const address = () => {
+    if (script[i] === '$') {
+      i++;
+      return true;
+    }
+    if (script[i] === '/' || script[i] === '\\') {
+      if (script[i] === '\\') i++;
+      const closing = delimiter();
+      if (closing === undefined || !until(closing, true)) return false;
+      while (script[i] === 'I' || script[i] === 'M') i++;
+      return true;
+    }
+    if (!digits()) return false;
+    if (script[i] !== '~') return true;
+    i++;
+    return digits();
+  };
+  const addressed = () => /^[0-9$/\\]$/.test(script[i] ?? '');
+  const command = () => {
+    if (addressed()) {
+      if (!address()) return false;
+      blanks();
+      if (script[i] === ',') {
+        i++;
+        blanks();
+        if (script[i] === '+' || script[i] === '~') {
+          i++;
+          if (!digits()) return false;
+        } else if (!addressed() || !address()) {
+          return false;
+        }
+        blanks();
+      }
+    }
+    while (script[i] === '!') {
+      i++;
+      blanks();
+    }
+    const name = script[i++] ?? '';
+    if (name === '{') return true;
+    if (name !== '' && '=dDgGhHnNpPxzF'.includes(name)) return ends();
+    if (name !== '' && 'lLqQ'.includes(name)) {
+      blanks();
+      digits();
+      return ends();
+    }
+    if (name !== '' && ':btT'.includes(name)) {
+      blanks();
+      while (/\w/.test(script[i] ?? '')) i++;
+      return ends();
+    }
+    if (name === 'r' || name === 'R') return file(found.reads);
+    if (name === 'w' || name === 'W') return file(found.writes);
+    if (name === 'e') {
+      found.runs = true;
+      line();
+      return true;
+    }
+    if (name === 'y') {
+      const closing = delimiter();
+      return closing !== undefined && until(closing, false) && until(closing, false) && ends();
+    }
+    if (name !== 's') return false;
+    const closing = delimiter();
+    if (closing === undefined || !until(closing, true) || !until(closing, false)) return false;
+    for (;;) {
+      if (ends()) return true;
+      const flag = script[i++]!;
+      if (flag === 'w') return file(found.writes);
+      if (flag === 'e') found.runs = true;
+      else if (!'gpiImM0123456789'.includes(flag)) return false;
+    }
+  };
+  while (i < script.length) {
+    if (' \t\n;}'.includes(script[i]!)) i++;
+    else if (script[i] === '#') line();
+    else if (!command()) return undefined;
+  }
+  return found;
+}
+
+/**
+ * An awk program's effects, by the tokens it can't have them without: `system`, a pipe and `getline` run commands or
+ * read files the program names, `@` calls a function named at run time or loads code, and a `>` after a `print`
+ * writes a file. The text is searched as written, strings and regular expressions included, so it finds more than is
+ * there and never less. A line continuation could split a token, so one counts as code unseen.
+ */
+function scanAwk(code: string, parsed: Parsed): void {
+  if (/system|getline|@|\\\r?\n/.test(code) || code.replaceAll('||', '').includes('|')) parsed.effects.add('exec:arbitrary');
+  const print = code.indexOf('print');
+  if (print === -1 || !/>(?!=)/.test(code.slice(print))) return;
+  parsed.writes.push(dynamicArg('awk output', 'variable', false, ''));
+  parsed.effects.add('fs:write');
+}
+
 /** Programs by name, aliases after `|`. */
 const programs: Record<string, CommandSpec> = {
   'bash|sh|dash|ksh|mksh|ash|busybox-sh': shell,
@@ -2377,66 +2555,61 @@ const programs: Record<string, CommandSpec> = {
     positionals: 'read',
     options: opts(
       o('-e= --expression='),
-      o('-f= --file=', { role: 'read' }),
+      o('-f= --file=', { role: 'read', effects: ['exec:file'] }),
       o('-i=? --in-place=?', { effects: ['fs:write'] }),
       '-n --quiet --silent',
       '-E --regexp-extended',
       '-r',
       '-s --separate',
       '-u --unbuffered',
+      '-z --null-data',
+      '-l= --line-length=',
       '--sandbox',
+      '--follow-symlinks',
+      '--help',
+      '--version',
     ),
     finish(parsed) {
-      for (const script of [...(parsed.options['--expression'] ?? []), ...parsed.positionals]) {
-        if (script === true) continue;
-        if (script.kind === 'dynamic') {
-          parsed.maybeOptions = true;
-          continue;
-        }
-        if (/(?:^|;)\s*(?:e|s[\s\S]*?\/[gIpMw]*e)(?:\s|;|$)/.test(script.value)) parsed.effects.add('exec:arbitrary');
-        for (const match of script.value.matchAll(/(?:^|;)\s*[wW]\s+([^;\s]+)/g)) {
-          parsed.writes.push({ kind: 'static', value: match[1]! });
-          parsed.effects.add('fs:write');
-        }
-      }
-      if (parsed.options['--in-place'] || parsed.options['-i']) {
-        const inputs = parsed.options['--expression'] || parsed.options['--file'] ? parsed.positionals : parsed.positionals.slice(1);
-        parsed.writes.push(...inputs);
-        parsed.effects.add('fs:write');
-      }
-      if (!parsed.options['--expression'] && !parsed.options['--file'] && parsed.positionals.length > 0)
-        parsed.reads = parsed.reads.filter((arg) => arg !== parsed.positionals[0]);
+      const expressions = parsed.options['--expression'];
+      const scripted = expressions !== undefined || parsed.options['--file'] !== undefined;
+      const scripts = (expressions ?? (scripted ? [] : parsed.positionals.slice(0, 1))).map((script) =>
+        script === true ? undefined : staticValue(script),
+      );
+      // An option this doesn't know may take the script as its value, and a script only known at run time may be any.
+      const known = parsed.unknownOptions.length === 0 && scripts.every((script) => script !== undefined);
+      const script = known ? scanSed(scripts.join('\n')) : undefined;
+      if (!script || script.runs) parsed.effects.add('exec:arbitrary');
+      for (const file of script?.reads ?? []) parsed.reads.push({ kind: 'static', value: file });
+      for (const file of script?.writes ?? []) parsed.writes.push({ kind: 'static', value: file });
+      if (script && script.writes.length > 0) parsed.effects.add('fs:write');
+      if (parsed.options['--in-place']) parsed.writes.push(...(scripted ? parsed.positionals : parsed.positionals.slice(1)));
+      if (!scripted && parsed.positionals.length > 0) parsed.reads = parsed.reads.filter((arg) => arg !== parsed.positionals[0]);
     },
   },
-  awk: {
+  'awk|gawk|mawk|nawk': {
     effects: ['fs:read'],
     options: opts(
-      o('-f=', { role: 'read', effects: ['exec:project'] }),
-      o('-e=', { effects: ['exec:arbitrary'] }),
-      o('-F=', {}),
-      o('-v=', {}),
-      o('-l=', { effects: ['exec:project'] }),
+      o('-f= --file=', { role: 'read', effects: ['exec:file'] }),
+      o('-e= --source=', { effects: ['exec:arbitrary'] }),
+      o('-i= --include=', { role: 'read', effects: ['exec:file'] }),
+      o('-l= --load=', { effects: ['exec:file'] }),
+      o('-E= --exec=', { role: 'read', effects: ['exec:file'] }),
+      '-F= --field-separator=',
+      '-v= --assign=',
       '--posix',
       '--sandbox',
-      '-safe',
+      '--help',
+      '--version',
     ),
     finish(parsed) {
-      const code = [...(parsed.options['-e'] ?? []), ...parsed.positionals]
-        .map((arg) => (arg === true ? '' : (staticValue(arg) ?? '')))
-        .join('\n');
-      if (/\bsystem\s*\(|\|(?:\s*getline|[^;]*$)|(?:print|printf)[^;\n]*>>?\s*[^=]/.test(code)) parsed.effects.add('exec:arbitrary');
-      if (code.includes('@load')) parsed.effects.add('exec:project');
-      for (const match of code.matchAll(/(?:print|printf)\b[^;\n]*?(?:>>|>)\s*(?:"([^"]+)"|'([^']+)'|([^\s;]+))/g)) {
-        const target = match[1] ?? match[2];
-        parsed.writes.push(
-          target
-            ? { kind: 'static', value: target }
-            : { kind: 'dynamic', text: `awk output ${match[3] ?? ''}`, reason: 'variable', split: false, prefix: '' },
-        );
-        parsed.effects.add('fs:write');
-      }
-      if ([...(parsed.options['-f'] ?? []), ...(parsed.options['-l'] ?? [])].some((arg) => arg !== true && arg.kind === 'dynamic'))
-        parsed.maybeOptions = true;
+      // An option this doesn't know may name the program's file, or take the program as its value.
+      if (parsed.unknownOptions.length > 0) parsed.effects.add('exec:arbitrary');
+      if (['--file', '--source', '--include', '--exec'].some((name) => parsed.options[name] !== undefined)) return;
+      const [program] = parsed.positionals;
+      if (!program) return;
+      const code = staticValue(program);
+      if (code === undefined) parsed.effects.add('exec:arbitrary');
+      else scanAwk(code, parsed);
     },
   },
   uniq: {
@@ -2529,16 +2702,25 @@ const programs: Record<string, CommandSpec> = {
     ),
   },
   date: {
+    abbreviations: true,
     options: opts(
       o('-f= --file=', { role: 'read' }),
       o('-s= --set=', { effects: ['privilege'] }),
-      '-u --utc',
+      '-d= --date=',
+      o('-r= --reference=', { role: 'read' }),
+      '-u --utc --universal',
       '-R --rfc-email',
       '-I=? --iso-8601=?',
+      '--rfc-3339=',
       '--debug',
-      '--date=',
-      '--reference=',
+      '--help',
+      '--version',
     ),
+    finish(parsed) {
+      // A word that isn't a `+format` is a time to set the clock to, and an option this doesn't know may set it too.
+      const sets = parsed.positionals.some((arg) => !(arg.kind === 'static' ? arg.value : arg.prefix).startsWith('+'));
+      if (sets || parsed.unknownOptions.length > 0) parsed.effects.add('privilege');
+    },
   },
   hostname: {
     options: opts('-f --fqdn', '-s --short', '-d --domain', '-y --yp', '-i --ip-address', '-I --all-ip-addresses', '-A --all-fqdns'),
@@ -2644,7 +2826,7 @@ const programs: Record<string, CommandSpec> = {
       '-T= --timeout=',
     ),
   },
-  'cat|less|more|wc|stat|file|nl|od|strings|md5sum|sha1sum|sha256sum|sha512sum|cmp|tac|rev|base64': reader(
+  'cat|less|more|wc|stat|nl|od|strings|md5sum|sha1sum|sha224sum|sha256sum|sha384sum|sha512sum|b2sum|cksum|cmp|tac|rev|base64': reader(
     '-n',
     '-c',
     '-l',
@@ -2656,6 +2838,24 @@ const programs: Record<string, CommandSpec> = {
     '-E',
     '-T',
   ),
+  file: {
+    ...reader('-m= --magic-file=', '-f= --files-from=', '-F= --separator=', '-e= --exclude=', '-P= --parameter=', '-C --compile'),
+    finish(parsed) {
+      // -C compiles the magic file into one named after it, in the working directory.
+      if (!parsed.options['--compile']) return;
+      parsed.writes.push(dynamicArg('compiled magic', 'placeholder', false, ''));
+      parsed.effects.add('fs:write');
+    },
+  },
+  yq: {
+    ...reader('-i --inplace --in-place', '-s= --split-exp='),
+    finish(parsed) {
+      // In place, the files it's given are rewritten; split, it writes files named by an expression.
+      if (parsed.options['--inplace']) parsed.writes.push(...parsed.positionals);
+      if (parsed.options['--split-exp']) parsed.writes.push(dynamicArg('split output', 'placeholder', false, ''));
+      if (parsed.options['--inplace'] || parsed.options['--split-exp']) parsed.effects.add('fs:write');
+    },
+  },
   'head|tail': reader('-n= --lines=', '-c= --bytes=', '-f --follow=?', '-F', '-q --quiet', '-v --verbose', '-z --zero-terminated'),
   'grep|egrep|fgrep': reader(
     '-e= --regexp=',
@@ -2742,7 +2942,7 @@ const programs: Record<string, CommandSpec> = {
     o('-o= --output=', { role: 'write', effects: ['fs:write'] }),
     o('--compress-program=', { effects: ['exec:arbitrary'] }),
   ),
-  'cut|tr|paste|join|fold|fmt|column|expand|unexpand|diff|comm|jq|yq|du|realpath|readlink|basename|dirname': reader(
+  'cut|tr|paste|join|fold|fmt|column|expand|unexpand|diff|comm|jq|du|realpath|readlink|basename|dirname': reader(
     '-d= --delimiter=',
     '-f= --fields=',
     '-c --count',
@@ -2767,7 +2967,7 @@ const programs: Record<string, CommandSpec> = {
     '-d --directory',
     '-F --classify',
   ),
-  'echo|printf|true|false|pwd|whoami|id|uname|which|seq|sleep|yes|nproc|uptime|tput|clear': {},
+  'echo|printf|true|false|pwd|whoami|id|uname|which|seq|sleep|yes|nproc|uptime|tput|clear|printenv|ps|pgrep|df|free': {},
 };
 
 /** The spec for a program by name, or `undefined` when it has none. */
