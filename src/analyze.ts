@@ -158,8 +158,11 @@ interface Context {
   /** For code parsed from a string, the span of what holds it in the top-level source. */
   outer?: [number, number];
   aliases: Aliases;
-  /** Aliases being expanded, which aren't expanded again in their own text. */
-  expanding: string[];
+  /**
+   * Aliases whose text Bash is reading, by where that text ends in `source`: a word that starts before then is in it,
+   * and isn't expanded again. Bash stops reading an alias's text at its end, so a word after it may be the alias again.
+   */
+  expanding: Expanding[];
   nesting: string[];
   via: string[];
   depth: number;
@@ -1423,7 +1426,8 @@ class Walker {
    */
   alias(name: string, argv: Arg[], state: State, ctx: Context, call: Call): boolean {
     const { table, unknown, expand } = ctx.aliases;
-    if (!table.has(name) || ctx.expanding.includes(name)) {
+    const at = call.command?.name?.pos;
+    if (!table.has(name) || (at === undefined ? ctx.expanding.some((alias) => alias.name === name) : active(ctx, at).includes(name))) {
       if (unknown) this.finding(ctx, 'unknown-alias', `\`${name}\` may be an alias defined at run time`, call.span);
       return false;
     }
@@ -1451,45 +1455,115 @@ class Walker {
   expandAlias(name: string, value: string, command: Command, state: State, ctx: Context, call: Call): void {
     if (ctx.depth >= this.maxDepth)
       return this.finding(ctx, 'too-deep', `Aliases nest deeper than the analysis follows (${name})`, call.span);
-    const { table, unknown } = ctx.aliases;
-    let text = ctx.source.slice(command.pos, command.name!.pos) + value;
+    const head = ctx.source.slice(command.pos, command.name!.pos);
+    let text = head + value;
+    // What was put in place of a word, by where it was and where its text is now: an alias whose text the word started
+    // in is still being read through all of it.
+    const replaced = [{ from: command.name!.pos, to: command.name!.end, start: head.length, end: text.length }];
+    const expanding: Expanding[] = [{ name, end: text.length }];
     let rest = command.name!.end;
-    let last = value;
+    let check = /[ \t]$/.test(value);
     const values = [value];
     for (const item of command.suffix) {
       // A quoted word isn't expanded, and the next one is still checked; one with an unquoted expansion ends it.
-      const expansions = ['SimpleExpansion', 'ParameterExpansion', 'CommandExpansion', 'ArithmeticExpansion', 'ProcessSubstitution'];
-      if (item.type === 'Word' && item.parts?.some((part) => expansions.includes(part.type))) break;
+      if (item.type === 'Word' && item.parts?.some((part) => aliasStoppers.has(part.type))) break;
       if (item.type === 'Word' && !plain(item)) continue;
-      if (!/[ \t]$/.test(last) || item.type !== 'Word') break;
-      if (!table.has(item.value)) {
-        if (unknown) this.finding(ctx, 'unknown-alias', `\`${item.value}\` may be an alias defined at run time`, call.span);
-        break;
-      }
-      const { value: next, maybe } = table.get(item.value)!;
-      if (next === undefined || maybe) {
-        this.finding(ctx, 'unknown-alias', `\`${item.value}\` may be an alias, or one whose value is only known at run time`, call.span);
-        break;
-      }
-      text += ctx.source.slice(rest, item.pos) + next;
+      if (!check || item.type !== 'Word') break;
+      const words = this.aliasWord(item.value, active(ctx, item.pos), ctx, call);
+      if (!words) break;
+      text += ctx.source.slice(rest, item.pos);
+      const start = text.length;
+      text += words.text;
+      replaced.push({ from: item.pos, to: item.end, start, end: text.length });
+      expanding.push(...words.expanding.map((alias) => ({ name: alias.name, end: start + alias.end })));
       rest = item.end;
-      last = next;
-      values.push(next);
+      check = words.check;
+      values.push(words.text);
     }
+    const tail = text.length;
     text += ctx.source.slice(rest, command.end);
+    // An alias whose text the command word started in is read through what replaced it, and up to its end after that.
+    for (const outer of ctx.expanding) {
+      if (outer.end <= command.name!.pos) continue;
+      const ends = replaced.filter((piece) => piece.from < outer.end).map((piece) => piece.end);
+      if (outer.end > rest) ends.push(tail + Math.min(outer.end, command.end) - rest);
+      expanding.push({ name: outer.name, end: Math.max(...ends) });
+    }
     const inner = {
       ...ctx,
       source: text,
       outer: call.span,
       nesting: [...ctx.nesting, `alias ${name}`],
       depth: ctx.depth + 1,
-      expanding: [...ctx.expanding, name],
+      expanding,
     };
     // A here-document the alias's text opens has the lines after the command as its body, which the parser read as
     // commands: a `<<` among them can hide the rest of the script.
     if (values.some((text) => unclosed(this.parse(text))))
       this.finding(ctx, 'parse-error', `An alias opens a here-document, whose body the parser read as commands`, call.span);
     this.script(this.parse(text), state, inner, ctx.aliases);
+  }
+
+  /**
+   * The text Bash reads for `word` where it checks a word that isn't the command's for an alias (after one whose text
+   * ends in a blank): the alias's text, read a word at a time. While Bash checks the next word, each that's an alias
+   * not among `reading` (those whose text it's in) is replaced too; a word that isn't ends the checking, and the end of
+   * a text that ends in a blank starts it again. `check`: whether the word after it is checked. `undefined` when
+   * `word` is no alias, or one the analysis can't follow (a finding).
+   */
+  aliasWord(
+    word: string,
+    reading: string[],
+    ctx: Context,
+    call: Call,
+  ): { text: string; check: boolean; expanding: Expanding[] } | undefined {
+    const { table, unknown } = ctx.aliases;
+    if (!table.has(word) || reading.includes(word)) {
+      if (!table.has(word) && unknown) this.finding(ctx, 'unknown-alias', `\`${word}\` may be an alias defined at run time`, call.span);
+      return undefined;
+    }
+    const { value, maybe } = table.get(word)!;
+    if (value === undefined || maybe) {
+      this.finding(ctx, 'unknown-alias', `\`${word}\` may be an alias, or one whose value is only known at run time`, call.span);
+      return undefined;
+    }
+    if (reading.length > this.maxDepth) {
+      this.finding(ctx, 'too-deep', `Aliases nest deeper than the analysis follows (${word})`, call.span);
+      return undefined;
+    }
+    // Its own words: the first command's, as an operator after them puts the next in a command word's place, which
+    // the command parsed again checks.
+    const first = this.parse(value).commands[0]?.command;
+    const words =
+      first?.type === 'Command'
+        ? [...first.prefix, ...(first.name ? [first.name] : []), ...first.suffix].toSorted((a, b) => a.pos - b.pos)
+        : [];
+    let text = '';
+    let rest = 0;
+    let check = true;
+    const expanding: Expanding[] = [];
+    for (const item of words) {
+      if (item.type === 'Word' && item.parts?.some((part) => aliasStoppers.has(part.type))) {
+        check = false;
+        break;
+      }
+      if (item.type === 'Word' && !plain(item)) continue;
+      if (!check) break;
+      const inner = item.type === 'Word' ? this.aliasWord(item.value, [...reading, word], ctx, call) : undefined;
+      if (!inner) {
+        check = false;
+        break;
+      }
+      text += value.slice(rest, item.pos);
+      const start = text.length;
+      text += inner.text;
+      expanding.push(...inner.expanding.map((alias) => ({ name: alias.name, end: start + alias.end })));
+      rest = item.end;
+      check = inner.check;
+    }
+    text += value.slice(rest);
+    expanding.push({ name: word, end: text.length });
+    return { text, check: check || /[ \t]$/.test(value), expanding };
   }
 
   builtin(name: string, argv: Arg[], state: State, ctx: Context, call: Call): void {
@@ -2960,6 +3034,20 @@ const startingIntegers = ['RANDOM', 'SRANDOM', 'OPTIND', 'HISTCMD', 'BASHPID'];
 function lookupIn(state: State): Lookup {
   return (name) => computed.get(name) ?? state.vars.get(name);
 }
+
+/** An alias Bash is reading the text of, and where that text ends in the source being parsed. */
+interface Expanding {
+  name: string;
+  end: number;
+}
+
+/** The aliases whose text a word starting at `pos` is in. */
+function active(ctx: Context, pos: number): string[] {
+  return ctx.expanding.filter((alias) => pos < alias.end).map((alias) => alias.name);
+}
+
+/** Parts that stop Bash checking words after a blank-ending alias for more aliases. */
+const aliasStoppers = new Set(['SimpleExpansion', 'ParameterExpansion', 'CommandExpansion', 'ArithmeticExpansion', 'ProcessSubstitution']);
 
 /** A word with no quotes or expansions, which aliases may replace. */
 function plain(word: Word): boolean {

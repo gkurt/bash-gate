@@ -143,6 +143,16 @@ const cases: [source: string, decision: Decision, what: string][] = [
     'an alias after a quoted word, which a blank-ending alias still reaches',
   ],
   ['shopt -s expand_aliases\nalias c=cat{,\\ /x\\;rm\\ -rf\\ /}\nc', 'deny', 'braces in an alias definition, the last one of which wins'],
+  [
+    'shopt -s expand_aliases\nalias cat="env "\nalias l="cat rm"\ncat l -rf /',
+    'deny',
+    "the first word of an alias's text after a blank-ending one, itself an alias whose text was read before",
+  ],
+  [
+    'shopt -s expand_aliases\nalias cat="rm -rf / ;"\ncat cat',
+    'deny',
+    'an alias again after its own text, which Bash has finished reading',
+  ],
   ["x=$(cat <<E )\ncat <<'EOF'\n$(rm -rf /)\nEOF", 'ask', 'a here-document opened in a substitution and never closed'],
   ['declare -l v; v=RM; $v -rf /', 'deny', 'a variable that lowercases what it is assigned'],
   ['x=/; declare -e x=./build; rm -rf $x', 'deny', 'declare with an option Bash rejects changes nothing'],
