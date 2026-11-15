@@ -143,8 +143,11 @@ function runsScript(parsed: Parsed, name: Arg, fallback: boolean): void {
   }
 }
 
-/** An option a package manager doesn't know is configuration, which may say how scripts run (`--script-shell`). */
-function packageManagerOptions(parsed: Parsed): void {
+/**
+ * An option it doesn't know is configuration, which may say what runs: npm's `--script-shell`, vitest's
+ * `--globalSetup` spelled another way. So is one a word only known at run time may be.
+ */
+function unknownIsConfig(parsed: Parsed): void {
   if (parsed.unknownOptions.length > 0 || parsed.maybeOptions) parsed.effects.add('exec:arbitrary');
 }
 
@@ -406,6 +409,251 @@ function writesFile(parsed: Parsed, name: string): void {
 }
 
 const given = (parsed: Parsed, ...names: string[]) => names.some((name) => parsed.options[name] !== undefined);
+
+/** Options spelled in camelCase, each also in kebab-case, as yargs and cac read them: `--setupFiles`, `--setup-files`. */
+function camel(...spellings: string[]): string[] {
+  return spellings.map((spelling) =>
+    spelling
+      .split(' ')
+      .flatMap((name) => {
+        const kebab = name.replaceAll(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+        return kebab === name ? [name] : [name, kebab];
+      })
+      .join(' '),
+  );
+}
+
+/**
+ * Options whose value is a module it loads: with `always`, whatever it is (a config file, a setup file), else only a
+ * path (`--reporter=./r.ts`, where `--reporter=verbose` names one of its own). A module is code from wherever it is.
+ */
+function loadsModules(parsed: Parsed, names: string[], always = false): void {
+  for (const value of names.flatMap((name) => parsed.options[name] ?? [])) {
+    if (value === true || (!always && value.kind === 'static' && !scriptFile.test(value.value))) continue;
+    parsed.effects.add('exec:file');
+    parsed.reads.push(value);
+  }
+}
+
+const vitestOptions = opts(
+  ...camel(
+    '-v --version',
+    '-h --help',
+    '-r= --root=',
+    '--dir=',
+    '-c= --config=',
+    '-u --update',
+    '-w --watch',
+    '--no-watch',
+    '-t= --testNamePattern=',
+    '--workspace=',
+    '--project=',
+    '--open',
+    '--silent=?',
+    '--hideSkippedTests',
+    '--reporter=',
+    '--coverage',
+    '--no-coverage',
+    '--mode=',
+    '--isolate',
+    '--no-isolate',
+    '--globals',
+    '--dom',
+    '--browser=?',
+    '--pool=',
+    '--poolOptions=',
+    '--fileParallelism',
+    '--no-file-parallelism',
+    '--maxWorkers=',
+    '--minWorkers=',
+    '--environment=',
+    '--passWithNoTests',
+    '--logHeapUsage',
+    '--allowOnly',
+    '--dangerouslyIgnoreUnhandledErrors',
+    '--shard=',
+    '--changed=?',
+    '--sequence=',
+    '--testTimeout=',
+    '--hookTimeout=',
+    '--bail=',
+    '--retry=',
+    '--diff=',
+    '--exclude=',
+    '--expandSnapshotDiff',
+    '--disableConsoleIntercept',
+    '--typecheck',
+    '--slowTestThreshold=',
+    '--teardownTimeout=',
+    '--cache',
+    '--no-cache',
+    '--maxConcurrency=',
+    '--expect',
+    '--printConsoleTrace',
+    '--includeTaskLocation',
+    '--run',
+    '--no-color',
+    '--clearScreen',
+    '--configLoader=',
+    '--standalone',
+    '--mergeReports=?',
+  ),
+  o(camel('--outputFile=')[0]!, { role: 'write' }),
+  // A server that runs tests on request, or a debugger: code from whoever reaches it.
+  ...camel('--ui', '--api=?', '--inspect=?', '--inspectBrk=?').map((spellings) => o(spellings, { effects: ['network'] })),
+);
+
+const jestOptions = opts(
+  ...camel(
+    '-h --help',
+    '--version',
+    '--all',
+    '--automock',
+    '-b --bail=?',
+    '--cache',
+    '--no-cache',
+    '--cacheDirectory=',
+    '--changedFilesWithAncestor',
+    '--changedSince=',
+    '--ci',
+    '--clearCache',
+    '--clearMocks',
+    '--collectCoverage',
+    '--collectCoverageFrom=',
+    '--color',
+    '--colors',
+    '--coverage',
+    '--coverageDirectory=',
+    '--coveragePathIgnorePatterns=',
+    '--coverageProvider=',
+    '--coverageReporters=',
+    '--coverageThreshold=',
+    '--debug',
+    '--detectLeaks',
+    '--detectOpenHandles',
+    '--env=',
+    '--errorOnDeprecated',
+    '-e --expand',
+    '--findRelatedTests',
+    '--forceExit',
+    '--globals=',
+    '--ignoreProjects=',
+    '--injectGlobals',
+    '--json',
+    '--lastCommit',
+    '--listTests',
+    '--logHeapUsage',
+    '--maxConcurrency=',
+    '-w= --maxWorkers=',
+    '--moduleFileExtensions=',
+    '--modulePathIgnorePatterns=',
+    '--noStackTrace',
+    '--notify',
+    '--notifyMode=',
+    '-o --onlyChanged',
+    '-f --onlyFailures',
+    '--openHandlesTimeout=',
+    '--passWithNoTests',
+    '--randomize',
+    '--resetMocks',
+    '--resetModules',
+    '--restoreMocks',
+    '-i --runInBand',
+    '--runTestsByPath',
+    '--seed=',
+    '--selectProjects=',
+    '--shard=',
+    '--showConfig',
+    '--showSeed',
+    '--silent',
+    '--testEnvironmentOptions=',
+    '--testFailureExitCode=',
+    '--testLocationInResults',
+    '--testMatch=',
+    '-t= --testNamePattern=',
+    '--testPathIgnorePatterns=',
+    '--testPathPattern=',
+    '--testRegex=',
+    '--testTimeout=',
+    '--transformIgnorePatterns=',
+    '--unmockedModulePathPatterns=',
+    '-u --updateSnapshot',
+    '--useStderr',
+    '--verbose',
+    '--watch',
+    '--watchAll',
+    '--watchPathIgnorePatterns=',
+    '--watchman',
+    '--no-watchman',
+    '--workerThreads',
+  ),
+  o(camel('--outputFile=')[0]!, { role: 'write' }),
+);
+
+/** jest's options that name code it loads, whatever their value: a config may be JSON naming more. */
+const jestModules = camel(
+  '-c= --config=',
+  '--filter=',
+  '--globalSetup=',
+  '--globalTeardown=',
+  '--haste=',
+  '--init',
+  '--moduleDirectories=',
+  '--moduleNameMapper=',
+  '--modulePaths=',
+  '--preset=',
+  '--prettierPath=',
+  '--projects=',
+  '--reporters=',
+  '--resolver=',
+  '--rootDir=',
+  '--roots=',
+  '--runner=',
+  '--setupFiles=',
+  '--setupFilesAfterEnv=',
+  '--snapshotSerializers=',
+  '--testEnvironment=',
+  '--testResultsProcessor=',
+  '--testRunner=',
+  '--testSequencer=',
+  '--transform=',
+);
+
+const viteCommon = camel(
+  '-c= --config=',
+  '--base=',
+  '-l= --logLevel=',
+  '--clearScreen',
+  '--configLoader=',
+  '-d --debug=?',
+  '-f= --filter=',
+  '-m= --mode=',
+  '-h --help',
+  '-v --version',
+);
+const viteServer = opts(
+  ...viteCommon,
+  ...camel('--port=', '--open=?', '--cors', '--strictPort', '--force'),
+  // Its dev server and preview listen beyond this machine with --host.
+  o('--host=?', { effects: ['network'] }),
+);
+const viteBuild = opts(
+  ...viteCommon,
+  ...camel(
+    '--target=',
+    '--assetsDir=',
+    '--assetsInlineLimit=',
+    '--ssr=?',
+    '--sourcemap=?',
+    '--minify=?',
+    '--manifest=?',
+    '--ssrManifest=?',
+    '--emptyOutDir',
+    '-w --watch',
+    '--app',
+  ),
+  o(camel('--outDir=')[0]!, { role: 'write' }),
+);
 
 /** What tsc emits: JavaScript, declarations, source maps and build info, beside the sources or under its outDir. */
 const tscEmits = /\.([cm]?js|jsx|d\.[cm]?ts|map|tsbuildinfo)$/;
@@ -2257,9 +2505,10 @@ const envSpec: CommandSpec = {
     '--ignore-signal=?',
   ),
   finish(parsed) {
-    // A lone `-` is `-i`: assignments and the command come after it.
+    // A lone `-` right after the options is `-i`: assignments and the command come after it. After an assignment
+    // (`env -- --x=1 - cat`), it's the command.
     const [nested] = parsed.nested;
-    if (nested?.argv[0]?.kind !== 'static' || nested.argv[0].value !== '-') return;
+    if (parsed.env.length > 0 || nested?.argv[0]?.kind !== 'static' || nested.argv[0].value !== '-') return;
     const rest = nested.argv.slice(1);
     const command = rest.findIndex((arg) => arg.kind === 'dynamic' || !arg.value.includes('='));
     parsed.env.push(...rest.slice(0, command === -1 ? rest.length : command));
@@ -2969,7 +3218,7 @@ const programs: Record<string, CommandSpec> = {
       // npm takes any unique start of a command's name (`npm exe` is `npm exec`), and reads an option it doesn't
       // know as configuration, which may name the shell its scripts run in.
       if (parsed.subcommands.length === 0 && parsed.unknownSubcommand) parsed.effects.add('exec:arbitrary');
-      packageManagerOptions(parsed);
+      unknownIsConfig(parsed);
     },
   },
   npx: {
@@ -3013,7 +3262,7 @@ const programs: Record<string, CommandSpec> = {
       ...each('ls|list ll|la why root bin help get ignored-builds cat-file cat-index find-hash completion query', {}),
     },
     finish(parsed) {
-      packageManagerOptions(parsed);
+      unknownIsConfig(parsed);
       // A word pnpm doesn't know is a script, or else a command it runs from PATH (`pnpm node -e …`).
       if (parsed.subcommands.length > 0 || !parsed.unknownSubcommand) return;
       runsScript(parsed, parsed.unknownSubcommand, true);
@@ -3180,7 +3429,7 @@ const programs: Record<string, CommandSpec> = {
       ...each('help deploy', {}),
     },
     finish(parsed) {
-      packageManagerOptions(parsed);
+      unknownIsConfig(parsed);
       // A word bun doesn't know is a script, or else a file: `bun f` runs `f.ts`.
       if (parsed.subcommands.length > 0 || !parsed.unknownSubcommand) return;
       runsScript(parsed, parsed.unknownSubcommand, false);
@@ -3291,7 +3540,8 @@ const programs: Record<string, CommandSpec> = {
     },
   },
   // These load JavaScript configuration or plugins: project code, which may write anything. Where they rewrite files
-  // in place, the paths they're given are writes too.
+  // in place, the paths they're given are writes too. A configuration file named on the command line, or a plugin given
+  // by its path, is code from wherever it is.
   oxlint: {
     effects: ['exec:project'],
     options: opts(
@@ -3306,16 +3556,45 @@ const programs: Record<string, CommandSpec> = {
       '--fix-dangerously',
       '--ignore-path=',
       '--ignore-pattern=',
+      '--no-ignore',
+      '--quiet',
+      '--deny-warnings',
       '--max-warnings=',
       '-f= --format=',
       '--debug=',
+      '--silent',
+      '--no-error-on-unmatched-pattern',
       '--threads=',
+      '--print-config',
+      '--report-unused-disable-directives',
       '--report-unused-disable-directives-severity=',
+      '--rules',
+      '--disable-nested-config',
+      '--type-aware',
+      '--type-check',
+      '--disable-unicorn-plugin',
+      '--disable-oxc-plugin',
+      '--disable-typescript-plugin',
+      '--import-plugin',
+      '--react-plugin',
+      '--jsdoc-plugin',
+      '--jest-plugin',
+      '--vitest-plugin',
+      '--jsx-a11y-plugin',
+      '--nextjs-plugin',
+      '--react-perf-plugin',
+      '--promise-plugin',
+      '--node-plugin',
+      '--vue-plugin',
+      o('--lsp', { effects: ['exec:arbitrary'] }),
       '-h --help',
       '-V --version',
     ),
     finish(parsed) {
       if (given(parsed, '--init')) writesFile(parsed, '.oxlintrc.json');
+      // Its configuration may list JavaScript plugins.
+      loadsModules(parsed, ['--config'], true);
+      unknownIsConfig(parsed);
       rewrites(parsed, given(parsed, '--fix', '--fix-suggestions', '--fix-dangerously'));
     },
   },
@@ -3325,17 +3604,23 @@ const programs: Record<string, CommandSpec> = {
       o('-c= --config=', { role: 'read' }),
       '--init',
       '--migrate=',
-      '--lsp',
+      o('--lsp', { effects: ['exec:arbitrary'] }),
       '--stdin-filepath=',
       '--write',
       '--check',
       '--list-different',
       '--ignore-path=',
+      '--disable-nested-config',
+      '--with-node-modules',
+      '--no-error-on-unmatched-pattern',
       '--threads=',
       '-h --help',
       '-V --version',
     ),
     finish(parsed) {
+      // Its configuration may be TypeScript.
+      loadsModules(parsed, ['--config'], true);
+      unknownIsConfig(parsed);
       if (given(parsed, '--init', '--migrate')) {
         writesFile(parsed, '.oxfmtrc.json');
         return;
@@ -3347,32 +3632,62 @@ const programs: Record<string, CommandSpec> = {
     effects: ['exec:project'],
     options: opts(
       o('-c= --config=', { role: 'read' }),
-      '--fix',
-      '--fix-dry-run',
-      o('-o= --output-file=', { role: 'write' }),
-      o('--cache-location=', { role: 'write' }),
-      '--ext=',
-      '--rule=',
-      '--rulesdir=',
-      '--plugin=',
-      '-f= --format=',
-      '--max-warnings=',
-      '--ignore-pattern=',
-      '--ignore-path=',
+      '--no-config-lookup',
+      // Both fetch and run a package (@eslint/config-inspector, @eslint/create-config).
+      o('--inspect-config', { effects: ['network', 'exec:arbitrary'] }),
+      o('--init', { effects: ['network', 'exec:arbitrary'] }),
+      o('--mcp', { effects: ['exec:arbitrary'] }),
+      '--global=',
       '--parser=',
       '--parser-options=',
-      '--resolve-plugins-relative-to=',
-      '--env=',
-      '--global=',
-      '--cache-strategy=',
+      '--plugin=',
+      '--rule=',
+      '--fix',
+      '--fix-dry-run',
+      '--fix-type=',
+      '--no-ignore',
+      '--ignore-pattern=',
+      '--stdin',
       '--stdin-filename=',
+      '--quiet',
+      '--max-warnings=',
+      o('-o= --output-file=', { role: 'write' }),
+      '-f= --format=',
+      '--color',
+      '--no-color',
+      '--no-inline-config',
+      '--report-unused-disable-directives',
       '--report-unused-disable-directives-severity=',
+      '--report-unused-inline-configs=',
+      '--cache',
+      o('--cache-file=', { role: 'write' }),
+      o('--cache-location=', { role: 'write' }),
+      '--cache-strategy=',
+      '--env-info',
+      '--no-error-on-unmatched-pattern',
+      '--exit-on-fatal-error',
+      '--no-warn-ignored',
+      '--pass-on-no-patterns',
+      '--debug',
+      '--print-config=',
+      '--stats',
       '--flag=',
       '--concurrency=',
+      // eslintrc's, before flat configuration.
+      '--ext=',
+      '--rulesdir=',
+      '--resolve-plugins-relative-to=',
+      '--env=',
+      '--ignore-path=',
       '-h --help',
       '-v --version',
     ),
-    finish: (parsed) => rewrites(parsed, given(parsed, '--fix')),
+    finish(parsed) {
+      loadsModules(parsed, ['--config', '--rulesdir', '--resolve-plugins-relative-to'], true);
+      loadsModules(parsed, ['--plugin', '--parser', '--format']);
+      unknownIsConfig(parsed);
+      rewrites(parsed, given(parsed, '--fix'));
+    },
   },
   prettier: {
     effects: ['exec:project'],
@@ -3381,16 +3696,30 @@ const programs: Record<string, CommandSpec> = {
       '-c --check',
       '-l --list-different',
       o('--config=', { role: 'read' }),
+      '--no-config',
       '--plugin=',
       '--ignore-path=',
       '--log-level=',
       '--parser=',
       '--stdin-filepath=',
+      '--cache',
       o('--cache-location=', { role: 'write' }),
       '--cache-strategy=',
       '--config-precedence=',
+      '--no-editorconfig',
+      '--find-config-path=',
+      '--file-info=',
+      '--support-info',
+      '--ignore-unknown -u',
+      '--no-error-on-unmatched-pattern',
       '--print-width=',
       '--tab-width=',
+      '--use-tabs',
+      '--no-semi',
+      '--single-quote',
+      '--jsx-single-quote',
+      '--bracket-same-line',
+      '--no-bracket-spacing',
       '--end-of-line=',
       '--trailing-comma=',
       '--arrow-parens=',
@@ -3400,19 +3729,117 @@ const programs: Record<string, CommandSpec> = {
       '--embedded-language-formatting=',
       '--object-wrap=',
       '--experimental-operator-position=',
+      '--experimental-ternaries',
+      '--single-attribute-per-line',
+      '--vue-indent-script-and-style',
       '--cursor-offset=',
       '--range-start=',
       '--range-end=',
       '-h --help',
       '-v --version',
     ),
-    finish: (parsed) => rewrites(parsed, given(parsed, '--write')),
+    finish(parsed) {
+      loadsModules(parsed, ['--config'], true);
+      loadsModules(parsed, ['--plugin']);
+      unknownIsConfig(parsed);
+      rewrites(parsed, given(parsed, '--write'));
+    },
   },
-  'vitest|jest|tsdown': { effects: ['exec:project'] },
+  // cac and yargs take an option they don't know as configuration, which may load code (`--globalSetup`).
+  vitest: {
+    effects: ['exec:project'],
+    options: vitestOptions,
+    subcommands: {
+      ...each('run watch dev related bench list', { options: vitestOptions }),
+      init: { effects: ['network', 'fs:write', 'exec:arbitrary'] },
+    },
+    finish(parsed) {
+      loadsModules(parsed, ['--root', '--dir', '--config', '--workspace'], true);
+      loadsModules(parsed, ['--reporter', '--pool', '--environment', '--diff', '--browser']);
+      unknownIsConfig(parsed);
+    },
+  },
+  jest: {
+    effects: ['exec:project'],
+    options: [...jestOptions, ...opts(...jestModules)],
+    finish(parsed) {
+      loadsModules(
+        parsed,
+        jestModules.map((spellings) =>
+          spellings
+            .split(' ')
+            .find((name) => name.startsWith('--'))!
+            .replace(/=$/, ''),
+        ),
+        true,
+      );
+      unknownIsConfig(parsed);
+    },
+  },
+  tsdown: {
+    effects: ['exec:project'],
+    options: opts(
+      ...camel(
+        '-c= --config=',
+        '--config-loader=',
+        '--no-config',
+        '-f= --format=',
+        '--clean',
+        '--external=',
+        '--minify',
+        '--debug=?',
+        '--target=',
+        '-l= --logLevel=',
+        '--fail-on-warn',
+        '--treeshake',
+        '--sourcemap',
+        '--shims',
+        '--platform=',
+        '--dts',
+        '--publint',
+        '--attw',
+        '--unused',
+        '-w --watch=?',
+        '--ignore-watch=',
+        '--from-vite=?',
+        '--report',
+        '--unbundle',
+        '-W --workspace=?',
+        '-F= --filter=',
+        '--exports',
+        '-h --help',
+        '-v --version',
+      ),
+      o('-d= --out-dir=', { role: 'write' }),
+      o('--tsconfig=', { role: 'read' }),
+      o('--copy=', { role: 'read' }),
+      o('--public-dir=', { role: 'read' }),
+      // A shell command it runs after each build.
+      o('--on-success=', { role: 'script' }),
+    ),
+    finish(parsed) {
+      loadsModules(parsed, ['--config'], true);
+      unknownIsConfig(parsed);
+    },
+  },
   vite: {
     effects: ['exec:project'],
-    // Its dev server and preview listen beyond this machine with --host.
-    options: opts(o('--host=?', { effects: ['network'] })),
+    options: viteServer,
+    subcommands: {
+      ...each('serve dev', { options: viteServer }),
+      build: { options: viteBuild },
+      preview: { options: viteServer },
+      optimize: { options: opts(...viteCommon, '--force') },
+    },
+    finish(parsed) {
+      loadsModules(parsed, ['--config'], true);
+      unknownIsConfig(parsed);
+      // Its positional is the project's root, whose configuration it runs.
+      for (const root of parsed.positionals) {
+        parsed.effects.add('exec:file');
+        parsed.reads.push(root);
+      }
+    },
   },
   make: {
     effects: ['exec:project'],
