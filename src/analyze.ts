@@ -1240,13 +1240,15 @@ class Walker {
   }
 
   /**
-   * A prompt string: Bash decodes its escapes, then expands it, running the substitutions in it. An octal escape may
-   * make one: `\044(ls)` runs `ls`.
+   * A prompt string: Bash decodes its escapes, then expands it, running the substitutions in it. An escape may make
+   * one, or change one: `\044(ls)` runs `ls`, and `$(ls\nid)` runs `id` too.
    */
   prompt(text: string, state: State, ctx: Context, call: Call, label: string): void {
     this.expansions(text, state, ctx, call, label);
     const decoded = decodePrompt(text);
-    if (decoded !== text && /[$`]/.test(decoded)) this.expansions(decoded, state, ctx, call, label);
+    if (!/[$`]/.test(decoded.text)) return;
+    if (decoded.dynamic) this.finding(ctx, 'dynamic-script', `${label} expands an escape whose value is only known at run time`, call.span);
+    if (decoded.text !== text) this.expansions(decoded.text, state, ctx, call, label);
   }
 
   /** A call at `span`, for code found in text from elsewhere. */
@@ -2210,8 +2212,11 @@ class Walker {
     // A program that names what it writes only by the kind of file writes those files where they are, and no others.
     if (edits && (parsed.effects.has('fs:write') || parsed.effects.has('fs:delete'))) this.wrotePattern(edits);
     const unknown = writesUnknown(program, parsed, followed);
-    // Project code may write anything: what its spec names (`oxlint --fix src`) is its own writing too.
-    if (unknown !== 'project') this.wrote(parsed.writes, call, edits ? 'none' : writeKind(program));
+    // Project code may write anything: what its spec names (`oxlint --fix src`) is its own writing too. Where a program
+    // with `edits` only rewrites files of its kind, the pattern stands for what it writes; elsewhere (`tsc --outFile`)
+    // it writes the file it's given, whatever its name.
+    const named = edits ? parsed.writes.filter((write) => !parsed.edited?.includes(write)) : parsed.writes;
+    if (unknown !== 'project') this.wrote(named, call, edits ? 'contents' : writeKind(program));
     if (unknown !== false) this.wroteAnything(unknown === 'project');
   }
 
@@ -3162,14 +3167,24 @@ function unquote(text: string): string {
   );
 }
 
+/** Prompt escapes Bash decodes to a character, before it expands the prompt string. */
+const promptCharacters: Record<string, string> = { n: '\n', r: '\r', a: '\u0007', e: '\u001b', '[': '', ']': '' };
+
 /**
- * A prompt string with its octal escapes decoded, as Bash decodes them before expanding it: three digits, the low byte
- * of their value (`\444` is `$` too). A `\\` stays, escaping what follows.
+ * A prompt string with its escapes decoded, as Bash decodes them before expanding it: three octal digits are the low
+ * byte of their value (`\444` is `$` too), `\n` a newline, and a `\\` stays, escaping what follows. `dynamic`: it has
+ * an escape whose value is only known at run time (`\s` the shell's name, `\w` the directory, `\$` `#` for root).
  */
-function decodePrompt(text: string): string {
-  return text.replaceAll(/\\(\\|[0-7]{3})/g, (escape, digits: string) =>
-    digits === '\\' ? escape : String.fromCharCode(Number.parseInt(digits, 8) & 0xff),
-  );
+function decodePrompt(text: string): { text: string; dynamic: boolean } {
+  let dynamic = false;
+  const decoded = text.replaceAll(/\\(\\|[0-7]{3}|D\{[^}]*\}|.)/gs, (escape, what: string) => {
+    if (what === '\\') return escape;
+    if (/^[0-7]{3}$/.test(what)) return String.fromCharCode(Number.parseInt(what, 8) & 0xff);
+    if (what in promptCharacters) return promptCharacters[what]!;
+    if (/^(D\{|[dhHjlstT@AuvVwW!#$])/.test(what)) dynamic = true;
+    return escape;
+  });
+  return { text: decoded, dynamic };
 }
 
 /** Whether `node` is an expansion that's never closed, which the parser accepts without an error in a here-document. */

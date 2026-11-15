@@ -55,6 +55,8 @@ export interface Parsed {
   effects: Set<Effect>;
   reads: Arg[];
   writes: Arg[];
+  /** Of `writes`, where a program with `edits` rewrites only files of that kind: the files and directories it is given. */
+  edited?: Arg[];
   /** Command lines it runs. */
   nested: { argv: Arg[]; open: boolean }[];
   /** Shell code it runs (`bash -c`, `trap`, `git rebase -x`). */

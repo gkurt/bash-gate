@@ -481,8 +481,16 @@ describe('invocations', () => {
       'tsgo -b && npm test',
       'biome check --write && npm test',
       'biome format --write . && npm test',
+      'tsc --outDir . -p . && npm test',
     ])
       expect([source, findings(source)]).toEqual([source, []]);
+    // A file it's given to write is written whatever its name.
+    for (const source of [
+      'tsc --outFile package.json && npm test',
+      'tsc --tsBuildInfoFile package.json && npm test',
+      'tsc --OUTFILE package.json && npm test',
+    ])
+      expect([source, findings(source)]).toEqual([source, ["`/repo/package.json` may be changed by the script before it's read"]]);
     for (const source of ['oxlint --fix && npm test', 'prettier --write . && npm test', 'vitest run && npm test'])
       expect([source, findings(source)]).toEqual([source, ["`/repo/package.json` may be changed by project code before it's read"]]);
     // A file of a kind tsc emits is unknown after it, wherever it is: git config may include one.

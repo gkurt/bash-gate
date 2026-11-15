@@ -398,8 +398,9 @@ const cargoNew = [...cargoGlobal, manifestPath, ...opts('--bin', '--lib', '--nam
 function rewrites(parsed: Parsed, writing: boolean, here = true): void {
   if (!writing) return;
   parsed.effects.add('fs:write');
-  if (parsed.positionals.length > 0) parsed.writes.push(...parsed.positionals);
-  else if (here) parsed.writes.push({ kind: 'static', value: '.' });
+  const roots: Arg[] = parsed.positionals.length > 0 ? parsed.positionals : here ? [{ kind: 'static', value: '.' }] : [];
+  parsed.writes.push(...roots);
+  (parsed.edited ??= []).push(...roots);
 }
 
 /** `--init` and the like: a configuration file where it runs. */
@@ -3518,9 +3519,12 @@ const programs: Record<string, CommandSpec> = {
       parsed.effects.add(given(parsed, '--clean') ? 'fs:delete' : 'fs:write');
       // It emits beside the sources it's given, and into the project -p names.
       parsed.writes.push(...parsed.positionals, ...parsed.reads);
-      // tsc reads option names in any case: `--OUTDIR` may take the next word, or any, as where it writes.
+      const into = ['--outDir', '--declarationDir'].flatMap((name) => parsed.options[name] ?? []).filter((value) => value !== true);
+      // tsc reads option names in any case: `--OUTFILE` may take the next word, or any, as the file it writes.
       const outputs = /^--(outdir|outfile|declarationdir|tsbuildinfofile|generatetrace|generatecpuprofile|pprofdir)$/i;
-      if (!parsed.unknownOptions.some((name) => outputs.test(name))) return;
+      const unknown = parsed.unknownOptions.some((name) => outputs.test(name));
+      (parsed.edited ??= []).push(...(unknown ? [] : parsed.positionals), ...parsed.reads, ...into);
+      if (!unknown) return;
       const values = parsed.unknownOptions.flatMap((name) => parsed.options[name] ?? []);
       parsed.writes.push(...values.filter((value) => value !== true));
     },
