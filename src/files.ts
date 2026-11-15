@@ -85,6 +85,8 @@ export class Changes {
   paths = new Set<string>();
   /** Work trees git may have rewritten: everything under each but its `.git`, which git never writes there. */
   trees: { root: string; git: string }[] = [];
+  /** Files by name, wherever they are: what a compiler emits (`.js`, `.d.ts`). */
+  patterns: RegExp[] = [];
   any = false;
 
   add(path: string | undefined): void {
@@ -96,14 +98,27 @@ export class Changes {
     this.trees.push({ root, git });
   }
 
+  addPattern(pattern: RegExp): void {
+    if (!this.patterns.includes(pattern)) this.patterns.push(pattern);
+  }
+
+  /** Adds what `other` may have changed. */
+  merge(other: Changes): void {
+    for (const path of other.paths) this.paths.add(path);
+    this.trees.push(...other.trees);
+    for (const pattern of other.patterns) this.addPattern(pattern);
+    this.any ||= other.any;
+  }
+
   get empty(): boolean {
-    return !this.any && this.paths.size === 0 && this.trees.length === 0;
+    return !this.any && this.paths.size === 0 && this.trees.length === 0 && this.patterns.length === 0;
   }
 
   /** Whether `path` is, or may be, a changed path or under one. */
   covers(path: string): boolean {
     if (this.any) return true;
     for (const changed of this.paths) if (within(path, changed)) return true;
+    if (this.patterns.some((pattern) => pattern.test(path))) return true;
     return this.trees.some(({ root, git }) => within(path, root) && !compare(path, git));
   }
 }

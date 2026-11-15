@@ -137,8 +137,9 @@ issues, runs, releases, repositories and search. A fetch that forces or deletes 
 `git remote add` and `set-url` (they write `.git/config`), `gh api`, and a proxy, `GH_HOST` or `GH_REPO` set on the
 command line (sensitive variables).
 It allows project code (`exec:project`) as it does git hooks: the scripts, tests and builds `npm`, `pnpm`, `bun` and
-`cargo` run (`npm test`, `bun typecheck`, `cargo build`), unless they also install, publish, delete or run code the
-analysis can't place. Without `fs`, a name `pnpm` or `bun run` may run from PATH asks, since no script may have it.
+`cargo` run (`npm test`, `bun typecheck`, `cargo build`), and the tools those scripts run (`tsc`, `biome`, `oxlint`,
+`oxfmt`, `eslint`, `prettier`, `vitest`, `jest`, `tsdown`, `vite`), unless they also install, publish, delete, write
+outside the working directory, or run code the analysis can't place. Without `fs`, a name `pnpm` or `bun run` may run from PATH asks, since no script may have it.
 `make` isn't followed and asks. Add an ask rule for `exec:project` if project code matters.
 
 ## The environment
@@ -197,13 +198,16 @@ known `HOME`, a path set in a conditional include): that's an `exec-config` find
 - What isn't known becomes an `unknown-file` finding, and an entry in `analysis.needs`: `{ kind: 'file' | 'realpath',
   path }`. Errors thrown by the callbacks propagate.
 - The answers are about the filesystem _before_ the command. A file the script may write before it's read
-  (`cp -r hooks .git/ && git commit`), or while it's read (a pipeline, `&`, `<(…)`), is an `unknown-file` finding.
+  (`cp -r hooks .git/ && git commit`), or while it's read, is an `unknown-file` finding. While it's read is what the
+  other commands of a pipeline write (`./build.sh | git commit`), and with `&` or `<(…)` anything the script writes
+  after; a command's own writes after its read don't count (`npm test | tail`).
   A write may go through a symlink, so without an absolute `cwd` any write makes later reads unknown. A path under one
   the script may put a symlink on (`ln`, `cp`, `mv`, `tar`…) has no known real path. `mkdir`, `touch` and `chmod` change nothing a read sees. Git commands
   that rewrite the work tree (`checkout`, `stash`, `reset`, `merge`…) change everything in it but its `.git`. A program
   that may write files no one can name makes every later read unknown: one without a spec, one running code the
-  analysis doesn't follow (`make`, `npm install`, `python3 -c`, `./build.sh`), or one whose spec writes without saying
-  where.
+  analysis doesn't follow (`make`, `npm install`, `vitest`, `python3 -c`, `./build.sh`), or one whose spec writes
+  without saying where. `tsc` writes only what it emits (`.js`, `.d.ts`, `.map`, `.tsbuildinfo`), and `biome` only the
+  kinds of file it formats, so after them only files of those kinds are unknown, wherever they are.
 
 `snapshot({ files, realpaths })` builds a `FileSystem` from records: a path in neither isn't known. Where the
 filesystem is only reachable asynchronously (a browser, a remote sandbox), `checkAsync` analyses with what it has,

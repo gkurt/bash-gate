@@ -25,7 +25,8 @@ synchronous, use `/`-separated paths, and callback errors propagate to the calle
 filesystem and analyses again. Without `fs`, the limits below apply.
 
 The answers describe the filesystem before the command, which the command may change. A file the script may write
-before it's read, or while it's read (code that runs alongside: `&`, a pipeline, `<(…)`, `coproc`), is unknown, and
+before it's read, or while it's read (code that runs alongside: the other commands of a pipeline, and with `&`,
+`<(…)` or `coproc` the rest of the script), is unknown, and
 so is the real path of anything under a path where the script may create a symlink. A write may land elsewhere
 through a symlink that's already there, so writes count at their real path too, and without an absolute `cwd` any
 write makes later reads unknown. The writes counted are those of redirections and specs, plus the work tree (all but
@@ -120,7 +121,9 @@ execs kill the process, and so does any x32 system call.
   coreutils and uutils (Ubuntu's since 25.10) read a wrapper's arguments differently, the command it runs is unknown.
   For npm, pnpm and bun, the specs say which of their own commands beat a script of the same name, which words they
   run as a script, a file or a command from PATH, and which of their options they know: the one they don't is
-  configuration, `exec:arbitrary`. Checked against npm 11, pnpm 11 and bun 1.4.
+  configuration, `exec:arbitrary`. Checked against npm 11, pnpm 11 and bun 1.4. That `tsc` (TypeScript 7, whose
+  configuration is JSON) writes only what it emits, and `biome` only the kinds of file it formats; and that a formatter
+  keeps every value in a JSON file, so `biome` leaves a package.json's scripts as they were.
 - **The integration.** It must run exactly the string that was analysed, in the shell the assumptions describe, with
   nothing from an earlier command still running. `bash-gate/trace` does that itself, given the analysis that was
   checked.

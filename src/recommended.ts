@@ -18,6 +18,7 @@ export const recommended: Policy = {
       'git status|log|show|diff|blame|annotate|describe|rev-parse|rev-list|ls-files|ls-tree|ls-remote|show-ref|cat-file|shortlog|reflog|whatchanged|grep|merge-base|name-rev|count-objects|var|check-ignore|check-attr|for-each-ref|help|version',
     ),
     allow('git add|commit|switch|checkout|restore|stash|merge|rebase|cherry-pick|revert|branch|tag|mv|rm|fetch|pull|push|remote|config'),
+    allow('git worktree list'),
     deny('git push', {
       options: ['--force', '--force-with-lease', '--force-if-includes', '--mirror', '--delete'],
       reason: 'Rewrites or deletes remote history',
@@ -29,7 +30,9 @@ export const recommended: Policy = {
     ask('git fetch', { options: ['--force', '--update-head-ok', '--refmap', '--prune-tags'], reason: 'Deletes or moves a local ref' }),
     // Package scripts, tests and builds: project code, as git hooks are. Their specs give `exec:arbitrary` to inline
     // code, options they read as configuration and commands from PATH, and `network` to what installs or publishes.
-    allow('npm|pnpm|bun|cargo', { effects: ['exec:project', 'fs:read', 'fs:write'] }),
+    allow('npm|pnpm|bun|cargo|tsc|tsgo|biome|oxlint|oxfmt|eslint|prettier|vitest|jest|tsdown|vite', {
+      effects: ['exec:project', 'fs:read', 'fs:write'],
+    }),
     // Only those of gh's commands that read: the others in these groups have `network`.
     allow('gh pr|issue|run|workflow|release|repo|search|label|cache|ruleset|discussion|project|org|status', {
       effects: ['network:read'],

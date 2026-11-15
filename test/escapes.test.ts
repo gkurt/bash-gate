@@ -551,6 +551,21 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['cargo nextest run', 'ask', 'a word cargo runs as the program cargo-nextest'],
   ['cargo new ~/x', 'ask', 'cargo new outside the working directory'],
   ['cargo clean', 'ask', 'cargo deleting its build directory'],
+  // The tools project scripts run: project code, writing only where they're told.
+  [
+    'tsc --noEmit && tsgo -p src && oxlint && oxfmt --check && eslint . && prettier --check . && vitest run && jest && biome ci',
+    'allow',
+    'type checks, linters, formatters and test runners',
+  ],
+  ['oxlint --fix src && oxfmt && eslint --fix . && prettier --write . && biome check --write', 'allow', 'fixes and formatting in place'],
+  ['prettier --write ~/x', 'ask', 'a formatter rewriting files outside the working directory'],
+  ['oxfmt ../x', 'ask', 'oxfmt, which rewrites what it is given unless told to check'],
+  ['tsc --OUTDIR ~/x', 'ask', 'tsc, which reads its options in any case, emitting outside the working directory'],
+  ['tsc ../a.ts', 'ask', 'tsc emitting beside a source outside the working directory'],
+  ['tsc -b --clean', 'ask', 'tsc deleting what it built'],
+  ['vite --host', 'ask', 'a dev server listening beyond this machine'],
+  ['git worktree list', 'allow', 'listing work trees'],
+  ['git worktree add ../w', 'ask', 'a work tree checked out elsewhere'],
 ];
 
 /**
@@ -578,6 +593,9 @@ const filesystemCases: [source: string, decision: Decision, what: string][] = [
   ['git stash && git commit -m x', 'ask', 'git rewriting the work tree before it reads hooks'],
   ['git commit -m x && git commit -m y', 'allow', 'a commit leaves the hooks the next one reads alone'],
   ['git commit -m x | tee out', 'ask', 'a pipeline writing while git reads'],
+  ['git commit -m x | cat', 'allow', 'a pipeline whose other commands write nothing'],
+  ['cp -r hooks .git/ | git commit -m x', 'ask', 'a command before git in a pipeline, writing its hooks while it reads them'],
+  ['git commit -m x | { cat; echo x > .git/hooks/pre-commit; }', 'ask', 'a command after git in a pipeline, the same'],
   ['git commit -m x & echo x > out', 'ask', 'a background git reading while the script writes'],
   ['git --git-dir=made status', 'deny', 'the config of a directory named as the repository, with no .git in its path'],
   ['cd made && git fetch o', 'deny', 'the config of a directory made to look like a repository, which git finds by itself'],

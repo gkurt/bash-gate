@@ -412,6 +412,43 @@ describe('invocations', () => {
     for (const source of ['npm pkg set scripts.test="rm -rf /" && npm test', 'echo {} > package.json && pnpm test'])
       expect([source, analyze(source, environment).findings.map((finding) => finding.kind)]).toEqual([source, ['unknown-file']]);
   });
+
+  test('a command of a pipeline reads what the others may write, but not what it writes itself afterwards', () => {
+    const fs = snapshot({
+      files: { '/repo/package.json': JSON.stringify({ scripts: { test: 'cat ok; ./build.sh' } }) },
+      realpaths: { '/repo': '/repo', '/repo/package.json': '/repo/package.json' },
+    });
+    const findings = (source: string) => analyze(source, { cwd: '/repo', fs }).findings.map((finding) => finding.kind);
+    expect(findings('npm test | cat')).toEqual([]);
+    expect(findings('npm test | (cat; ./build.sh)')).toEqual(['unknown-file']);
+    expect(findings('./build.sh | npm test')).toEqual(['unknown-file']);
+    // Run in the background, it may still be running when the script writes after it.
+    expect(findings('npm test | cat & ./build.sh')).toEqual(['unknown-file']);
+    expect(findings('npm test | cat; ./build.sh')).toEqual([]);
+  });
+
+  test('tsc and biome write only files of their kinds, where project code may write anything', () => {
+    const files: Record<string, string> = {
+      '/repo/package.json': JSON.stringify({ scripts: { test: 'cat ok' } }),
+      '/repo/.git/HEAD': 'ref: refs/heads/main\n',
+      '/repo/.git/config': '[include]\n\tpath = /repo/settings.js\n',
+      '/repo/settings.js': '',
+    };
+    const fs = { readFile: (path: string) => files[path] ?? null, realpath: (path: string) => path };
+    const findings = (source: string) => analyze(source, { cwd: '/repo', fs }).findings.map((finding) => finding.message);
+    for (const source of [
+      'tsc && npm test',
+      'tsgo -b && npm test',
+      'biome check --write && npm test',
+      'biome format --write . && npm test',
+    ])
+      expect([source, findings(source)]).toEqual([source, []]);
+    for (const source of ['oxlint --fix && npm test', 'prettier --write . && npm test', 'vitest run && npm test'])
+      expect([source, findings(source)]).toEqual([source, ["`/repo/package.json` may be changed by the script before it's read"]]);
+    // A file of a kind tsc emits is unknown after it, wherever it is: git config may include one.
+    expect(findings('git status')).toEqual([]);
+    expect(findings('tsc && git status')).toEqual(["`/repo/settings.js` may be changed by the script before it's read"]);
+  });
 });
 
 describe('arithmetic', () => {

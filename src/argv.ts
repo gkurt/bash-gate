@@ -33,6 +33,11 @@ export interface CommandSpec {
    */
   command?: { skip?: number; assignments?: boolean | 'any'; open?: boolean; fallback?: string };
   effects?: Effect[];
+  /**
+   * The only files it writes without naming them, by name: what a compiler emits, what a formatter rewrites. Without it,
+   * a program that writes without saying where may write anything.
+   */
+  edits?: RegExp;
   /** For programs whose arguments aren't options and positionals (`find`): parses them in place of the generic parser. */
   parse?: (args: Arg[], parsed: Parsed) => void;
   /** Whatever options and positionals can't say, once they're parsed: `bash -c`'s script is its first positional. */

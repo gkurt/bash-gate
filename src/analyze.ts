@@ -175,8 +175,10 @@ interface Context {
   silent: boolean;
   /** Code run with arguments appended (`mapfile -C`, a git shell alias): every command in it may get more. */
   open: boolean;
-  /** Runs alongside the rest of the script (`&`, a pipeline, `<(…)`): what it reads may be written by what comes after. */
+  /** Runs alongside the rest of the script (`&`, `<(…)`): what it reads may be written by what comes after. */
   concurrent: boolean;
+  /** What the other commands of a pipeline it's in may write while it runs, as far as they're known. */
+  alongside?: Written[];
   /**
    * Variables of a temporary environment around the command or a function call it's in (`x=a f`): a local of the
    * same name may start with its value.
@@ -237,7 +239,7 @@ const appended = dynamicArg('…', 'stdin', true, '');
 export function analyze(source: string, environment: Environment = {}): Analysis {
   const script = parse(source);
   const files = environment.fs ? new Probe(environment.fs) : undefined;
-  const walk = (silent: boolean, everything?: Written): Walker => {
+  const walk = (silent: boolean, everything?: Written, members?: Map<object, Written>): Walker => {
     const state: State = {
       vars: new Map(Object.entries(environment.env ?? {}).map(([name, value]) => [name, { kind: 'static', value }])),
       exported: new Set(Object.keys(environment.env ?? {})),
@@ -276,13 +278,14 @@ export function analyze(source: string, environment: Environment = {}): Analysis
       open: false,
       concurrent: false,
     };
-    const walker = new Walker({ source, invocations: [], findings: [], needs: [] }, environment.maxDepth ?? 12, files, everything);
+    const walker = new Walker({ source, invocations: [], findings: [], needs: [] }, environment.maxDepth ?? 12, files, everything, members);
     walker.script(script, state, context);
     return walker;
   };
-  // Code that runs alongside the rest may read what the script writes after it: a silent first walk finds all of that.
-  const everything = files ? walk(true).written : undefined;
-  const { analysis } = walk(false, everything);
+  // Code that runs alongside the rest may read what the script writes after it: a silent first walk finds all of that,
+  // and what each command of a pipeline writes, for the others.
+  const first = files ? walk(true) : undefined;
+  const { analysis } = walk(false, first?.written, first?.members);
   const start = environment.cwd?.startsWith('/') ? resolvePath('/', environment.cwd) : undefined;
   if (start !== undefined) analysis.cwd = start;
   if (start !== undefined && files) analysis.realcwd = files.physical(start) ?? null;
@@ -354,9 +357,11 @@ function writesUnknown(program: string, parsed: Parsed, followed: boolean): bool
   if (!specFor(program)) return true;
   const { effects } = parsed;
   if (effects.has('exec:arbitrary') || effects.has('exec:file') || (effects.has('exec:project') && !followed)) return true;
-  if (program === 'git')
-    return /^(clone|worktree|init)$/.test(parsed.subcommands.join(' ')) || (!followed && gitWritesTree.test(parsed.subcommands.join(' ')));
-  return (effects.has('fs:write') || effects.has('fs:delete')) && parsed.writes.length === 0;
+  if (program === 'git') {
+    const subcommands = parsed.subcommands.join(' ');
+    return /^(clone|init|worktree( (add|move|repair))?)$/.test(subcommands) || (!followed && gitWritesTree.test(subcommands));
+  }
+  return (effects.has('fs:write') || effects.has('fs:delete')) && parsed.writes.length === 0 && !specFor(program)?.edits;
 }
 
 /** Programs that run package.json scripts, by the options that run another package's scripts instead. */
@@ -401,19 +406,29 @@ class Walker {
   scripts = new Map<string, ParsedScript>();
   /** What the whole script may write, for code that runs alongside the rest. */
   everything: Written | undefined;
+  /** What each command of a pipeline may write, by its node: recorded by the first walk, read by the second. */
+  members: Map<object, Written>;
+  /** Where writes are recorded besides `written`: the pipeline commands being walked. */
+  trackers: Written[] = [];
 
-  constructor(analysis: Analysis, maxDepth: number, files?: Probe, everything?: Written) {
+  constructor(analysis: Analysis, maxDepth: number, files?: Probe, everything?: Written, members?: Map<object, Written>) {
     this.analysis = analysis;
     this.maxDepth = maxDepth;
     this.files = files;
     this.everything = everything;
+    this.members = members ?? new Map();
+  }
+
+  /** `written` and the pipeline commands' records it's walking. */
+  get recorded(): Written[] {
+    return [this.written, ...this.trackers];
   }
 
   /** `writes` happen: `kind` is what they change for a later read (see `writeKind`). */
   wrote(writes: Arg[], call: Call, kind: 'none' | 'contents' | 'links'): void {
     if (!this.files || kind === 'none' || writes.length === 0) return;
     this.writes++;
-    const sets = kind === 'links' ? [this.written.contents, this.written.links] : [this.written.contents];
+    const sets = this.recorded.flatMap((written) => (kind === 'links' ? [written.contents, written.links] : [written.contents]));
     for (const arg of writes) {
       const path = arg.kind === 'static' ? resolvePath(call.cwd, arg.value, call.home) : undefined;
       // Through a symlink that's already there, a write lands somewhere else.
@@ -429,8 +444,17 @@ class Walker {
   wroteAnything(): void {
     if (!this.files) return;
     this.writes++;
-    this.written.contents.add(undefined);
-    this.written.links.add(undefined);
+    for (const written of this.recorded) {
+      written.contents.add(undefined);
+      written.links.add(undefined);
+    }
+  }
+
+  /** A program rewrites files whose names match `pattern`, wherever they are, and puts no symlinks anywhere. */
+  wrotePattern(pattern: RegExp): void {
+    if (!this.files) return;
+    this.writes++;
+    for (const written of this.recorded) written.contents.addPattern(pattern);
   }
 
   /** Git rewrites the work tree at `root`, files and symlinks, but not its `.git` (`git`). */
@@ -440,7 +464,7 @@ class Walker {
     this.writes++;
     const real = this.files.physical(root);
     const realGit = this.files.physical(git);
-    for (const changes of [this.written.contents, this.written.links]) {
+    for (const changes of this.recorded.flatMap((written) => [written.contents, written.links])) {
       changes.addTree(root, git);
       if (real === undefined || realGit === undefined) changes.add(undefined);
       else changes.addTree(real, realGit);
@@ -449,9 +473,11 @@ class Walker {
 
   /** Whether the script may have changed `path` before now: its contents, or (`links`) a symlink on its way. */
   changed(path: string, ctx: Context, kind: keyof Written): boolean {
-    const sets = [this.written[kind], ...(ctx.concurrent && this.everything ? [this.everything[kind]] : [])].filter(
-      (changes) => !changes.empty,
-    );
+    const sets = [
+      this.written[kind],
+      ...(ctx.concurrent && this.everything ? [this.everything[kind]] : []),
+      ...(ctx.alongside ?? []).map((written) => written[kind]),
+    ].filter((changes) => !changes.empty);
     if (sets.length === 0) return false;
     const real = path.startsWith('/') ? this.files?.physical(path) : undefined;
     return real === undefined || sets.some((changes) => changes.covers(path) || changes.covers(real));
@@ -517,6 +543,28 @@ class Walker {
     }
   }
 
+  /**
+   * One command of a pipeline. The others run while it does, and the pipeline ends before the next command starts, so
+   * what it reads may be changed by what the others write, never by its own later writes. The first walk records what
+   * each writes; without that record (code parsed from a string), or in code already alongside the rest, it's
+   * everything the script writes.
+   */
+  member(commands: readonly CommandNode[], command: CommandNode, shell: State, ctx: Context): void {
+    const others = commands.filter((other) => other !== command).map((other) => this.members.get(other));
+    const known = !ctx.concurrent && this.everything !== undefined && others.every((other) => other !== undefined);
+    const record: Written = { contents: new Changes(), links: new Changes() };
+    this.trackers.push(record);
+    try {
+      this.node(command, shell, known ? { ...ctx, alongside: [...(ctx.alongside ?? []), ...others] } : { ...ctx, concurrent: true });
+    } finally {
+      this.trackers.pop();
+    }
+    if (this.everything !== undefined) return;
+    const recorded = this.members.get(command);
+    if (!recorded) this.members.set(command, record);
+    else for (const kind of ['contents', 'links'] as const) recorded[kind].merge(record[kind]);
+  }
+
   node(node: PipelineNode | AndOr | CommandNode | CompoundList, state: State, ctx: Context): void {
     if (++this.work > maxWork) {
       // Recorded even in a silent walk: what follows isn't walked at all.
@@ -557,7 +605,8 @@ class Walker {
               : undefined;
         for (const [i, command] of node.commands.entries()) {
           const shell = together ? clone(state) : state;
-          this.node(command, shell, together ? { ...ctx, concurrent: true } : ctx);
+          if (together) this.member(node.commands, command, shell, ctx);
+          else this.node(command, shell, ctx);
           if (!together) continue;
           this.between(shell, ctx);
           if (i < node.commands.length - 1 || lastpipe === false) continue;
@@ -2045,7 +2094,10 @@ class Walker {
       );
     }
     // After what it reads first: `git config k v` reads the config, then writes it.
-    this.wrote(parsed.writes, call, writeKind(program));
+    const edits = specFor(program)?.edits;
+    // A program that names what it writes only by the kind of file writes those files where they are, and no others.
+    if (edits && (parsed.effects.has('fs:write') || parsed.effects.has('fs:delete'))) this.wrotePattern(edits);
+    this.wrote(parsed.writes, call, edits ? 'none' : writeKind(program));
     if (writesUnknown(program, parsed, followed)) this.wroteAnything();
   }
 

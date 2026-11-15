@@ -388,6 +388,70 @@ const cargoOptions = [
 /** `cargo new` and `init` take `--bin` alone, and write where their positional says. */
 const cargoNew = [...cargoGlobal, manifestPath, ...opts('--bin', '--lib', '--name=', '--vcs=', '--edition=', '--registry=')];
 
+/**
+ * A linter's fixes or a formatter's rewrites, when `writing`: the files and directories its positionals name, or with
+ * `here` the working directory when there are none.
+ */
+function rewrites(parsed: Parsed, writing: boolean, here = true): void {
+  if (!writing) return;
+  parsed.effects.add('fs:write');
+  if (parsed.positionals.length > 0) parsed.writes.push(...parsed.positionals);
+  else if (here) parsed.writes.push({ kind: 'static', value: '.' });
+}
+
+/** `--init` and the like: a configuration file where it runs. */
+function writesFile(parsed: Parsed, name: string): void {
+  parsed.effects.add('fs:write');
+  parsed.writes.push({ kind: 'static', value: name });
+}
+
+const given = (parsed: Parsed, ...names: string[]) => names.some((name) => parsed.options[name] !== undefined);
+
+/** What tsc emits: JavaScript, declarations, source maps and build info, beside the sources or under its outDir. */
+const tscEmits = /\.([cm]?js|jsx|d\.[cm]?ts|map|tsbuildinfo)$/;
+
+/** What biome formats and fixes. A JSON formatter keeps every value, so a package.json's scripts stay what they were. */
+const biomeEdits = /(?<!(?:^|\/)package)\.(jsonc?|[cm]?[jt]sx?|css|graphql|gql|html|vue|svelte|astro|grit)$/;
+
+const biomeOptions = opts(
+  o('--config-path=', { role: 'read' }),
+  '--write',
+  '--fix',
+  '--apply',
+  '--apply-unsafe',
+  '--unsafe',
+  '--staged',
+  '--changed',
+  '--since=',
+  '--only=',
+  '--skip=',
+  '--reporter=',
+  '--diagnostic-level=',
+  '--max-diagnostics=',
+  '--error-on-warnings',
+  '--no-errors-on-unmatched',
+  '--files-ignore-unknown=',
+  '--formatter-enabled=',
+  '--linter-enabled=',
+  '--assist-enabled=',
+  '--vcs-enabled=',
+  '--vcs-client-kind=',
+  '--vcs-use-ignore-file=',
+  '--vcs-root=',
+  '--vcs-default-branch=',
+  '--stdin-file-path=',
+  '--colors=',
+  '--use-server',
+  '--verbose',
+  '--skip-parse-errors',
+  '--threads=',
+  '--log-level=',
+  '--log-kind=',
+  o('--log-file=', { role: 'write' }),
+  '-h --help',
+  '-V --version',
+);
+
 /** Reads its positionals, with the options given (so their values aren't taken for paths). */
 function reader(...options: (string | OptionSpec)[]): CommandSpec {
   return { abbreviations: true, positionals: 'read', effects: ['fs:read'], options: opts(...options) };
@@ -869,7 +933,15 @@ const git: CommandSpec = {
     mv: { abbreviations: true, effects: ['fs:write'], options: opts('-f --force', '-k', '-n --dry-run', '-v --verbose') },
     ...each('apply am', { abbreviations: true, effects: hooks }),
     submodule: { effects: ['network', ...hooks] },
-    worktree: { effects: ['fs:write'] },
+    worktree: {
+      subcommands: {
+        list: { options: opts('--porcelain', '-v --verbose', '--expire=', '-z') },
+        // A new work tree is checked out where it says, which runs post-checkout.
+        add: { effects: ['fs:write', ...hooks], positionals: 'write' },
+        ...each('remove prune', { effects: ['fs:delete'] }),
+        ...each('move lock unlock repair', { effects: ['fs:write'] }),
+      },
+    },
     init: {
       abbreviations: true,
       effects: ['fs:write'],
@@ -3135,6 +3207,212 @@ const programs: Record<string, CommandSpec> = {
       // A word cargo doesn't know is an alias, or the program `cargo-<word>` on PATH; `+toolchain` is rustup's.
       if (parsed.subcommands.length === 0 && parsed.unknownSubcommand) parsed.effects.add('exec:arbitrary');
     },
+  },
+  // TypeScript 7, native: its configuration is JSON, and it writes only what it emits.
+  'tsc|tsgo': {
+    edits: tscEmits,
+    options: opts(
+      '-b --build',
+      '-w --watch',
+      o('-p= --project=', { role: 'read' }),
+      '--noEmit',
+      '--listFilesOnly',
+      '--showConfig',
+      '--init',
+      '--clean',
+      o('--outDir=', { role: 'write' }),
+      o('--outFile=', { role: 'write' }),
+      o('--declarationDir=', { role: 'write' }),
+      o('--tsBuildInfoFile=', { role: 'write' }),
+      o('--generateTrace=', { role: 'write' }),
+      o('--generateCpuProfile=', { role: 'write' }),
+      o('--pprofDir=', { role: 'write' }),
+      '-t= --target=',
+      '-m= --module=',
+      '--moduleResolution=',
+      '--moduleDetection=',
+      '--moduleSuffixes=',
+      '--lib=',
+      '--jsx=',
+      '--jsxFactory=',
+      '--jsxFragmentFactory=',
+      '--jsxImportSource=',
+      '--reactNamespace=',
+      '--rootDir=',
+      '--rootDirs=',
+      '--baseUrl=',
+      '--types=',
+      '--typeRoots=',
+      '--customConditions=',
+      '--locale=',
+      '--newLine=',
+      '--mapRoot=',
+      '--sourceRoot=',
+      '--maxNodeModuleJsDepth=',
+      '--checkers=',
+      '--builders=',
+      '--watchFile=',
+      '--watchDirectory=',
+      '--watchInterval=',
+      '--fallbackPolling=',
+      '--excludeDirectories=',
+      '--excludeFiles=',
+      '-h --help',
+      '-v --version',
+    ),
+    finish(parsed) {
+      if (given(parsed, '--init')) {
+        writesFile(parsed, 'tsconfig.json');
+        return;
+      }
+      if (given(parsed, '--noEmit', '--listFilesOnly', '--showConfig', '--help', '--version')) return;
+      parsed.effects.add(given(parsed, '--clean') ? 'fs:delete' : 'fs:write');
+      // It emits beside the sources it's given, and into the project -p names.
+      parsed.writes.push(...parsed.positionals, ...parsed.reads);
+      // tsc reads option names in any case: `--OUTDIR` may take the next word, or any, as where it writes.
+      const outputs = /^--(outdir|outfile|declarationdir|tsbuildinfofile|generatetrace|generatecpuprofile|pprofdir)$/i;
+      if (!parsed.unknownOptions.some((name) => outputs.test(name))) return;
+      const values = parsed.unknownOptions.flatMap((name) => parsed.options[name] ?? []);
+      parsed.writes.push(...values.filter((value) => value !== true));
+    },
+  },
+  biome: {
+    edits: biomeEdits,
+    options: biomeOptions,
+    subcommands: {
+      ...each('check lint', {
+        options: biomeOptions,
+        finish: (parsed) => rewrites(parsed, given(parsed, '--write', '--fix', '--apply', '--apply-unsafe'), false),
+      }),
+      ...each('format migrate', { options: biomeOptions, finish: (parsed) => rewrites(parsed, given(parsed, '--write', '--fix'), false) }),
+      init: { options: opts('--jsonc'), finish: (parsed) => writesFile(parsed, given(parsed, '--jsonc') ? 'biome.jsonc' : 'biome.json') },
+      clean: { effects: ['fs:delete'] },
+      ...each('ci explain rage search version help lsp-proxy start stop', { options: biomeOptions }),
+    },
+  },
+  // These load JavaScript configuration or plugins: project code, which may write anything. Where they rewrite files
+  // in place, the paths they're given are writes too.
+  oxlint: {
+    effects: ['exec:project'],
+    options: opts(
+      o('-c= --config=', { role: 'read' }),
+      o('--tsconfig=', { role: 'read' }),
+      '--init',
+      '-A= --allow=',
+      '-W= --warn=',
+      '-D= --deny=',
+      '--fix',
+      '--fix-suggestions',
+      '--fix-dangerously',
+      '--ignore-path=',
+      '--ignore-pattern=',
+      '--max-warnings=',
+      '-f= --format=',
+      '--debug=',
+      '--threads=',
+      '--report-unused-disable-directives-severity=',
+      '-h --help',
+      '-V --version',
+    ),
+    finish(parsed) {
+      if (given(parsed, '--init')) writesFile(parsed, '.oxlintrc.json');
+      rewrites(parsed, given(parsed, '--fix', '--fix-suggestions', '--fix-dangerously'));
+    },
+  },
+  oxfmt: {
+    effects: ['exec:project'],
+    options: opts(
+      o('-c= --config=', { role: 'read' }),
+      '--init',
+      '--migrate=',
+      '--lsp',
+      '--stdin-filepath=',
+      '--write',
+      '--check',
+      '--list-different',
+      '--ignore-path=',
+      '--threads=',
+      '-h --help',
+      '-V --version',
+    ),
+    finish(parsed) {
+      if (given(parsed, '--init', '--migrate')) {
+        writesFile(parsed, '.oxfmtrc.json');
+        return;
+      }
+      rewrites(parsed, !given(parsed, '--check', '--list-different', '--lsp', '--stdin-filepath', '--help', '--version'));
+    },
+  },
+  eslint: {
+    effects: ['exec:project'],
+    options: opts(
+      o('-c= --config=', { role: 'read' }),
+      '--fix',
+      '--fix-dry-run',
+      o('-o= --output-file=', { role: 'write' }),
+      o('--cache-location=', { role: 'write' }),
+      '--ext=',
+      '--rule=',
+      '--rulesdir=',
+      '--plugin=',
+      '-f= --format=',
+      '--max-warnings=',
+      '--ignore-pattern=',
+      '--ignore-path=',
+      '--parser=',
+      '--parser-options=',
+      '--resolve-plugins-relative-to=',
+      '--env=',
+      '--global=',
+      '--cache-strategy=',
+      '--stdin-filename=',
+      '--report-unused-disable-directives-severity=',
+      '--flag=',
+      '--concurrency=',
+      '-h --help',
+      '-v --version',
+    ),
+    finish: (parsed) => rewrites(parsed, given(parsed, '--fix')),
+  },
+  prettier: {
+    effects: ['exec:project'],
+    options: opts(
+      '-w --write',
+      '-c --check',
+      '-l --list-different',
+      o('--config=', { role: 'read' }),
+      '--plugin=',
+      '--ignore-path=',
+      '--log-level=',
+      '--parser=',
+      '--stdin-filepath=',
+      o('--cache-location=', { role: 'write' }),
+      '--cache-strategy=',
+      '--config-precedence=',
+      '--print-width=',
+      '--tab-width=',
+      '--end-of-line=',
+      '--trailing-comma=',
+      '--arrow-parens=',
+      '--prose-wrap=',
+      '--quote-props=',
+      '--html-whitespace-sensitivity=',
+      '--embedded-language-formatting=',
+      '--object-wrap=',
+      '--experimental-operator-position=',
+      '--cursor-offset=',
+      '--range-start=',
+      '--range-end=',
+      '-h --help',
+      '-v --version',
+    ),
+    finish: (parsed) => rewrites(parsed, given(parsed, '--write')),
+  },
+  'vitest|jest|tsdown': { effects: ['exec:project'] },
+  vite: {
+    effects: ['exec:project'],
+    // Its dev server and preview listen beyond this machine with --host.
+    options: opts(o('--host=?', { effects: ['network'] })),
   },
   make: {
     effects: ['exec:project'],
