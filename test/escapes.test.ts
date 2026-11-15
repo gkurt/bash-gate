@@ -282,6 +282,13 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ["git config core.pager 'rm -rf /'", 'deny', 'setting a git config that runs code later'],
   ['git config user.name agent', 'ask', 'writing the repository Git config'],
   ['cp -r hooks .git/', 'ask', 'copying into .git, where hooks live'],
+  ['echo "* diff=x" > .git/info/attributes', 'ask', 'writing anywhere inside .git'],
+  [
+    "mkdir -p r/objects r/refs; echo 'ref: refs/heads/main' > r/HEAD; echo x > r/config; git --git-dir=r status",
+    'ask',
+    'a directory made to look like a repository, whose config git runs',
+  ],
+  ['mkdir -p r/objects r/refs; cp head r/HEAD; cd r; git fetch o', 'ask', 'the same, found by git from inside it'],
   ['mv hooks .git/hooks', 'ask', 'replacing the hooks directory'],
   ["git rebase -x 'rm -rf /' main", 'deny', 'rebase --exec'],
   ['git bisect run rm -rf /', 'deny', 'bisect run'],
@@ -516,7 +523,13 @@ const cases: [source: string, decision: Decision, what: string][] = [
  * The same, with a filesystem (`readFile` and `realpath` over a small repository): Git config and hooks are read and
  * walked. The working directory is relative, so whatever the script writes may be where git reads.
  */
-const tree: Record<string, string> = { '.git/config': '[core]\n\tbare = false\n', '.git/hooks/pre-commit': 'cat lint' };
+const tree: Record<string, string> = {
+  '.git/HEAD': 'ref: refs/heads/main\n',
+  '.git/config': '[core]\n\tbare = false\n',
+  '.git/hooks/pre-commit': 'cat lint',
+  'made/HEAD': 'ref: refs/heads/main\n',
+  'made/config': '[core]\n\tfsmonitor = rm -rf /\n\tsshCommand = rm -rf /\n',
+};
 const withFiles: Environment = { fs: { readFile: (path) => tree[path] ?? null, realpath: (path) => path } };
 const filesystemCases: [source: string, decision: Decision, what: string][] = [
   ['git commit -m x', 'allow', 'a hook the filesystem has is walked'],
@@ -526,6 +539,11 @@ const filesystemCases: [source: string, decision: Decision, what: string][] = [
   ['git commit -m x && git commit -m y', 'allow', 'a commit leaves the hooks the next one reads alone'],
   ['git commit -m x | tee out', 'ask', 'a pipeline writing while git reads'],
   ['git commit -m x & echo x > out', 'ask', 'a background git reading while the script writes'],
+  ['git --git-dir=made status', 'deny', 'the config of a directory named as the repository, with no .git in its path'],
+  ['cd made && git fetch o', 'deny', 'the config of a directory made to look like a repository, which git finds by itself'],
+  ['git -C made/objects log', 'deny', 'the same, from a directory under it'],
+  ['cd made && git --bare log', 'deny', '--bare, which makes the working directory the repository'],
+  ['git --git-dir "$dir" status', 'ask', 'a repository only known at run time'],
 ];
 
 /** The same, starting in a known absolute directory: relative globs match from it. */

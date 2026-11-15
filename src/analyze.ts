@@ -2087,77 +2087,37 @@ class Walker {
     }
   }
 
-  /** Git config, the work tree's writes and the hooks: `false` when the repository wasn't found, so none were followed. */
+  /** Whether something is at `path`: `undefined` when that isn't known, or the script may have changed it (a finding). */
+  exists(path: string, ctx: Context, call: Call): boolean | undefined {
+    const real = this.files!.realpath(path);
+    if (this.changed(path, ctx, 'contents')) {
+      this.finding(ctx, 'unknown-file', `\`${path}\` may be changed by the script before it's looked for`, call.span);
+      return undefined;
+    }
+    if (real === undefined) this.finding(ctx, 'unknown-file', `Whether \`${path}\` is there isn't known`, call.span);
+    return real === undefined ? undefined : real !== null;
+  }
+
+  /**
+   * Git config, the work tree's writes and the hooks, of the repository git takes: the one `--git-dir` or `--bare`
+   * names, else the first it finds from `cwd` up, in `.git` or in the directory itself. One that may not be a
+   * repository (git wants a `HEAD`, `objects` and `refs`) is followed, and so are those above it. `false` when which
+   * it takes isn't settled, so what it runs may not all have been followed.
+   */
   gitProject(cwd: string | undefined, parsed: Parsed, state: State, ctx: Context, call: Call): boolean {
     if (!this.files || !cwd) return false;
     // What isn't known is read as absent, so that one round of fetching asks for everything up to the root.
-    const readFile = (path: string) => this.read(path, ctx, call);
-    let repoRoot = cwd;
-    let gitDir: string | undefined;
-    let commonDir: string | undefined;
-    let configPath: string | undefined;
-    let direct: string | undefined;
-    for (let depth = 0; depth < 16; depth++) {
-      const candidate = resolvePath(repoRoot, '.git');
-      if (!candidate) return false;
-      const config = readFile(`${candidate}/config`);
-      if (config !== undefined) {
-        gitDir = candidate;
-        configPath = `${candidate}/config`;
-        direct = config;
-        break;
-      }
-      const marker = readFile(candidate);
-      const pointer = marker && /^gitdir:\s*(.+?)\s*$/im.exec(marker)?.[1];
-      if (pointer) {
-        gitDir = resolvePath(repoRoot, pointer) ?? pointer;
-        const commonPointer = readFile(`${gitDir}/commondir`)?.trim();
-        commonDir = commonPointer ? (resolvePath(gitDir, commonPointer) ?? commonPointer) : gitDir;
-        configPath = `${commonDir}/config`;
-        direct = readFile(configPath);
-        break;
-      }
-      const parent = resolvePath(repoRoot, '..');
-      if (!parent || parent === repoRoot) return false;
-      repoRoot = parent;
-    }
-    if (!gitDir || !configPath) return false;
-    const entries: { key: string; value: string }[] = [];
-    const visited = new Set<string>();
-    const load = (path: string, depth: number): void => {
-      if (visited.has(path)) return;
-      if (depth > 16) {
-        this.finding(ctx, 'exec-config', 'Git config includes exceed the analysis limit', call.span);
-        return;
-      }
-      visited.add(path);
-      const text = path === configPath && direct !== undefined ? direct : readFile(path);
-      if (text === undefined) return;
-      const parsedEntries = parseGitConfig(text);
-      for (const entry of parsedEntries) {
-        if (entry.key === 'include.path' || (entry.key.startsWith('includeif.') && entry.key.endsWith('.path'))) {
-          if (/[${}]/.test(entry.value)) {
-            this.finding(ctx, 'exec-config', `Git config include path is dynamic: ${entry.value}`, call.span);
-            continue;
-          }
-          const base = path.slice(0, Math.max(0, path.lastIndexOf('/'))) || '.';
-          load(resolvePath(base, entry.value) ?? `${base}/${entry.value}`, depth + 1);
-        } else {
-          entries.push(entry);
-        }
-      }
+    const texts = new Map<string, string | undefined>();
+    const readFile = (path: string) => {
+      if (!texts.has(path)) texts.set(path, this.read(path, ctx, call));
+      return texts.get(path);
     };
-    load(configPath, 0);
-    let hooksPath: string | undefined;
-    for (const entry of entries) {
-      const risk = gitConfig(entry.key, entry.value);
-      if (risk) this.gitConfigEntry({ kind: 'static', value: `${entry.key}=${entry.value}` }, state, ctx, call);
-      if (entry.key.toLowerCase() === 'core.hookspath') hooksPath = entry.value;
-    }
-
-    if (gitWritesTree.test(parsed.subcommands.join(' '))) this.wroteTree(repoRoot, resolvePath(repoRoot, '.git')!);
+    const staticPath = (arg: Arg | true | undefined) =>
+      arg !== undefined && arg !== true && arg.kind === 'static' ? resolvePath(cwd, arg.value, call.home) : undefined;
+    const tree = parsed.options['--work-tree']?.at(-1);
+    const workTree = staticPath(tree);
+    const writesTree = gitWritesTree.test(parsed.subcommands.join(' '));
     const subcommand = parsed.subcommands.at(-1);
-    if (!subcommand) return true;
     const hooks: Record<string, string[]> = {
       commit: ['pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit'],
       push: ['pre-push'],
@@ -2169,16 +2129,116 @@ class Walker {
       revert: ['pre-commit', 'prepare-commit-msg', 'post-commit'],
       am: ['applypatch-msg', 'pre-applypatch', 'post-applypatch'],
     };
-    const names = hooks[subcommand];
-    if (!names) return true;
-    const directory = hooksPath ? (resolvePath(repoRoot, hooksPath) ?? hooksPath) : `${commonDir ?? gitDir}/hooks`;
-    for (const name of names) {
-      if (parsed.options['--no-verify'] && ['pre-commit', 'commit-msg', 'pre-push'].includes(name)) continue;
-      const path = `${directory}/${name}`;
-      const script = readFile(path);
-      if (script !== undefined) this.code(script, childState(state, repoRoot), ctx, call, `git hook ${name}`);
+    /** Where a worktree's git directory keeps what it shares with the others: its config and hooks. */
+    const commonOf = (gitDir: string): string => {
+      const pointer = readFile(`${gitDir}/commondir`)?.trim();
+      return pointer ? (resolvePath(gitDir, pointer) ?? pointer) : gitDir;
+    };
+    /** Whether git takes `gitDir` for certain: a `HEAD` it can read, with `objects` and `refs` beside it. */
+    const valid = (gitDir: string): boolean => {
+      const head = readFile(`${gitDir}/HEAD`);
+      if (head === undefined || !/^(ref:\s*refs\/|[0-9a-f]{40})/.test(head)) return false;
+      const common = commonOf(gitDir);
+      return this.exists(`${common}/objects`, ctx, call) === true && this.exists(`${common}/refs`, ctx, call) === true;
+    };
+    /** Whether `gitDir` has a `HEAD`: without one, git never takes it. Not knowing is a finding. */
+    const heads = new Map<string, boolean>();
+    const hasHead = (gitDir: string): boolean => {
+      if (!heads.has(gitDir)) heads.set(gitDir, this.exists(`${gitDir}/HEAD`, ctx, call) === true);
+      return heads.get(gitDir)!;
+    };
+
+    const followed = new Set<string>();
+    const walked = new Set<string>();
+    /** Follows the repository in `gitDir` whose work tree is `root`: `inside` is what git doesn't rewrite there. */
+    const follow = (gitDir: string, root: string, inside: string): void => {
+      if (followed.has(gitDir)) return;
+      followed.add(gitDir);
+      const common = commonOf(gitDir);
+      const entries: { key: string; value: string }[] = [];
+      const visited = new Set<string>();
+      const load = (path: string, depth: number): void => {
+        if (visited.has(path)) return;
+        if (depth > 16) {
+          this.finding(ctx, 'exec-config', 'Git config includes exceed the analysis limit', call.span);
+          return;
+        }
+        visited.add(path);
+        const text = readFile(path);
+        if (text === undefined) return;
+        for (const entry of parseGitConfig(text)) {
+          if (entry.key === 'include.path' || (entry.key.startsWith('includeif.') && entry.key.endsWith('.path'))) {
+            if (/[${}]/.test(entry.value)) {
+              this.finding(ctx, 'exec-config', `Git config include path is dynamic: ${entry.value}`, call.span);
+              continue;
+            }
+            const base = path.slice(0, Math.max(0, path.lastIndexOf('/'))) || '.';
+            load(resolvePath(base, entry.value) ?? `${base}/${entry.value}`, depth + 1);
+          } else {
+            entries.push(entry);
+          }
+        }
+      };
+      load(`${common}/config`, 0);
+      let hooksPath: string | undefined;
+      for (const entry of entries) {
+        const risk = gitConfig(entry.key, entry.value);
+        if (risk) this.gitConfigEntry({ kind: 'static', value: `${entry.key}=${entry.value}` }, state, ctx, call);
+        if (entry.key.toLowerCase() === 'core.hookspath') hooksPath = entry.value;
+      }
+
+      if (writesTree && tree !== undefined && workTree === undefined) this.wroteAnything();
+      else if (writesTree) this.wroteTree(workTree ?? root, inside);
+      const names = subcommand === undefined ? undefined : hooks[subcommand];
+      if (!names) return;
+      const directory = hooksPath ? (resolvePath(root, hooksPath) ?? hooksPath) : `${common}/hooks`;
+      for (const name of names) {
+        if (parsed.options['--no-verify'] && ['pre-commit', 'commit-msg', 'pre-push'].includes(name)) continue;
+        const path = `${directory}/${name}`;
+        if (walked.has(path)) continue;
+        walked.add(path);
+        const script = readFile(path);
+        if (script !== undefined) this.code(script, childState(state, workTree ?? root), ctx, call, `git hook ${name}`);
+      }
+    };
+
+    // `--bare` makes the working directory the repository, unless `--git-dir` names one.
+    const given = parsed.options['--git-dir']?.at(-1);
+    if (given !== undefined || parsed.options['--bare'] !== undefined) {
+      const gitDir = given === undefined ? cwd : staticPath(given);
+      if (gitDir === undefined) {
+        this.finding(ctx, 'exec-config', 'The repository git reads is only known at run time', call.span);
+        return false;
+      }
+      follow(gitDir, cwd, gitDir);
+      return true;
     }
-    return true;
+
+    let dir = cwd;
+    for (let depth = 0; depth < 16; depth++) {
+      const dotGit = resolvePath(dir, '.git');
+      if (!dotGit) return false;
+      // A `.git` file names the git directory, which git takes or fails on.
+      const pointer = /^gitdir:\s*(.+?)\s*$/im.exec(readFile(dotGit) ?? '')?.[1];
+      if (pointer !== undefined) {
+        follow(resolvePath(dir, pointer) ?? pointer, dir, dotGit);
+        return true;
+      }
+      if (readFile(`${dotGit}/config`) !== undefined || hasHead(dotGit)) {
+        follow(dotGit, dir, dotGit);
+        if (valid(dotGit)) return true;
+      }
+      // The directory itself, when it has what a `.git` has: a bare repository, or one made to look like it.
+      if (hasHead(dir)) {
+        follow(dir, dir, dir);
+        if (valid(dir)) return true;
+      }
+      const parent = resolvePath(dir, '..');
+      // Up to the root, every directory git may have taken was followed.
+      if (!parent || parent === dir) return followed.size > 0;
+      dir = parent;
+    }
+    return false;
   }
 
   /** The package.json scripts `npm run` and the like run: `false` when they weren't followed. */

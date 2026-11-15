@@ -43,8 +43,10 @@ export const recommended: Policy = {
     ask('uniq|xxd|tree', { writes: ['**'], reason: 'Writes through an output-file argument' }),
     ask('sed|awk|gawk|mawk|nawk', { writes: ['**'], reason: 'Writes files its script names, or edits them in place' }),
     ask({
-      writes: ['.git', '**/.git', '.git/config', '**/.git/config', '.git/hooks', '**/.git/hooks', '.git/hooks/**', '**/.git/hooks/**'],
+      writes: ['.git', '**/.git', '.git/**', '**/.git/**'],
       reason: 'Changes Git configuration or hooks that can run code later',
     }),
+    // Git takes any directory with a HEAD, objects and refs as a repository, and runs what its config says.
+    ask({ writes: ['HEAD', '**/HEAD'], reason: 'May make a directory a Git repository, whose config can run code' }),
   ],
 };

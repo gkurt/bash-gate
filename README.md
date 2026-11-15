@@ -124,8 +124,9 @@ const policy: Policy = {
 
 `recommended` (`src/recommended.ts`) is a starting point. It allows reading and everyday git, denies force pushes and
 deleting top-level directories, and asks about deleting, network, privilege, code it can't see, writes outside the
-working directory (`..`, `../**`, `~/**`: an absolute path counts as outside unless `cwd` shows it's inside), and
-writes to `.git`, `.git/config` or `.git/hooks`. `sed` and `awk` run when their script only edits what they read
+working directory (`..`, `../**`, `~/**`: an absolute path counts as outside unless `cwd` shows it's inside), writes
+inside a `.git`, and writes to a file named `HEAD` (with `objects` and `refs` beside it, git takes any directory as a
+repository). `sed` and `awk` run when their script only edits what they read
 (`sed -n '1,40p'`, `awk '{print $1}'`): one that runs a command, writes a file, edits in place or isn't followed asks.
 Of the network, `network:read` runs: `git fetch`, `git ls-remote`, and gh's commands that look at pull requests,
 issues, runs, releases, repositories and search. A fetch that forces or deletes local refs asks, and so do `git pull`,
@@ -293,9 +294,12 @@ bun run checks   # tsc, then bun test
   delimiter inside a bracket expression, or an option the spec doesn't know make it `exec:arbitrary`. An `awk` program
   is searched as text for what it needs to run a command or write a file (`system`, `|`, `getline`, `@`, a `>` after
   a `print`), strings included, so `awk '/a|b/'` asks. `less` and `more` are not on the recommended read allowlist because their command modes can run code.
-- **Project code depends on the integration.** Without `fs`, npm scripts, Git hooks and config includes cannot be
-  followed; commands remain `exec:project`, and the recommended policy asks about direct writes to `.git`,
-  `.git/config` and `.git/hooks`. `make` is `exec:project` and Makefiles aren't parsed.
+- **Project code depends on the integration.** With `fs`, git's config and hooks are read from the repository git
+  takes: the one `--git-dir` or `--bare` names, else the first from the working directory up, in a `.git` or in a
+  directory that has what a `.git` has. Without `fs`, npm scripts, Git hooks and config cannot be followed; commands
+  remain `exec:project`, and the recommended policy asks about writes inside a `.git` and to a file named `HEAD`. That
+  stops a repository made by hand, but not a copy of one under another name (`cp -r .git r`) whose config is then
+  edited: only `fs` shows git reading it. `make` is `exec:project` and Makefiles aren't parsed.
 - **`network:read` trusts the remote.** A fetch goes where the repository's config says, and tells that host which
   refs it asked for and which commits it has; gh's reads send their arguments (a search, a branch name) to the host gh
   is signed in to. Neither sends file contents, but both are a way to pass a few words to a host that was set up

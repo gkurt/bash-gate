@@ -43,7 +43,9 @@ Out of scope:
 
 - **What programs do with their input.** `cat` reading a file, a compiler running build scripts, and file-based
   configuration when no `fs` is supplied. With it, repository Git config (and includes), Git hooks, SSH config passed
-  with `-F`, and npm lifecycle scripts are followed. gh's stored aliases and config are never read: a first word gh
+  with `-F`, and npm lifecycle scripts are followed. The repository is the one git takes: what `--git-dir` or `--bare`
+  names, else the first from the working directory up, a `.git` or the directory itself, that has a `HEAD`, `objects`
+  and `refs`. One that may lack them is followed, and so are those above it. gh's stored aliases and config are never read: a first word gh
   doesn't know is code unseen (`exec:arbitrary`), and its pager, editor and browser are what they were. Specs describe other known argument behavior, writes included: a
   specified program that writes a file its spec doesn't name can change what a later read sees.
 - **What the filesystem holds.** Globs and which files exist. `$HOME` too, unless the script sets it or the integration
@@ -137,6 +139,7 @@ execs kill the process, and so does any x32 system call.
 | S1      | The hand-written scripts with real programs: every exec the kernel sees is covered  | `test/trace.test.ts`       |
 | S1      | The same, for the generated scripts                                                 | `test/trace.test.ts`       |
 | S1      | With a filesystem: what the script writes before or alongside a read is unknown     | `test/analyze.test.ts`     |
+| S1      | With a filesystem: git's config is read from whichever directory git takes          | `test/analyze.test.ts`     |
 | S2      | Property tests over generated invocations and policies                              | `test/properties.test.ts`  |
 | S3      | Property tests: generated commands with findings or maybe-matches are never allowed | `test/properties.test.ts`  |
 | S4      | Metamorphic tests: chains of generated rewrites of denied and asked commands        | `test/metamorphic.test.ts` |

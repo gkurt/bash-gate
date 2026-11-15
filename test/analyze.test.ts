@@ -247,6 +247,48 @@ describe('invocations', () => {
     expect(ssh.invocations.some((invocation) => invocation.program === 'cat' && values(invocation.argv).includes('match'))).toBe(true);
   });
 
+  test('git config is read from whichever directory git takes as the repository', () => {
+    const head = 'ref: refs/heads/main\n';
+    const evil = '[core]\n\tfsmonitor = cat ran\n';
+    const repository = (dir: string, config?: string) => ({
+      files: { [`${dir}/HEAD`]: head, ...(config === undefined ? {} : { [`${dir}/config`]: config }) },
+      dirs: [`${dir}/objects`, `${dir}/refs`],
+    });
+    const runs = (source: string, cwd: string, ...parts: { files: Record<string, string>; dirs?: string[] }[]) => {
+      const files: Record<string, string> = Object.assign({}, ...parts.map((part) => part.files));
+      const dirs = new Set(parts.flatMap((part) => part.dirs ?? []));
+      const fs = {
+        readFile: (path: string) => files[path] ?? null,
+        realpath: (path: string) => (path in files || dirs.has(path) ? path : null),
+      };
+      const analysis = analyze(source, { cwd, fs });
+      return analysis.invocations.some((invocation) => invocation.program === 'cat' && values(invocation.argv).includes('ran'));
+    };
+    const outer = repository('/repo/.git', evil);
+    const made = repository('/repo/made', evil);
+    const decoy = { files: { '/repo/made/.git/config': '' } };
+
+    // A directory made to look like a repository, with no `.git` in its path.
+    expect(runs('git fetch o', '/repo/made', repository('/repo/.git', ''), made)).toBe(true);
+    expect(runs('git fetch o', '/repo/made/objects', repository('/repo/.git', ''), made)).toBe(true);
+    expect(runs('git --git-dir=made status', '/repo', repository('/repo/.git', ''), made)).toBe(true);
+    expect(runs('git --git-dir made --work-tree . status', '/repo', repository('/repo/.git', ''), made)).toBe(true);
+    expect(runs('git --bare log', '/repo/made', repository('/repo/made/.git', ''), made)).toBe(true);
+    expect(runs('git -C made fetch o', '/repo', repository('/repo/.git', ''), made)).toBe(true);
+    // A `.git` git doesn't take (no HEAD, objects or refs) hides neither the directory it's in nor the ones above.
+    expect(runs('git status', '/repo/made', decoy, made)).toBe(true);
+    expect(runs('git status', '/repo/sub', { files: { '/repo/sub/.git/config': '' } }, outer)).toBe(true);
+    expect(runs('git status', '/repo/sub', { files: { '/repo/sub/.git/HEAD': head } }, outer)).toBe(true);
+    expect(runs('git status', '/repo/sub', { files: { '/repo/sub/HEAD': head } }, outer)).toBe(true);
+    // One git does take ends the search, with or without a config.
+    expect(runs('git status', '/repo/sub', repository('/repo/sub/.git'), outer)).toBe(false);
+    expect(runs('git status', '/repo/sub', repository('/repo/sub'), outer)).toBe(false);
+    expect(runs('git --git-dir=sub/.git status', '/repo', repository('/repo/sub/.git'), outer)).toBe(false);
+
+    const dynamic = analyze('git --git-dir "$d" status', { cwd: '/repo', fs: { readFile: () => null, realpath: () => null } });
+    expect(dynamic.findings.some((finding) => finding.kind === 'exec-config')).toBe(true);
+  });
+
   test('npm runs the scripts of its verb under any alias, and restart may run stop and start', () => {
     const scripts = { pretest: 'cat before', test: 'cat test', stop: 'cat stop', start: 'cat start' };
     const fs = {
@@ -394,11 +436,12 @@ describe('policy', () => {
 
 describe('filesystem', () => {
   const tree: Record<string, string> = {
+    '/repo/.git/HEAD': 'ref: refs/heads/main\n',
     '/repo/.git/config': '[core]\n\tbare = false\n',
     '/repo/.git/hooks/pre-commit': 'cat lint',
     '/repo/hooks/pre-commit': 'rm -rf /',
   };
-  const dirs = new Set(['/', '/repo', '/repo/.git', '/repo/.git/hooks', '/repo/hooks', '/etc']);
+  const dirs = new Set(['/', '/repo', '/repo/.git', '/repo/.git/objects', '/repo/.git/refs', '/repo/.git/hooks', '/repo/hooks', '/etc']);
   const links: Record<string, string> = { '/repo/out': '/repo/.git/hooks/pre-commit' };
   const fs = {
     readFile: (path: string) => tree[path] ?? null,
@@ -413,6 +456,9 @@ describe('filesystem', () => {
       'cp -r hooks .git/ && git commit -m x',
       'mv hooks .git/hooks && git commit -m x',
       'git config user.name x && git status',
+      "mkdir -p r/objects r/refs && echo 'ref: refs/heads/main' > r/HEAD && echo x > r/config && git --git-dir=r status",
+      "mkdir -p r/objects r/refs && echo 'ref: refs/heads/main' > r/HEAD && cd r && git fetch o",
+      'cp -r .git r && cd r && git show HEAD',
       'echo x > "$f" && git commit -m x',
       'echo x > out && git commit -m x',
       'if a; then cp -r hooks .git/; fi; git commit -m x',
