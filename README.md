@@ -172,9 +172,16 @@ const fs: FileSystem = {
 check('git commit -m wip', recommended, { cwd: process.cwd(), fs });
 ```
 
-With `fs`, Git repository config (including `include.path` and `.git` pointer files), the Git hooks a command runs,
-SSH config files passed with `-F`, and npm lifecycle scripts are read and walked as code, and each invocation gets the
-`realpaths` of its paths. `make` remains `exec:project`; Makefiles aren't parsed.
+With `fs`, Git repository config (including `include.path`, `config.worktree` and `.git` pointer files), the Git hooks
+a command runs, SSH config files passed with `-F`, and npm lifecycle scripts are read and walked as code, and each
+invocation gets the `realpaths` of its paths. `make` remains `exec:project`; Makefiles aren't parsed.
+
+The hooks are each command's own (`pre-commit`, `post-checkout`, `pre-push`…), plus `post-index-change` and
+`reference-transaction` for every command: git runs those whenever it writes the index (`git status` does) or a ref.
+They're read from `core.hooksPath` when the repository's config sets it, as husky does, so `git status` there is
+judged like anywhere else, and `git commit` by what its hook runs: husky's sources a file by a computed path, which
+asks. Where git would look isn't always certain (a relative path with `--git-dir` or `--work-tree`, `~` without a
+known `HOME`, a path set in a conditional include): that's an `exec-config` finding.
 
 - `readFile(path)` returns the text, `null` when nothing is there or it isn't a file, or `undefined` when it isn't
   known. `realpath(path)` returns where an absolute path really is, `null` only when nothing at all is there (not even a

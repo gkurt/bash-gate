@@ -279,6 +279,11 @@ const cases: [source: string, decision: Decision, what: string][] = [
   [`env git -c "core.pager=eval 'rm -rf /'" log`, 'deny', 'git config builtins reached through a wrapper'],
   ["git -c alias.x='!rm -rf /' x", 'deny', 'a shell alias in git config'],
   ['git -c core.hooksPath=/tmp/h commit -m x', 'ask', 'git config that changes which hooks run'],
+  [
+    "git -c hook.x.command='rm -rf /' -c hook.x.event=reference-transaction branch b",
+    'deny',
+    'a hook defined in git config, which git runs as it writes a ref',
+  ],
   ["git config core.pager 'rm -rf /'", 'deny', 'setting a git config that runs code later'],
   ['git config user.name agent', 'ask', 'writing the repository Git config'],
   ['cp -r hooks .git/', 'ask', 'copying into .git, where hooks live'],
@@ -529,6 +534,12 @@ const tree: Record<string, string> = {
   '.git/hooks/pre-commit': 'cat lint',
   'made/HEAD': 'ref: refs/heads/main\n',
   'made/config': '[core]\n\tfsmonitor = rm -rf /\n\tsshCommand = rm -rf /\n',
+  'husky/.git/HEAD': 'ref: refs/heads/main\n',
+  'husky/.git/config': '[core]\n\thooksPath = .husky/_\n',
+  'husky/.husky/_/pre-commit': '. "$(dirname "$0")/h"',
+  'watched/.git/HEAD': 'ref: refs/heads/main\n',
+  'watched/.git/hooks/post-index-change': 'rm -rf /',
+  'watched/.git/hooks/reference-transaction': 'rm -rf /',
 };
 const withFiles: Environment = { fs: { readFile: (path) => tree[path] ?? null, realpath: (path) => path } };
 const filesystemCases: [source: string, decision: Decision, what: string][] = [
@@ -544,6 +555,12 @@ const filesystemCases: [source: string, decision: Decision, what: string][] = [
   ['git -C made/objects log', 'deny', 'the same, from a directory under it'],
   ['cd made && git --bare log', 'deny', '--bare, which makes the working directory the repository'],
   ['git --git-dir "$dir" status', 'ask', 'a repository only known at run time'],
+  ['cd husky && git status', 'allow', 'a core.hooksPath in the repository config, whose hooks are followed like those in .git/hooks'],
+  ['git -C husky/src log', 'allow', 'the same, from a directory under it'],
+  ['cd husky && git commit -m x', 'ask', 'a hook there that sources a file only known at run time'],
+  ['cd husky && git --work-tree=.. status', 'ask', 'a relative core.hooksPath, which git may read from another directory'],
+  ['cd watched && git status', 'deny', 'the hook git status runs as it refreshes the index'],
+  ['cd watched && git branch b', 'deny', 'the hook any ref update runs'],
 ];
 
 /** The same, starting in a known absolute directory: relative globs match from it. */

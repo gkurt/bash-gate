@@ -309,6 +309,42 @@ function writeKind(program: string): 'none' | 'contents' | 'links' {
 const gitWritesTree =
   /^(checkout|switch|restore|reset|merge|rebase|cherry-pick|revert|pull|apply|am|mv|clean|submodule|filter-branch|gc|sparse-checkout|lfs|bisect( \S+)?|stash( (push|save|pop|apply|branch))?)$/;
 
+const commitHooks = 'pre-commit prepare-commit-msg commit-msg post-commit post-rewrite';
+const mergeHooks = `pre-merge-commit post-merge pre-auto-gc ${commitHooks}`;
+const rebaseHooks = `pre-rebase post-checkout ${mergeHooks}`;
+/** What any command runs that writes the index (`git status` does, refreshing it) or a ref. */
+const writeHooks = 'post-index-change reference-transaction';
+const otherHooks = `${rebaseHooks} applypatch-msg pre-applypatch post-applypatch pre-push pre-receive update proc-receive post-receive post-update push-to-checkout sendemail-validate fsmonitor-watchman p4-changelist p4-prepare-changelist p4-post-changelist p4-pre-submit`;
+
+/**
+ * The hooks a git command runs besides `writeHooks`, as git 2.55 runs them. `pre-auto-gc` is the `gc --auto` older
+ * gits run after a command that adds objects.
+ */
+const gitHooks = new Map(
+  Object.entries({
+    commit: `${commitHooks} pre-auto-gc`,
+    merge: mergeHooks,
+    'rebase|pull': rebaseHooks,
+    'cherry-pick|revert': commitHooks,
+    am: 'applypatch-msg pre-applypatch post-applypatch pre-auto-gc',
+    'checkout|switch|restore|stash branch': 'post-checkout',
+    push: 'pre-push',
+    'fetch|remote update|gc|maintenance': 'pre-auto-gc',
+    'status|log|show|diff|blame|annotate|describe|rev-parse|rev-list|ls-files|ls-tree|ls-remote|show-ref|cat-file|shortlog|reflog|whatchanged|grep|merge-base|name-rev|count-objects|var|check-ignore|check-attr|for-each-ref|help|version|add|branch|tag|mv|rm|reset|stash|remote|config|update-ref|symbolic-ref|notes|clean':
+      '',
+  }).flatMap(([commands, hooks]) => commands.split('|').map((command) => [command, hooks] as const)),
+);
+
+/** The hooks a git command may run: every one, for a command `gitHooks` doesn't have (an alias, a plugin). */
+function gitHooksOf(parsed: Parsed): string[] {
+  const { subcommands, unknownSubcommand: unknown } = parsed;
+  if (subcommands.length === 0 && !unknown) return [];
+  // A first word the spec doesn't know is git's command of that name when it has one: an alias can't hide it.
+  const words = !unknown ? subcommands : unknown.kind === 'static' && subcommands.length === 0 ? [unknown.value] : [];
+  const hooks = gitHooks.get(words.join(' ')) ?? gitHooks.get(words[0] ?? '') ?? otherHooks;
+  return `${writeHooks} ${hooks}`.trim().split(' ');
+}
+
 /**
  * Whether a program may write files the analysis can't name: one without a spec, one running code that isn't followed,
  * or one whose spec writes without saying where. Git's own writes are its work tree (`gitWritesTree`) and `.git`, but
@@ -2117,18 +2153,7 @@ class Walker {
     const tree = parsed.options['--work-tree']?.at(-1);
     const workTree = staticPath(tree);
     const writesTree = gitWritesTree.test(parsed.subcommands.join(' '));
-    const subcommand = parsed.subcommands.at(-1);
-    const hooks: Record<string, string[]> = {
-      commit: ['pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit'],
-      push: ['pre-push'],
-      checkout: ['post-checkout'],
-      switch: ['post-checkout'],
-      merge: ['pre-merge-commit', 'prepare-commit-msg', 'post-merge'],
-      rebase: ['pre-rebase', 'post-rewrite'],
-      'cherry-pick': ['pre-commit', 'prepare-commit-msg', 'post-commit'],
-      revert: ['pre-commit', 'prepare-commit-msg', 'post-commit'],
-      am: ['applypatch-msg', 'pre-applypatch', 'post-applypatch'],
-    };
+    const hooks = gitHooksOf(parsed);
     /** Where a worktree's git directory keeps what it shares with the others: its config and hooks. */
     const commonOf = (gitDir: string): string => {
       const pointer = readFile(`${gitDir}/commondir`)?.trim();
@@ -2150,14 +2175,17 @@ class Walker {
 
     const followed = new Set<string>();
     const walked = new Set<string>();
-    /** Follows the repository in `gitDir` whose work tree is `root`: `inside` is what git doesn't rewrite there. */
-    const follow = (gitDir: string, root: string, inside: string): void => {
+    /**
+     * Follows the repository in `gitDir` whose work tree is `root`: `inside` is what git doesn't rewrite there, and
+     * `hooksFrom` where it runs the hooks, when that's certain.
+     */
+    const follow = (gitDir: string, root: string, inside: string, hooksFrom?: string): void => {
       if (followed.has(gitDir)) return;
       followed.add(gitDir);
       const common = commonOf(gitDir);
-      const entries: { key: string; value: string }[] = [];
+      const entries: { key: string; value: string; conditional: boolean }[] = [];
       const visited = new Set<string>();
-      const load = (path: string, depth: number): void => {
+      const load = (path: string, depth: number, conditional: boolean): void => {
         if (visited.has(path)) return;
         if (depth > 16) {
           this.finding(ctx, 'exec-config', 'Git config includes exceed the analysis limit', call.span);
@@ -2173,26 +2201,39 @@ class Walker {
               continue;
             }
             const base = path.slice(0, Math.max(0, path.lastIndexOf('/'))) || '.';
-            load(resolvePath(base, entry.value) ?? `${base}/${entry.value}`, depth + 1);
+            load(resolvePath(base, entry.value) ?? `${base}/${entry.value}`, depth + 1, conditional || entry.key !== 'include.path');
           } else {
-            entries.push(entry);
+            entries.push({ ...entry, conditional });
           }
         }
       };
-      load(`${common}/config`, 0);
-      let hooksPath: string | undefined;
+      load(`${common}/config`, 0, false);
+      // What `extensions.worktreeConfig` makes git read as well.
+      load(`${gitDir}/config.worktree`, 0, true);
+      const hooksPaths = entries.filter((entry) => entry.key.toLowerCase() === 'core.hookspath');
       for (const entry of entries) {
-        const risk = gitConfig(entry.key, entry.value);
-        if (risk) this.gitConfigEntry({ kind: 'static', value: `${entry.key}=${entry.value}` }, state, ctx, call);
-        if (entry.key.toLowerCase() === 'core.hookspath') hooksPath = entry.value;
+        if (hooksPaths.includes(entry) || !gitConfig(entry.key, entry.value)) continue;
+        this.gitConfigEntry({ kind: 'static', value: `${entry.key}=${entry.value}` }, state, ctx, call);
+      }
+      // The hooks of `core.hooksPath` are followed like those in `.git/hooks`, where that directory is certain: git
+      // reads `~` and `%(prefix)` in it, and a relative one from where it runs the hook.
+      const hooksPath = hooksPaths.at(-1)?.value;
+      const certain = (path: string): string | undefined => {
+        if (path === '' || path.startsWith('%(') || hooksPaths.some((entry) => entry.conditional)) return undefined;
+        if (path.startsWith('/')) return resolvePath(root, path);
+        if (path.startsWith('~')) return /^~(\/|$)/.test(path) && call.home !== undefined ? resolvePath(root, path, call.home) : undefined;
+        return hooksFrom === undefined ? undefined : resolvePath(hooksFrom, path);
+      };
+      let directory = `${common}/hooks`;
+      if (hooksPath !== undefined) {
+        const known = certain(hooksPath);
+        if (known === undefined) this.gitConfigEntry({ kind: 'static', value: `core.hooksPath=${hooksPath}` }, state, ctx, call);
+        directory = known ?? resolvePath(root, hooksPath) ?? hooksPath;
       }
 
       if (writesTree && tree !== undefined && workTree === undefined) this.wroteAnything();
       else if (writesTree) this.wroteTree(workTree ?? root, inside);
-      const names = subcommand === undefined ? undefined : hooks[subcommand];
-      if (!names) return;
-      const directory = hooksPath ? (resolvePath(root, hooksPath) ?? hooksPath) : `${common}/hooks`;
-      for (const name of names) {
+      for (const name of hooks) {
         if (parsed.options['--no-verify'] && ['pre-commit', 'commit-msg', 'pre-push'].includes(name)) continue;
         const path = `${directory}/${name}`;
         if (walked.has(path)) continue;
@@ -2220,12 +2261,14 @@ class Walker {
       if (!dotGit) return false;
       // A `.git` file names the git directory, which git takes or fails on.
       const pointer = /^gitdir:\s*(.+?)\s*$/im.exec(readFile(dotGit) ?? '')?.[1];
+      // Git runs the hooks of a repository it finds in a `.git` in the work tree, unless it's told of another.
+      const hooksFrom = tree === undefined ? dir : undefined;
       if (pointer !== undefined) {
-        follow(resolvePath(dir, pointer) ?? pointer, dir, dotGit);
+        follow(resolvePath(dir, pointer) ?? pointer, dir, dotGit, hooksFrom);
         return true;
       }
       if (readFile(`${dotGit}/config`) !== undefined || hasHead(dotGit)) {
-        follow(dotGit, dir, dotGit);
+        follow(dotGit, dir, dotGit, hooksFrom);
         if (valid(dotGit)) return true;
       }
       // The directory itself, when it has what a `.git` has: a bare repository, or one made to look like it.

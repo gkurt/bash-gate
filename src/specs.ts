@@ -149,11 +149,11 @@ function finishPush(parsed: Parsed): void {
 
 /** Git config keys whose values git runs, or that change what or where it runs. */
 const gitExecKeys =
-  /^(alias\..*|core\.(pager|editor|sshcommand|fsmonitor|hookspath|askpass|gitproxy|worktree)|sequence\.editor|pager\..*|diff\.external|diff\..*\.(command|textconv)|merge\..*\.driver|filter\..*\.(clean|smudge|process)|credential\.helper|credential\..*\.helper|gpg\.program|gpg\..*\.program|interactive\.difffilter|uploadpack\.packobjectshook|remote\..*\.(uploadpack|receivepack|vcs)|protocol\..*\.allow|url\..*|include\.path|includeif\..*|submodule\..*\.update|ssh\.variant|core\.sshcommand|http\..*proxy|web\.browser|browser\..*\.(cmd|path)|man\..*\.(cmd|path)|sendemail\..*cmd|mergetool\..*\.cmd|difftool\..*\.cmd)$/;
+  /^(alias\..*|core\.(pager|editor|sshcommand|fsmonitor|hookspath|askpass|gitproxy|worktree)|sequence\.editor|pager\..*|diff\.external|diff\..*\.(command|textconv)|merge\..*\.driver|filter\..*\.(clean|smudge|process)|credential\.helper|credential\..*\.helper|gpg\.program|gpg\..*\.program|interactive\.difffilter|uploadpack\.packobjectshook|remote\..*\.(uploadpack|receivepack|vcs)|protocol\..*\.allow|url\..*|include\.path|includeif\..*|submodule\..*\.update|ssh\.variant|core\.sshcommand|http\..*proxy|web\.browser|browser\..*\.(cmd|path)|man\..*\.(cmd|path)|sendemail\..*cmd|mergetool\..*\.cmd|difftool\..*\.cmd|hook\..*\.command)$/;
 
 /** Keys whose value is a command git runs with the shell. */
 const gitShellKeys =
-  /^(core\.(pager|editor|sshcommand|fsmonitor|askpass)|sequence\.editor|pager\..*|diff\.external|diff\..*\.(command|textconv)|merge\..*\.driver|filter\..*\.(clean|smudge|process)|gpg\.program|interactive\.difffilter|uploadpack\.packobjectshook|browser\..*\.cmd|man\..*\.cmd|mergetool\..*\.cmd|difftool\..*\.cmd)$/;
+  /^(hook\..*\.command|core\.(pager|editor|sshcommand|fsmonitor|askpass)|sequence\.editor|pager\..*|diff\.external|diff\..*\.(command|textconv)|merge\..*\.driver|filter\..*\.(clean|smudge|process)|gpg\.program|interactive\.difffilter|uploadpack\.packobjectshook|browser\..*\.cmd|man\..*\.cmd|mergetool\..*\.cmd|difftool\..*\.cmd)$/;
 
 /**
  * What a git config entry means for running git: `undefined` when it's harmless, `{}` when it changes what git runs

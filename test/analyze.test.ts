@@ -289,6 +289,77 @@ describe('invocations', () => {
     expect(dynamic.findings.some((finding) => finding.kind === 'exec-config')).toBe(true);
   });
 
+  test('the hooks of core.hooksPath are followed where git is certain to look for them', () => {
+    const repository = (config: string, more: Record<string, string> = {}): Record<string, string> => ({
+      '/repo/.git/HEAD': 'ref: refs/heads/main\n',
+      '/repo/.git/config': config,
+      '/repo/hooks/pre-commit': 'cat ran',
+      '/repo/hooks/post-index-change': 'cat ran',
+      '/home/me/hooks/pre-commit': 'cat ran',
+      ...more,
+    });
+    const result = (source: string, files: Record<string, string>, cwd = '/repo', env: Record<string, string> = {}) => {
+      const fs = { readFile: (path: string) => files[path] ?? null, realpath: (path: string) => path };
+      const analysis = analyze(source, { cwd, fs, env });
+      const ran = analysis.invocations.some((invocation) => invocation.program === 'cat' && values(invocation.argv).includes('ran'));
+      return { ran, asked: analysis.findings.some((finding) => finding.kind === 'exec-config') };
+    };
+    const followed = { ran: true, asked: false };
+    const relative = repository('[core]\n\thooksPath = hooks\n');
+    expect(result('git commit -m x', relative)).toEqual(followed);
+    expect(result('git commit -m x', relative, '/repo/src')).toEqual(followed);
+    expect(result('git status', relative)).toEqual(followed);
+    expect(result('git --version', relative)).toEqual({ ran: false, asked: false });
+    expect(result('git --git-dir=.git commit -m x', repository('[core]\n\thooksPath = /repo/hooks\n'))).toEqual(followed);
+    const home = repository('[core]\n\thooksPath = ~/hooks\n');
+    expect(result('git commit -m x', home, '/repo', { HOME: '/home/me' })).toEqual(followed);
+
+    // Where git looks isn't certain: a relative path is read from where the hook runs, `~` and `%(prefix)` by git.
+    expect(result('git commit -m x', home).asked).toBe(true);
+    expect(result('git --git-dir=.git commit -m x', relative).asked).toBe(true);
+    expect(result('git --work-tree=/repo commit -m x', relative).asked).toBe(true);
+    expect(result('git commit -m x', repository('[core]\n\thooksPath = %(prefix)/hooks\n')).asked).toBe(true);
+    expect(result('git commit -m x', repository('[core]\n\thooksPath = ~other/hooks\n'), '/repo', { HOME: '/home/me' }).asked).toBe(true);
+    // An include git may not take, and the file `extensions.worktreeConfig` adds.
+    const included = { '/repo/.git/more.conf': '[core]\n\thooksPath = /elsewhere\n' };
+    expect(result('git commit -m x', repository('[includeIf "gitdir:/x/"]\n\tpath = more.conf\n', included)).asked).toBe(true);
+    expect(result('git commit -m x', repository('', { '/repo/.git/config.worktree': '[core]\n\thooksPath = /elsewhere\n' })).asked).toBe(
+      true,
+    );
+    expect(result('git status', repository('', { '/repo/.git/config.worktree': '[core]\n\tfsmonitor = cat ran\n' })).ran).toBe(true);
+    // A hook the config defines is code as well.
+    const defined = repository('[hook "x"]\n\tcommand = cat ran\n\tevent = reference-transaction\n');
+    expect(result('git branch b', defined)).toEqual({ ran: true, asked: true });
+  });
+
+  test('each git command runs its own hooks, and any of them the ones for an index or a ref write', () => {
+    const names =
+      'post-index-change reference-transaction pre-commit commit-msg post-commit post-checkout post-merge pre-rebase pre-push pre-auto-gc sendemail-validate';
+    const files: Record<string, string> = { '/repo/.git/HEAD': 'ref: refs/heads/main\n' };
+    for (const name of names.split(' ')) files[`/repo/.git/hooks/${name}`] = `cat ${name}`;
+    const fs = { readFile: (path: string) => files[path] ?? null, realpath: (path: string) => path };
+    const hooks = (source: string) =>
+      analyze(source, { cwd: '/repo', fs })
+        .invocations.filter((invocation) => invocation.program === 'cat')
+        .map((invocation) => values(invocation.argv)[1])
+        .join(' ');
+    const writes = 'post-index-change reference-transaction';
+    expect(hooks('git --version')).toBe('');
+    for (const source of ['git status', 'git log', 'git add .', 'git branch b', 'git stash', 'git remote add o url', 'git reset HEAD~1'])
+      expect([source, hooks(source)]).toEqual([source, writes]);
+    for (const source of ['git checkout main', 'git switch main', 'git restore f', 'git stash branch b'])
+      expect([source, hooks(source)]).toEqual([source, `${writes} post-checkout`]);
+    for (const source of ['git fetch', 'git remote update', 'git gc'])
+      expect([source, hooks(source)]).toEqual([source, `${writes} pre-auto-gc`]);
+    expect(hooks('git push')).toBe(`${writes} pre-push`);
+    expect(hooks('git commit -m x')).toBe(`${writes} pre-commit commit-msg post-commit pre-auto-gc`);
+    expect(hooks('git commit --no-verify -m x')).toBe(`${writes} post-commit pre-auto-gc`);
+    expect(hooks('git pull')).toBe(`${writes} pre-rebase post-checkout post-merge pre-auto-gc pre-commit commit-msg post-commit`);
+    // A command the table doesn't have, an alias or one only known at run time may run any hook.
+    for (const source of ['git frobnicate', 'git worktree add ../w', 'git "$x"', 'git stash "$x"'])
+      expect([source, hooks(source).split(' ').toSorted()]).toEqual([source, names.split(' ').toSorted()]);
+  });
+
   test('npm runs the scripts of its verb under any alias, and restart may run stop and start', () => {
     const scripts = { pretest: 'cat before', test: 'cat test', stop: 'cat stop', start: 'cat start' };
     const fs = {
