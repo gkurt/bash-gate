@@ -669,6 +669,13 @@ describe('filesystem', () => {
     for (const source of ['make && git commit -m x', 'cargo build && git commit -m x', 'oxlint --fix src && git commit -m x'])
       expect([source, kinds(source)]).toEqual([source, ['project-file']]);
     expect(kinds('make && ./build.sh && git commit -m x')).toEqual(['unknown-file']);
+    // A redirection names where it writes, whatever program it's on.
+    for (const source of [
+      'cat a > out.txt && git commit -m x',
+      'grep x a > out.txt && git commit -m x',
+      'jq . a >> out.txt && git commit -m x',
+    ])
+      expect([source, kinds(source)]).toEqual([source, []]);
     // recommended runs project code, so what it may have changed is no reason to ask; nor is a symlink it may have made.
     for (const source of ['cargo build && git commit -m x', 'cargo test && echo x > out.txt'])
       expect([source, check(source, recommended, environment).decision]).toEqual([source, 'allow']);
@@ -695,17 +702,28 @@ describe('filesystem', () => {
       '/repo/package.json': '{"scripts":{"test":"cat x"}}',
     };
     const fs = { readFile: (path: string) => project[path] ?? null, realpath: (path: string) => path };
-    const changed = (source: string) => analyze(source, { cwd: '/repo', fs }).findings.some((finding) => finding.kind === 'unknown-file');
+    const environment = { cwd: '/repo', fs };
+    const kinds = (source: string) => [...new Set(analyze(source, environment).findings.map((finding) => finding.kind))];
+    // What it checks out is the repository's own, as project code is: what was there is walked, and recommended allows.
     for (const source of [
       'git checkout main && git commit -m x',
       'git reset --hard && npm test',
       'git stash pop && npm test',
       'git stash apply && npm test',
       'git revert HEAD && npm test',
-    ])
-      expect([source, changed(source)]).toEqual([source, true]);
+    ]) {
+      expect([source, kinds(source)]).toEqual([source, ['project-file']]);
+      // `reset --hard` asks of itself: it discards work.
+      const decision = source.startsWith('git reset') ? 'ask' : 'allow';
+      expect([source, check(source, recommended, environment).decision]).toEqual([source, decision]);
+    }
     for (const source of ['git commit -m x && npm test', 'git stash list && npm test', 'npm test && git commit -m x'])
-      expect([source, changed(source)]).toEqual([source, false]);
+      expect([source, kinds(source)]).toEqual([source, []]);
+    project['/repo/hooks/pre-commit'] = 'rm -rf /';
+    expect(check('git stash pop && git commit -m x', recommended, environment).decision).toBe('deny');
+    // A commit may hold a symlink: where a path leads after a checkout isn't known.
+    const write = analyze('git checkout main && echo x > out', environment).invocations.find((invocation) => invocation.program === 'echo');
+    expect(write?.realpaths?.['/repo/out']).toBeNull();
   });
 
   test('what runs alongside may read what is written after it', () => {

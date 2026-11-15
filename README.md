@@ -206,7 +206,9 @@ known `HOME`, a path set in a conditional include): that's an `exec-config` find
   after; a command's own writes after its read don't count (`npm test | tail`).
   A write may go through a symlink, so without an absolute `cwd` any write makes later reads unknown. A path under one
   the script may put a symlink on (`ln`, `cp`, `mv`, `tar`…) has no known real path. `mkdir`, `touch` and `chmod` change nothing a read sees. Git commands
-  that rewrite the work tree (`checkout`, `stash`, `reset`, `merge`…) change everything in it but its `.git`. A program
+  that rewrite the work tree (`checkout`, `stash`, `reset`, `merge`…) change everything in it but its `.git`: from the
+  repository's own content, so a file in it read after them (a hook in `.husky`, a package.json) is a `project-file`
+  finding, and what was there is walked; but its real paths are unknown, since a commit may hold a symlink. A program
   that may write files no one can name makes every later read unknown: one without a spec, one running code the
   analysis doesn't follow (`make`, `npm install`, `vitest`, `python3 -c`, `./build.sh`), or one whose spec writes
   without saying where. When the only such program is project code (`exec:project`: a test run, a build, a hook it

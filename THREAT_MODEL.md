@@ -35,7 +35,9 @@ analysis doesn't follow, or a spec that writes without saying where) makes every
 When only project code (`exec:project`) may have written it, a read is a `project-file` finding rather than
 `unknown-file`, what was there before is still walked, and real paths are kept: a policy that allows project code to run (as `recommended` does, and allows
 `project-file`) already lets it write anything, a hook or a symlink included. A policy that asks about `exec:project`
-asks about the code itself.
+asks about the code itself. A git command that rewrites the work tree checks out the repository's own content, so a
+read there after it is a `project-file` finding too; the real paths in it are unknown, since a commit may hold a
+symlink to anywhere.
 
 Nothing else changes the filesystem between the analysis and the end of the run. That rules out a process an earlier
 command left running: a job from an allowed `make &`, `nohup` or `setsid -f` could rewrite `.git/config` or a hook

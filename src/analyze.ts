@@ -476,10 +476,21 @@ class Walker {
     this.writes++;
     const real = this.files.physical(root);
     const realGit = this.files.physical(git);
-    for (const changes of this.recorded.flatMap((written) => [written.contents, written.links])) {
-      changes.addTree(root, git);
-      if (real === undefined || realGit === undefined) changes.add(undefined);
-      else changes.addTree(real, realGit);
+    for (const written of this.recorded) {
+      // What git checks out is the repository's own content, as project code is; but a commit may hold a symlink,
+      // and where one leads is no one's to trust.
+      for (const [changes, project] of [
+        [written.contents, true],
+        [written.links, false],
+      ] as const) {
+        changes.addTree(root, git, project);
+        if (real === undefined || realGit === undefined) {
+          if (project) changes.project = true;
+          else changes.add(undefined);
+        } else {
+          changes.addTree(real, realGit, project);
+        }
+      }
     }
   }
 
@@ -496,7 +507,10 @@ class Walker {
     const named = sets.filter((changes) => changes.named);
     const real = path.startsWith('/') ? this.files?.physical(path) : undefined;
     if (named.length > 0 && (real === undefined || named.some((changes) => changes.covers(path) || changes.covers(real)))) return true;
-    return sets.some((changes) => changes.project) ? 'project' : false;
+    const project = sets.some(
+      (changes) => changes.coversProject(path) || (real !== undefined && real !== null && changes.coversProject(real)),
+    );
+    return project ? 'project' : false;
   }
 
   /** A finding for a file the script may have changed before git or a package manager reads it. */
@@ -2681,8 +2695,10 @@ class Walker {
     if (ctx.silent) return;
     const writes = [...parsed.writes, ...call.writes, ...ctx.writes];
     const reads = [...parsed.reads, ...call.reads, ...ctx.reads];
-    if (call.writes.length > 0 || ctx.writes.length > 0) parsed.effects.add('fs:write');
-    if (call.reads.length > 0 || ctx.reads.length > 0) parsed.effects.add('fs:read');
+    // Its redirections' effects are the invocation's, not its spec's: they name where they write.
+    const effects = new Set(parsed.effects);
+    if (call.writes.length > 0 || ctx.writes.length > 0) effects.add('fs:write');
+    if (call.reads.length > 0 || ctx.reads.length > 0) effects.add('fs:read');
     const open = call.open || ctx.open;
     const invocation: Invocation = {
       program,
@@ -2697,7 +2713,7 @@ class Walker {
       maybeOptions: parsed.maybeOptions || open,
       open,
       specified: !!program && !!specFor(program),
-      effects: [...parsed.effects],
+      effects: [...effects],
       reads,
       writes,
       cwd: call.cwd,
