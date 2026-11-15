@@ -266,6 +266,7 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['x="$v"; declare -i n=x', 'ask', 'a dynamic integer declaration'],
   ['x=1+2; (( x ))', 'allow', 'a recursively resolved static arithmetic value'],
   ['i=0; while (( i < 2 )); do (( i++ )); done', 'allow', 'a numeric counter loop'],
+  ['for f in a b; do [ -f "$f" ] && break || continue; done', 'allow', 'a loop that breaks and continues'],
 
   // Git.
   ['git push origin main', 'ask', 'push reaches the network'],
