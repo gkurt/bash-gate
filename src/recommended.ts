@@ -27,6 +27,9 @@ export const recommended: Policy = {
     ask('git branch|tag', { options: ['--delete', '--force'], reason: 'Deletes or moves a ref' }),
     ask('git stash drop|clear', { reason: 'Deletes stashed work' }),
     ask('git fetch', { options: ['--force', '--update-head-ok', '--refmap', '--prune-tags'], reason: 'Deletes or moves a local ref' }),
+    // Package scripts, tests and builds: project code, as git hooks are. Their specs give `exec:arbitrary` to inline
+    // code, options they read as configuration and commands from PATH, and `network` to what installs or publishes.
+    allow('npm|pnpm|bun|cargo', { effects: ['exec:project', 'fs:read', 'fs:write'] }),
     // Only those of gh's commands that read: the others in these groups have `network`.
     allow('gh pr|issue|run|workflow|release|repo|search|label|cache|ruleset|discussion|project|org|status', {
       effects: ['network:read'],

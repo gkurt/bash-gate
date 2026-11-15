@@ -123,7 +123,7 @@ analyze('sudo -u root rm -rf "$dir"').invocations
           </article>
           <article class="card">
             <h3><span class="dim">02</span> check</h3>
-            <p>The analysis under a policy. Hand it a filesystem, and it walks git hooks, git config and npm scripts too.</p>
+            <p>The analysis under a policy. Hand it a filesystem, and it walks git hooks, git config and package.json scripts too.</p>
             <pre class="code" data-lang="ts">
 check('git push origin +main', recommended).decision;
 // 'deny': a + refspec forces

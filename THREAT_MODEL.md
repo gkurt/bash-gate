@@ -43,7 +43,7 @@ Out of scope:
 
 - **What programs do with their input.** `cat` reading a file, a compiler running build scripts, and file-based
   configuration when no `fs` is supplied. With it, repository Git config (and includes), Git hooks, SSH config passed
-  with `-F`, and npm lifecycle scripts are followed. The repository is the one git takes: what `--git-dir` or `--bare`
+  with `-F`, and the package.json scripts npm, pnpm and bun run are followed. The repository is the one git takes: what `--git-dir` or `--bare`
   names, else the first from the working directory up, a `.git` or the directory itself, that has a `HEAD`, `objects`
   and `refs`. One that may lack them is followed, and so are those above it. The hooks followed are the ones the
   command runs in git 2.55, plus `pre-auto-gc` where older gits collect garbage afterwards; a command the table
@@ -118,6 +118,9 @@ execs kill the process, and so does any x32 system call.
   `network:read`, which the recommended policy doesn't ask about: that `git fetch`, `git ls-remote` and gh's reading
   commands, given no URL, host or config of their own, call only the hosts the repository and gh were set up with. Where GNU
   coreutils and uutils (Ubuntu's since 25.10) read a wrapper's arguments differently, the command it runs is unknown.
+  For npm, pnpm and bun, the specs say which of their own commands beat a script of the same name, which words they
+  run as a script, a file or a command from PATH, and which of their options they know: the one they don't is
+  configuration, `exec:arbitrary`. Checked against npm 11, pnpm 11 and bun 1.4.
 - **The integration.** It must run exactly the string that was analysed, in the shell the assumptions describe, with
   nothing from an earlier command still running. `bash-gate/trace` does that itself, given the analysis that was
   checked.

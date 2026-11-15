@@ -18,6 +18,8 @@ export interface CommandSpec {
   subcommands?: Record<string, CommandSpec>;
   /** Options end at the first positional, as POSIX has it (`sudo`, `env`, `xargs`), rather than anywhere, as GNU has it. */
   posix?: boolean;
+  /** Every word after it is an argument, none an option: what `pnpm test --watch` passes to the script. */
+  verbatim?: boolean;
   /** Options may start with `+` too, which turns them off (a shell's `+x`, `+O name`): they're read as `+x`. */
   plus?: boolean;
   /** Long options may be abbreviated to a unique prefix, as `getopt_long` and git allow. */
@@ -100,7 +102,7 @@ export function normalize(args: Arg[], spec: CommandSpec | undefined): Parsed {
   let seen = 0;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
-    const optionsOpen = !ended && !(current?.posix && seen > 0);
+    const optionsOpen = !ended && !current?.verbatim && !(current?.posix && seen > 0);
     if (arg.kind === 'static' && optionsOpen) {
       if (arg.value === '--') {
         ended = true;

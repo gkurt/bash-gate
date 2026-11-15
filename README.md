@@ -77,7 +77,11 @@ analyze('sudo -u root rm -rf "$dir"').invocations.map((i) => [i.shape, i.via, i.
    `gh -R o/r pr merge` is `pr merge`, and a first word gh doesn't know is an alias or extension (`exec:arbitrary`).
    The words `xargs` appends are read with the rest: `xargs env` runs them as a command, `xargs tee` writes them. A
    word that may be several, or an option, before a wrapper's command (`timeout $x`, `nice -n $x`) leaves the command
-   unknown. A `sed` script is read command by command, for the commands it runs and the files it names.
+   unknown. A `sed` script is read command by command, for the commands it runs and the files it names. A package
+   manager's word is a script by the rules of each: `pnpm lint` and `bun run lint` run a command from PATH when no
+   script has that name (`pnpm node -e …`), `bun lint` a file (`lint.ts`), and a word npm doesn't know is the start of
+   one of its commands' names (`npm exe` is `npm exec`). An option npm, pnpm or bun doesn't know is configuration,
+   which may name the shell scripts run in: `exec:arbitrary`. So is `npm config set`.
 6. **Decide** (`src/policy.ts`). Every condition has three outcomes: it matches, it doesn't, or it may (a dynamic word
    could match it). Deny beats ask, and ask beats allow. A deny rule that only may match asks, or denies with
    `strict: true`.
@@ -132,7 +136,10 @@ Of the network, `network:read` runs: `git fetch`, `git ls-remote`, and gh's comm
 issues, runs, releases, repositories and search. A fetch that forces or deletes local refs asks, and so do `git pull`,
 `git remote add` and `set-url` (they write `.git/config`), `gh api`, and a proxy, `GH_HOST` or `GH_REPO` set on the
 command line (sensitive variables).
-It does not ask about `exec:project` (`npm test`, `make`, git hooks); add that if it matters.
+It allows project code (`exec:project`) as it does git hooks: the scripts, tests and builds `npm`, `pnpm`, `bun` and
+`cargo` run (`npm test`, `bun typecheck`, `cargo build`), unless they also install, publish, delete or run code the
+analysis can't place. Without `fs`, a name `pnpm` or `bun run` may run from PATH asks, since no script may have it.
+`make` isn't followed and asks. Add an ask rule for `exec:project` if project code matters.
 
 ## The environment
 
@@ -173,7 +180,8 @@ check('git commit -m wip', recommended, { cwd: process.cwd(), fs });
 ```
 
 With `fs`, Git repository config (including `include.path`, `config.worktree` and `.git` pointer files), the Git hooks
-a command runs, SSH config files passed with `-F`, and npm lifecycle scripts are read and walked as code, and each
+a command runs, SSH config files passed with `-F`, and the package.json scripts npm, pnpm and bun run (with their `pre` and `post`
+scripts) are read and walked as code, and each
 invocation gets the `realpaths` of its paths. `make` remains `exec:project`; Makefiles aren't parsed.
 
 The hooks are each command's own (`pre-commit`, `post-checkout`, `pre-push`…), plus `post-index-change` and
@@ -303,10 +311,13 @@ bun run checks   # tsc, then bun test
   a `print`), strings included, so `awk '/a|b/'` asks. `less` and `more` are not on the recommended read allowlist because their command modes can run code.
 - **Project code depends on the integration.** With `fs`, git's config and hooks are read from the repository git
   takes: the one `--git-dir` or `--bare` names, else the first from the working directory up, in a `.git` or in a
-  directory that has what a `.git` has. Without `fs`, npm scripts, Git hooks and config cannot be followed; commands
+  directory that has what a `.git` has. Without `fs`, package scripts, Git hooks and config cannot be followed; commands
   remain `exec:project`, and the recommended policy asks about writes inside a `.git` and to a file named `HEAD`. That
   stops a repository made by hand, but not a copy of one under another name (`cp -r .git r`) whose config is then
-  edited: only `fs` shows git reading it. `make` is `exec:project` and Makefiles aren't parsed.
+  edited: only `fs` shows git reading it. `make` is `exec:project` and Makefiles aren't parsed. Package scripts are
+  read from the package.json where the command runs: a workspace's (`--filter`, `-r`, `-w`) aren't followed, nor
+  those bun runs in its own shell (`--shell=bun`), and with no package.json there, one above it may be used, which is
+  an `exec-config` finding. cargo's build scripts, aliases and `rustc-wrapper` are project code that isn't read.
 - **`network:read` trusts the remote.** A fetch goes where the repository's config says, and tells that host which
   refs it asked for and which commits it has; gh's reads send their arguments (a search, a branch name) to the host gh
   is signed in to. Neither sends file contents, but both are a way to pass a few words to a host that was set up

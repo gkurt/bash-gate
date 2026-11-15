@@ -374,6 +374,44 @@ describe('invocations', () => {
       expect([source, cats(source)]).toEqual([source, ['before', 'test']]);
     expect(cats('npm restart')).toEqual(['stop', 'start']);
   });
+
+  test('pnpm and bun run a script by its name, a file or a command from PATH when no script has it', () => {
+    const scripts = { prelint: 'cat before', lint: 'cat lint', postlint: 'cat after', check: 'cat check' };
+    const fs = snapshot({
+      files: { '/repo/package.json': JSON.stringify({ scripts }), '/bare/package.json': '{}' },
+      realpaths: { '/repo': '/repo', '/bare': '/bare' },
+    });
+    const run = (source: string) => {
+      const analysis = analyze(source, { cwd: '/repo', fs });
+      return [
+        analysis.invocations.slice(1).map((invocation) => values(invocation.argv).join(' ')),
+        analysis.invocations[0]!.effects.toSorted(),
+      ];
+    };
+    for (const source of ['pnpm lint', 'pnpm run lint', 'bun lint', 'bun run lint'])
+      expect([source, run(source)]).toEqual([source, [['cat before', 'cat lint', 'cat after'], ['exec:project']]]);
+    expect(run('bun check')).toEqual([['cat check'], ['exec:project']]);
+    expect(run('pnpm node -e 1')).toEqual([['node -e 1'], ['exec:project']]);
+    expect(run('bun run node -e 1')).toEqual([['node -e 1'], ['exec:file', 'exec:project']]);
+    expect(run('bun f')).toEqual([[], ['exec:file', 'exec:project']]);
+    expect(run('bun fmt')).toEqual([[], ['exec:project', 'fs:write']]);
+    expect(run('bun --cwd /bare lint')).toEqual([[], ['exec:file', 'exec:project']]);
+    // Another package's scripts, and those bun runs in its own shell, aren't followed.
+    for (const source of ['pnpm -r lint', 'pnpm --filter a lint', 'bun --filter a lint', 'bun --shell=bun lint', 'npm -w a run lint'])
+      expect([source, run(source)[0]!.filter((words) => words.startsWith('cat'))]).toEqual([source, []]);
+    expect(run('pnpm test --silent')).toEqual([[], ['exec:project']]);
+  });
+
+  test("a package.json the script writes first isn't the one its scripts are read from", () => {
+    const fs = snapshot({
+      files: { '/repo/package.json': JSON.stringify({ scripts: { test: 'cat ok' } }) },
+      realpaths: { '/repo': '/repo', '/repo/package.json': '/repo/package.json' },
+    });
+    const environment = { cwd: '/repo', fs };
+    expect(check('npm test', recommended, environment).decision).toBe('allow');
+    for (const source of ['npm pkg set scripts.test="rm -rf /" && npm test', 'echo {} > package.json && pnpm test'])
+      expect([source, analyze(source, environment).findings.map((finding) => finding.kind)]).toEqual([source, ['unknown-file']]);
+  });
 });
 
 describe('arithmetic', () => {

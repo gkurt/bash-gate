@@ -49,8 +49,9 @@ import { check, recommended } from 'bash-gate';
 
 check('git status', recommended).decision; // 'allow'</pre>
           <p>
-            <code>recommended</code> is the policy the library ships as a starting point: reading and everyday git run, destructive forms
-            are denied, and deleting, the network, privilege and code it can't see ask. Try chaining something onto <code>git status</code>.
+            <code>recommended</code> is the policy the library ships as a starting point: reading, everyday git and a project's own scripts,
+            tests and builds run, destructive forms are denied, and deleting, the network, privilege and code it can't see ask. Try chaining
+            something onto <code>git status</code>.
           </p>
           <div data-lesson="check"></div>
         </section>
@@ -180,8 +181,8 @@ check('git status', recommended).decision; // 'allow'</pre>
           <h2><span class="num">09</span>With a filesystem</h2>
           <p>
             Hand the analysis a <code>FileSystem</code> (two callbacks: <code>readFile</code> and <code>realpath</code>) and it reads what
-            the command would run: git hooks, git config and its includes, npm scripts, SSH config. Each is walked as code, under the
-            program that runs it.
+            the command would run: git hooks, git config and its includes, package.json scripts (npm, pnpm, bun), SSH config. Each is walked
+            as code, under the program that runs it.
           </p>
           <p>
             Below is a small repository at <code>/repo</code>. Its pre-commit hook pipes a download into <code>sh</code>. Change it to

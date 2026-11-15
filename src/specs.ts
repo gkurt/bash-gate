@@ -123,6 +123,271 @@ function interpreter(options: OptionSpec[]): CommandSpec {
 
 const inline = (spellings: string) => o(spellings, { effects: ['exec:arbitrary'] });
 
+/** A word a package manager runs as a file rather than a script: a path, or a JavaScript or TypeScript file. */
+const scriptFile = /[\\/]|^\.|\.[cm]?[jt]sx?$|\.(json|toml|wasm|sh)$/i;
+
+/**
+ * A package manager running `name`: a package.json script, which is project code, or else a file (`bun f` runs
+ * `f.ts`), or with `fallback` a command from PATH with the words after it (`pnpm node -e …`). The analysis drops that
+ * command once the filesystem shows the script is there. A name only known at run time may be one of its own commands.
+ */
+function runsScript(parsed: Parsed, name: Arg, fallback: boolean): void {
+  if (fallback) parsed.nested.push({ argv: parsed.positionals.slice(parsed.positionals.indexOf(name)), open: false });
+  if (name.kind === 'dynamic') {
+    parsed.effects.add('exec:arbitrary');
+  } else if (!fallback && scriptFile.test(name.value)) {
+    parsed.effects.add('exec:file');
+    parsed.reads.push(name);
+  } else {
+    parsed.effects.add('exec:project');
+  }
+}
+
+/** An option a package manager doesn't know is configuration, which may say how scripts run (`--script-shell`). */
+function packageManagerOptions(parsed: Parsed): void {
+  if (parsed.unknownOptions.length > 0 || parsed.maybeOptions) parsed.effects.add('exec:arbitrary');
+}
+
+/** `npm pkg set`, `npm version`: the package.json where it runs, whose scripts later commands run. */
+function writesManifest(parsed: Parsed): void {
+  parsed.effects.add('fs:write');
+  const cwd = parsed.cwd;
+  if (!cwd) parsed.writes.push({ kind: 'static', value: 'package.json' });
+  else if (cwd.kind === 'static') parsed.writes.push({ kind: 'static', value: `${cwd.value.replace(/\/+$/, '')}/package.json` });
+  else parsed.writes.push(dynamicArg(`${cwd.text}/package.json`, cwd.reason, false, cwd.prefix));
+}
+
+/** `npm config`: a key it sets may name the shell every later command's scripts run in. */
+function setsConfig(parsed: Parsed): void {
+  const verb = parsed.positionals[0];
+  if (!verb || (verb.kind === 'static' && /^(get|list|ls)$/.test(verb.value))) return;
+  parsed.effects.add('exec:arbitrary');
+}
+
+const pnpmOptions = opts(
+  o('-C= --dir=', { role: 'cwd' }),
+  '-w --workspace-root',
+  '-r --recursive',
+  '-F= --filter=',
+  '--filter-prod=',
+  '--test-pattern=',
+  '--changed-files-ignore-pattern=',
+  '--fail-if-no-match',
+  '-s --silent',
+  '--reporter=',
+  '--loglevel=',
+  '--color',
+  '--no-color',
+  '--aggregate-output',
+  '--stream',
+  '--parallel',
+  '--workspace-concurrency=',
+  '--if-present',
+  '--resume-from=',
+  '--report-summary',
+  '--sort',
+  '--no-sort',
+  '--reverse',
+  '--bail',
+  '--no-bail',
+  '--ignore-scripts',
+  '--use-stderr',
+  '--frozen-lockfile',
+  '--offline',
+  '--prefer-offline',
+  '-D --save-dev',
+  '-P --save-prod',
+  '-O --save-optional',
+  '-E --save-exact',
+  '-g --global',
+  '-h --help',
+  '-v --version',
+);
+
+/** bun's own options, which come before the script or file it runs. */
+const bunOptions = opts(
+  '--silent',
+  '--elide-lines=',
+  '-v --version',
+  '--revision',
+  '-F= --filter=',
+  '-b --bun',
+  '--no-orphans',
+  '--shell=',
+  '--workspaces',
+  '--parallel',
+  '--sequential',
+  '--no-exit-on-error',
+  '--watch',
+  '--watch-kill-signal=',
+  '--hot',
+  '--no-clear-screen',
+  '--check',
+  '--smol',
+  o('--interactive', { effects: ['exec:arbitrary'] }),
+  o('-r= --preload= --require= --import=', { role: 'read', effects: ['exec:file'] }),
+  o('--inspect=? --inspect-wait=? --inspect-brk=?', { effects: ['network'] }),
+  '--cpu-prof',
+  o('--cpu-prof-name= --cpu-prof-dir= --heap-prof-name= --heap-prof-dir=', { effects: ['fs:write'] }),
+  '--cpu-prof-md',
+  '--cpu-prof-interval=',
+  '--heap-prof',
+  '--heap-prof-md',
+  '--heap-prof-interval=',
+  '--if-present',
+  '--no-install',
+  '--install=',
+  '-i',
+  inline('-e= --eval='),
+  inline('-p= --print='),
+  '--prefer-offline',
+  '--prefer-latest',
+  '--port=',
+  '--conditions=',
+  o('--fetch-preconnect=', { effects: ['network'] }),
+  '--experimental-http2-fetch',
+  '--experimental-http3-fetch',
+  '--max-http-header-size=',
+  '--insecure-http-parser',
+  '--dns-result-order=',
+  '--experimental-stream-iter',
+  '--expose-gc',
+  '--no-deprecation',
+  '--throw-deprecation',
+  '--no-warnings',
+  '--trace-warnings',
+  '--trace-deprecation',
+  '--pending-deprecation',
+  o('--redirect-warnings=', { role: 'write' }),
+  '--disable-warning=',
+  '--title=',
+  '--zero-fill-buffers',
+  '--use-system-ca',
+  '--use-openssl-ca',
+  '--use-bundled-ca',
+  '--tls-min-v1.0',
+  '--tls-min-v1.1',
+  '--tls-min-v1.2',
+  '--tls-min-v1.3',
+  '--tls-max-v1.2',
+  '--tls-max-v1.3',
+  o('--redis-preconnect --sql-preconnect', { effects: ['network'] }),
+  '--no-addons',
+  '--no-ffi-cc',
+  '--unhandled-rejections=',
+  '--console-depth=',
+  '--user-agent=',
+  '--cron-title=',
+  '--cron-period=',
+  '--main-fields=',
+  '--preserve-symlinks',
+  '--preserve-symlinks-main',
+  '--extension-order=',
+  o('--tsconfig-override=', { role: 'read' }),
+  '-d= --define=',
+  '--drop=',
+  '--feature=',
+  '-l= --loader=',
+  '--no-macros',
+  '--jsx-factory=',
+  '--jsx-fragment=',
+  '--jsx-import-source=',
+  '--jsx-runtime=',
+  '--jsx-side-effects',
+  '--ignore-dce-annotations',
+  o('--env-file=', { role: 'read' }),
+  '--no-env-file',
+  o('--cwd=', { role: 'cwd' }),
+  // bunfig.toml may preload modules.
+  o('-c= --config=', { role: 'read', effects: ['exec:file'] }),
+  '-h --help',
+);
+
+/** Options every cargo command takes. `--config` and `-Z` may set what runs (`build.rustc-wrapper`, `target.*.runner`). */
+const cargoGlobal = opts(
+  '-V --version',
+  '--list',
+  '--explain=',
+  '-v --verbose',
+  '-q --quiet',
+  '--color=',
+  o('-C=', { role: 'cwd' }),
+  '--locked',
+  '--offline',
+  '--frozen',
+  o('--config=', { effects: ['exec:arbitrary'] }),
+  o('-Z=', { effects: ['exec:arbitrary'] }),
+  '-h --help',
+);
+
+/** A project's manifest elsewhere is another project's code. */
+const manifestPath = o('--manifest-path=', { role: 'read', effects: ['exec:file'] });
+
+const cargoOptions = [
+  ...cargoGlobal,
+  manifestPath,
+  ...opts(
+    o('--target-dir=', { role: 'write' }),
+    o('--artifact-dir= --out-dir=', { role: 'write' }),
+    '-p= --package=',
+    '--workspace --all',
+    '--exclude=',
+    '-F= --features=',
+    '--all-features',
+    '--no-default-features',
+    '--lib',
+    '--bins',
+    '--bin=',
+    '--examples',
+    '--example=',
+    '--tests',
+    '--test=',
+    '--benches',
+    '--bench=',
+    '--all-targets',
+    '-r --release',
+    '--profile=',
+    '-j= --jobs=',
+    '--keep-going',
+    '--target=',
+    '--message-format=',
+    '--timings=?',
+    '--ignore-rust-version',
+    '--future-incompat-report',
+    '--unit-graph',
+    '--no-run',
+    '--no-fail-fast',
+    '--doc',
+    '--open',
+    '--no-deps',
+    '--document-private-items',
+    o('--fix', { effects: ['fs:write'] }),
+    '--allow-dirty',
+    '--allow-staged',
+    '--allow-no-vcs',
+    '--broken-code',
+    '--check',
+    '--dry-run',
+    '-D --dev',
+    '--build',
+    '--optional',
+    '--rename=',
+    '--registry=',
+    '--git=',
+    '--path=',
+    '--branch=',
+    '--tag=',
+    '--rev=',
+    '--precise=',
+    '--recursive',
+    '--root=',
+    '-f --force',
+  ),
+];
+
+/** `cargo new` and `init` take `--bin` alone, and write where their positional says. */
+const cargoNew = [...cargoGlobal, manifestPath, ...opts('--bin', '--lib', '--name=', '--vcs=', '--edition=', '--registry=')];
+
 /** Reads its positionals, with the options given (so their values aren't taken for paths). */
 function reader(...options: (string | OptionSpec)[]): CommandSpec {
   return { abbreviations: true, positionals: 'read', effects: ['fs:read'], options: opts(...options) };
@@ -2571,26 +2836,305 @@ const programs: Record<string, CommandSpec> = {
   ),
   ruby: interpreter(opts(inline('-e='), '-n', '-p', o('-i=?', { effects: ['fs:write'] }), '-r=', '-I=', '-w', '-W=?')),
   npm: {
-    options: opts(o('--prefix= -C', { role: 'cwd' }), '-w= --workspace=', '-g --global', '-s --silent', '-y --yes'),
+    options: opts(
+      o('--prefix= -C', { role: 'cwd' }),
+      '-w= --workspace=',
+      '--workspaces',
+      '--include-workspace-root',
+      '-g --global',
+      '-s --silent',
+      '-q --quiet',
+      '-d --loglevel=',
+      '-y --yes',
+      '--if-present',
+      '--ignore-scripts',
+      '--foreground-scripts',
+      '--json',
+      '-p --parseable',
+      '-l --long',
+      '-a --all',
+      '--depth=',
+      '--omit=',
+      '--include=',
+      '-D --save-dev',
+      '-P --save-prod',
+      '-E --save-exact',
+      '--no-save',
+      '--no-audit',
+      '--no-fund',
+      '--prefer-offline',
+      '--offline',
+      '--dry-run',
+      '-v --version',
+      '-h --help',
+    ),
     subcommands: {
       ...each('run|run-script|rum|urn test|t|tst start stop restart', { effects: ['exec:project'] }),
       ...each(
-        'install|i|in|ins|inst|insta|instal|isnt|isnta|isntal|isntall|add ci|clean-install|ic|install-clean|isntall-clean update|up|upgrade|udpate rebuild|rb',
+        'install|i|in|ins|inst|insta|instal|isnt|isnta|isntal|isntall|add ci|clean-install|ic|install-clean|isntall-clean update|up|upgrade|udpate rebuild|rb uninstall|unlink|remove|rm|r|un install-test|it install-ci-test|cit dedupe|ddp prune find-dupes link|ln',
         { effects: ['network', 'fs:write', 'exec:project'] },
       ),
-      ...each('exec|x init|create|innit', { effects: ['network', 'exec:arbitrary'] }),
-      'uninstall|unlink|remove|rm|r|un': { effects: ['fs:write'] },
-      ...each('publish unpublish deprecate dist-tag|dist-tags owner|author access team login logout adduser|add-user', {
-        effects: ['network'],
-      }),
-      ...each('audit outdated view|info|show|v search|find|s|se', { effects: ['network'] }),
-      ...each('ls|list ll|la config|c get set pkg prefix root bin help|hlep version|verison explain|why doctor', {}),
+      ...each('exec|x init|create|innit edit explore', { effects: ['network', 'exec:arbitrary'] }),
+      ...each(
+        'publish unpublish deprecate dist-tag|dist-tags owner|author access team login logout adduser|add-user audit outdated view|info|show|v search|find|s|se doctor docs|home bugs|issues repo fund diff hook token profile org star stars unstar ping whoami',
+        { effects: ['network'] },
+      ),
+      // `npm version` runs the version scripts, and commits and tags with git.
+      'version|verison': { effects: ['exec:project'], finish: writesManifest },
+      pack: { effects: ['exec:project', 'fs:write'] },
+      shrinkwrap: { effects: ['fs:write'] },
+      cache: { effects: ['fs:write', 'fs:delete'] },
+      'config|c': { finish: setsConfig },
+      set: { effects: ['exec:arbitrary'] },
+      pkg: {
+        finish(parsed) {
+          if (staticValue(parsed.positionals[0]) !== 'get') writesManifest(parsed);
+        },
+      },
+      ...each('ls|list ll|la get prefix root bin help|hlep explain|why query sbom completion', {}),
+    },
+    finish(parsed) {
+      // npm takes any unique start of a command's name (`npm exe` is `npm exec`), and reads an option it doesn't
+      // know as configuration, which may name the shell its scripts run in.
+      if (parsed.subcommands.length === 0 && parsed.unknownSubcommand) parsed.effects.add('exec:arbitrary');
+      packageManagerOptions(parsed);
     },
   },
   npx: {
     posix: true,
     effects: ['network', 'exec:arbitrary'],
     options: opts('-p= --package=', o('-c= --call=', { role: 'script' }), '-y --yes', '--no'),
+  },
+  pnpm: {
+    posix: true,
+    options: pnpmOptions,
+    subcommands: {
+      // pnpm's own options come before the script's name; every word after it is the script's.
+      'run|run-script': { posix: true, options: pnpmOptions, effects: ['exec:project'] },
+      ...each('test|t|tst start restart stop', { verbatim: true, effects: ['exec:project'] }),
+      exec: {
+        posix: true,
+        options: [...pnpmOptions, o('-c --shell-mode', { effects: ['exec:arbitrary'] })],
+        command: {},
+        effects: ['exec:project'],
+      },
+      ...each('dlx|x create', { posix: true, effects: ['network', 'exec:arbitrary'] }),
+      ...each(
+        'install|i add update|up|upgrade remove|rm|uninstall|un link|ln unlink import rebuild|rb fetch install-test|it dedupe prune deploy patch patch-commit patch-remove approve-builds env runtime|rt setup self-update clean',
+        { effects: ['network', 'fs:write', 'exec:project'] },
+      ),
+      ...each(
+        'audit outdated licenses view|info|show|v search|find|s|se publish stage login|adduser|add-user logout whoami doctor docs|home bugs|issues repo dist-tag|dist-tags owner|author access team unpublish deprecate token profile org star stars unstar ping sbom store cache',
+        { effects: ['network'] },
+      ),
+      ...each('edit recursive|multi|m', { effects: ['exec:arbitrary'] }),
+      'version|verison': { effects: ['exec:project'], finish: writesManifest },
+      pack: { effects: ['exec:project', 'fs:write'] },
+      init: { finish: writesManifest },
+      'config|c': { finish: setsConfig },
+      set: { effects: ['exec:arbitrary'] },
+      pkg: {
+        finish(parsed) {
+          if (staticValue(parsed.positionals[0]) !== 'get') writesManifest(parsed);
+        },
+      },
+      ...each('ls|list ll|la why root bin help get ignored-builds cat-file cat-index find-hash completion query', {}),
+    },
+    finish(parsed) {
+      packageManagerOptions(parsed);
+      // A word pnpm doesn't know is a script, or else a command it runs from PATH (`pnpm node -e …`).
+      if (parsed.subcommands.length > 0 || !parsed.unknownSubcommand) return;
+      runsScript(parsed, parsed.unknownSubcommand, true);
+    },
+  },
+  bun: {
+    posix: true,
+    options: bunOptions,
+    subcommands: {
+      // `bun run` runs a script, else a file, else a command from PATH (`bun run echo hi`).
+      run: {
+        posix: true,
+        options: bunOptions,
+        finish(parsed) {
+          if (parsed.positionals[0]) runsScript(parsed, parsed.positionals[0], true);
+        },
+      },
+      test: {
+        options: [
+          ...bunOptions,
+          ...opts(
+            '--timeout=',
+            '-u --update-snapshots',
+            '--rerun-each=',
+            '--retry=',
+            '--todo',
+            '--only',
+            '--pass-with-no-tests',
+            '--concurrent',
+            '--randomize',
+            '--seed=',
+            '--coverage',
+            '--coverage-reporter=',
+            o('--coverage-dir=', { role: 'write' }),
+            '--bail=?',
+            '-t= --test-name-pattern=',
+            '--reporter=',
+            o('--reporter-outfile=', { role: 'write' }),
+            '--dots',
+            '--only-failures',
+            '--max-concurrency=',
+            '--path-ignore-patterns=',
+            '--changed=?',
+            '--isolate',
+            '--no-isolate',
+            '--parallel-delay=',
+            '--shard=',
+            '--timings=?',
+            '--update-timings',
+          ),
+        ],
+        effects: ['exec:project'],
+      },
+      // A script of the same name runs in place of these.
+      check: {
+        options: opts(
+          '-p= --project=',
+          '--pretty=?',
+          '--no-pretty',
+          '-b --build',
+          '--all',
+          '--threads=',
+          '--timing',
+          o('--cwd=', { role: 'cwd' }),
+          '--no-script',
+          '--strict',
+          '--target=',
+          '-h --help',
+        ),
+        effects: ['exec:project'],
+      },
+      fmt: {
+        options: opts(
+          '-c --check',
+          '--staged',
+          '--changed=?',
+          '--stdin-filepath=',
+          '--print-width=',
+          '--use-tabs',
+          '--no-semi',
+          '--single-quote',
+          '--init',
+          '--doctor',
+          '--no-script',
+          '-h --help',
+        ),
+        effects: ['exec:project', 'fs:write'],
+      },
+      build: {
+        // `-e` is --external here, ahead of the runtime's --eval.
+        options: [
+          ...opts(
+            o('--outdir=', { role: 'write' }),
+            o('--outfile=', { role: 'write' }),
+            o('--metafile= --metafile-md=', { role: 'write' }),
+            '--production',
+            '--compile',
+            '--compile-exec-argv=',
+            '--bytecode-order=',
+            '--compile-jit-policy=',
+            '--compile-autoload-dotenv',
+            '--no-compile-autoload-dotenv',
+            '--compile-autoload-bunfig',
+            '--no-compile-autoload-bunfig',
+            '--compile-autoload-tsconfig',
+            '--no-compile-autoload-tsconfig',
+            '--compile-autoload-package-json',
+            '--no-compile-autoload-package-json',
+            o('--compile-executable-path=', { role: 'read' }),
+            '--asset=',
+            '--bytecode',
+            '--bytecode-depth=',
+            '--no-optimize-bytecode',
+            '--target=',
+            '--sourcemap=?',
+            '--banner=',
+            '--footer=',
+            '--format=',
+            '--root=',
+            '--splitting',
+            '--no-split-require',
+            '--no-module-preload',
+            '--min-chunk-size=',
+            '--public-path=',
+            '-e= --external=',
+            '--allow-unresolved=',
+            '--reject-unresolved',
+            '--packages=',
+            '--entry-naming=',
+            '--chunk-naming=',
+            '--asset-naming=',
+            '--react-fast-refresh',
+            '--react-compiler',
+            '--no-bundle',
+            '--emit-dce-annotations',
+            '--no-deprecated-namespace-object-setters',
+            '--minify',
+            '--minify-syntax',
+            '--minify-whitespace',
+            '--minify-identifiers',
+            '--keep-names',
+            '--css-chunking',
+            '--app',
+            '--env=',
+            '--windows-hide-console',
+            '--windows-icon=',
+            '--windows-title=',
+            '--windows-publisher=',
+            '--windows-version=',
+            '--windows-description=',
+            '--windows-copyright=',
+          ),
+          ...bunOptions,
+        ],
+        effects: ['exec:project'],
+      },
+      'x|bunx': { posix: true, effects: ['network', 'exec:arbitrary'] },
+      ...each('repl exec', { effects: ['exec:arbitrary'] }),
+      ...each('create|c', { effects: ['network', 'exec:arbitrary'] }),
+      ...each('install|i add|a remove|rm update link unlink patch patch-commit pm init dedupe prune upgrade completions', {
+        effects: ['network', 'fs:write', 'exec:project'],
+      }),
+      ...each('audit outdated info why publish whoami login logout discord feedback', { effects: ['network'] }),
+      ...each('help deploy', {}),
+    },
+    finish(parsed) {
+      packageManagerOptions(parsed);
+      // A word bun doesn't know is a script, or else a file: `bun f` runs `f.ts`.
+      if (parsed.subcommands.length > 0 || !parsed.unknownSubcommand) return;
+      runsScript(parsed, parsed.unknownSubcommand, false);
+    },
+  },
+  cargo: {
+    // Every command reads the project's `.cargo/config.toml`, whose aliases and `rustc-wrapper` run code, and those
+    // that build run its build scripts and macros.
+    effects: ['exec:project'],
+    options: cargoOptions,
+    subcommands: {
+      ...each(
+        'build|b check|c test|t run|r bench doc|d rustc rustdoc clippy metadata tree pkgid locate-project verify-project read-manifest report config version help generate-lockfile',
+        { options: cargoOptions },
+      ),
+      ...each('fix fmt', { options: cargoOptions, effects: ['fs:write'] }),
+      clean: { options: cargoOptions, effects: ['fs:delete'] },
+      ...each('new init', { options: cargoNew, effects: ['fs:write'], positionals: 'write' }),
+      ...each('add remove|rm update fetch vendor package', { options: cargoOptions, effects: ['network', 'fs:write'] }),
+      ...each('search info publish login logout owner yank', { options: cargoOptions, effects: ['network'] }),
+      ...each('install uninstall', { options: cargoOptions, effects: ['network', 'fs:write', 'exec:arbitrary'] }),
+    },
+    finish(parsed) {
+      // A word cargo doesn't know is an alias, or the program `cargo-<word>` on PATH; `+toolchain` is rustup's.
+      if (parsed.subcommands.length === 0 && parsed.unknownSubcommand) parsed.effects.add('exec:arbitrary');
+    },
   },
   make: {
     effects: ['exec:project'],

@@ -359,6 +359,14 @@ function writesUnknown(program: string, parsed: Parsed, followed: boolean): bool
   return (effects.has('fs:write') || effects.has('fs:delete')) && parsed.writes.length === 0;
 }
 
+/** Programs that run package.json scripts, by the options that run another package's scripts instead. */
+const workspaces: Record<string, string[]> = {
+  npm: ['--workspace', '--workspaces', '--include-workspace-root', '--global'],
+  pnpm: ['--recursive', '--filter', '--filter-prod', '--workspace-root', '--global'],
+  bun: ['--filter', '--workspaces'],
+};
+const packageManagers = new Set(Object.keys(workspaces));
+
 /** How many times a loop body is walked looking for what it changes before the analysis gives up on it. */
 const maxIterations = 32;
 
@@ -1973,15 +1981,18 @@ class Walker {
       const value: Value = entry.kind === 'static' ? { kind: 'static', value: entry.value.slice(equals + 1) } : { kind: 'dynamic' };
       this.assigned(start.slice(0, equals), value, state, ctx, call, false, false);
     }
-    this.emit(ctx, call, program, 'external', argv, parsed, path);
     const cwd = parsed.cwd?.kind === 'static' ? resolvePath(call.cwd, parsed.cwd.value, call.home) : parsed.cwd ? undefined : call.cwd;
-    // Whether the project code it runs (hooks, npm scripts) was walked, along with what that code writes.
+    // Which package.json scripts it runs, known before it's recorded: a name no script has is a file or a command.
+    const scripts = packageManagers.has(program) ? this.packageScripts(program, cwd, parsed, ctx, call) : undefined;
+    this.emit(ctx, call, program, 'external', argv, parsed, path);
+    // Whether the project code it runs (hooks, package scripts) was walked, along with what that code writes.
     let followed = false;
     if (program === 'git') {
       for (const config of parsed.configs) this.gitConfigEntry(config, state, ctx, call);
       followed = this.gitProject(cwd, parsed, state, ctx, call);
-    } else if (program === 'npm') {
-      followed = this.npmScripts(cwd, parsed, state, ctx, call);
+    } else if (scripts) {
+      for (const [name, script] of scripts.run) this.code(script, childState(state, cwd), ctx, call, `${program} ${name}`);
+      followed = scripts.followed;
     } else if (program === 'ssh') {
       for (const value of parsed.options['-o'] ?? []) {
         if (value === true || value.kind === 'dynamic') {
@@ -2284,53 +2295,84 @@ class Walker {
     return false;
   }
 
-  /** The package.json scripts `npm run` and the like run: `false` when they weren't followed. */
-  npmScripts(cwd: string | undefined, parsed: Parsed, state: State, ctx: Context, call: Call): boolean {
-    if (!this.files || !cwd) return false;
+  /**
+   * The package.json scripts npm, pnpm or bun runs, each with its `pre` and `post` scripts, read before the invocation
+   * is recorded: once the file shows a name is a script, the command from PATH pnpm and `bun run` would run in its
+   * place is dropped, and a name bun finds no script for is a file it runs. `followed` is `false` when what runs may
+   * not all be in `run`: no filesystem, a workspace's scripts, or a name only known at run time.
+   */
+  packageScripts(
+    program: string,
+    cwd: string | undefined,
+    parsed: Parsed,
+    ctx: Context,
+    call: Call,
+  ): { run: [string, string][]; followed: boolean } | undefined {
+    const unfollowed = { run: [], followed: false };
+    const verb = parsed.subcommands[0];
+    // A word npm doesn't know is the start of one of its commands' names, never a script's.
+    const given = !verb ? (program === 'npm' ? undefined : parsed.unknownSubcommand) : verb === 'run' ? parsed.positionals[0] : undefined;
+    // Without a restart script, `npm restart` runs stop and start: each of them may.
+    const names =
+      given?.kind === 'static'
+        ? [given.value]
+        : verb === 'restart'
+          ? ['restart', 'stop', 'start']
+          : verb === 'test' || verb === 'start' || verb === 'stop' || (program === 'bun' && (verb === 'check' || verb === 'fmt'))
+            ? [verb]
+            : [];
+    if (names.length === 0 || (program === 'bun' && verb === 'test')) return unfollowed;
+    if (!this.files || !cwd || workspaces[program]!.some((option) => parsed.options[option])) return unfollowed;
+    const shell = parsed.options['--shell']?.[0];
+    // bun runs scripts in its own shell unless told the system's.
+    if (program === 'bun' && shell !== undefined && (shell === true || shell.kind !== 'static' || shell.value !== 'system'))
+      return unfollowed;
+    const scripts = this.manifestScripts(cwd, ctx, call);
+    if (!scripts) return unfollowed;
+    const [name] = names;
+    if (given && scripts[name!] === undefined) {
+      if (program !== 'bun') return { run: [], followed: true };
+      // bun runs a file of that name, `f` being `f.ts` too, and `bun run` a command from PATH after that.
+      parsed.effects.add('exec:file');
+      parsed.reads.push(given);
+      return unfollowed;
+    }
+    if (given) parsed.nested = [];
+    const run: [string, string][] = [];
+    for (const scriptName of names.flatMap((each) => [`pre${each}`, each, `post${each}`])) {
+      const script = scripts[scriptName];
+      if (typeof script === 'string') run.push([scriptName, script]);
+      else if (script !== undefined) this.finding(ctx, 'exec-config', `${program} script ${scriptName} is not a string`, call.span);
+    }
+    return { run, followed: true };
+  }
+
+  /** The scripts in the package.json in `cwd`, or `undefined` when they can't be read (a finding says why). */
+  manifestScripts(cwd: string, ctx: Context, call: Call): Record<string, unknown> | undefined {
     const manifest = this.read(`${cwd}/package.json`, ctx, call);
-    if (manifest === undefined) return false;
+    if (manifest === undefined) return undefined;
+    // Without one here, the package manager looks in the directories above.
+    if (manifest === null) {
+      this.finding(ctx, 'exec-config', `No package.json in ${cwd}; the scripts of one above it cannot be inspected`, call.span);
+      return undefined;
+    }
     let packageJson: unknown;
     try {
       packageJson = JSON.parse(manifest);
     } catch (error) {
       if (!(error instanceof SyntaxError)) throw error;
-      this.finding(ctx, 'exec-config', 'package.json is invalid JSON; npm scripts cannot be inspected', call.span);
-      return false;
+      this.finding(ctx, 'exec-config', 'package.json is invalid JSON; its scripts cannot be inspected', call.span);
+      return undefined;
     }
-
-    if (
-      typeof packageJson !== 'object' ||
-      packageJson === null ||
-      !('scripts' in packageJson) ||
-      typeof packageJson.scripts !== 'object' ||
-      packageJson.scripts === null
-    ) {
-      this.finding(ctx, 'exec-config', 'package.json scripts are not a readable object', call.span);
-      return false;
+    if (typeof packageJson !== 'object' || packageJson === null || Array.isArray(packageJson)) {
+      this.finding(ctx, 'exec-config', 'package.json is not an object; its scripts cannot be inspected', call.span);
+      return undefined;
     }
-
-    const verb = parsed.subcommands[0];
-    const name = verb === 'run' ? parsed.positionals[0] : undefined;
-    if (name?.kind === 'dynamic') return false;
-    // Without a restart script, `npm restart` runs stop and start: each of them may.
-    const names = name
-      ? [name.value]
-      : verb === 'restart'
-        ? ['restart', 'stop', 'start']
-        : verb === 'test' || verb === 'start' || verb === 'stop'
-          ? [verb]
-          : [];
-    if (names.length === 0) return false;
-    const scripts = packageJson.scripts as Record<string, unknown>;
-    for (const scriptName of names.flatMap((name) => [`pre${name}`, name, `post${name}`])) {
-      const script = scripts[scriptName];
-      if (typeof script !== 'string') {
-        if (script !== undefined) this.finding(ctx, 'exec-config', `npm script ${scriptName} is not a string`, call.span);
-        continue;
-      }
-      this.code(script, childState(state, cwd), ctx, call, `npm ${scriptName}`);
-    }
-    return true;
+    if (!('scripts' in packageJson) || packageJson.scripts === undefined) return {};
+    const { scripts } = packageJson;
+    if (typeof scripts === 'object' && scripts !== null && !Array.isArray(scripts)) return scripts as Record<string, unknown>;
+    this.finding(ctx, 'exec-config', 'package.json scripts are not a readable object', call.span);
+    return undefined;
   }
 
   sshConfig(path: string, cwd: string | undefined, state: State, ctx: Context, call: Call, visited: Set<string>, depth: number): void {
