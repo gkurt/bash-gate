@@ -23,6 +23,7 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['r""m -rf /', 'deny', 'empty quotes inside the name'],
   ['\\rm -rf /', 'deny', 'an escaped name'],
   ["$'\\x72m' -rf /", 'deny', 'ANSI-C quoting'],
+  ["rm -rf $'/\\c a\\\nb'", 'deny', 'a NUL in ANSI-C quoting ends it, past a backslash and newline'],
   ['{rm,-rf,/}', 'deny', 'brace expansion making the whole command'],
   ['rm {,-rf} /', 'deny', 'brace expansion making an option'],
   ['x=./build; xr=/; rm -rf $x{r,}', 'deny', 'braces after a variable, which expand first and lengthen its name'],

@@ -57,6 +57,7 @@ export const scripts = [
   "mapfile -tC' cat' -c1 a <<< x; mapfile a -C ls <<< y; compgen -Csort z",
   "cat <<< <(ls here); cat > $'' <<< $''; ls after",
   "cat $'a\\\nb' $'c\\\\\nd' \"e\\\nf\"",
+  "cat $'a\\c b\\\nc' $'d\\0e\\\nf' g",
   "compgen -C 'ls -1' x",
   'echo `ls y`',
   'enable -n echo; echo hi',

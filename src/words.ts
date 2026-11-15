@@ -418,27 +418,25 @@ function braceItems(text: string): string[] | undefined {
   return expandSequence(inner)?.map((value) => value.replaceAll(/[^A-Za-z0-9]/g, '\\$&'));
 }
 
-/** What `$'…'` stands for. unbash drops a backslash and newline in it, which Bash keeps: they're no escape there. */
+/**
+ * What `$'…'` stands for. unbash drops a backslash and newline in it, which Bash keeps: they're no escape there. So
+ * each such backslash is escaped and the whole string decoded at once, as a NUL (`\c `, `\0`) ends all of it.
+ */
 function ansiC(part: AnsiCQuotedPart): string {
   const inner = part.text.slice(2, -1);
-  const pieces: string[] = [];
+  let escaped = '';
   let start = 0;
   for (let i = 0; i < inner.length; i++) {
     if (inner[i] !== '\\') continue;
     if (inner[i + 1] === '\n') {
-      pieces.push(inner.slice(start, i));
-      start = i + 2;
+      escaped += `${inner.slice(start, i)}\\\\`;
+      start = i + 1;
     }
     i++;
   }
-  if (pieces.length === 0) return part.value;
-  pieces.push(inner.slice(start));
-  return pieces
-    .map((piece) => {
-      const [decoded] = parseWord(`$'${piece}'`)?.parts ?? [];
-      return decoded?.type === 'AnsiCQuoted' ? decoded.value : piece;
-    })
-    .join('\\\n');
+  if (start === 0) return part.value;
+  const [decoded] = parseWord(`$'${escaped}${inner.slice(start)}'`)?.parts ?? [];
+  return decoded?.type === 'AnsiCQuoted' ? decoded.value : inner;
 }
 
 function parseWord(text: string): Word | undefined {
