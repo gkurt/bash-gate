@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { huskyFiles } from '#src/husky.ts';
 import { allow, analyze, ask, check, checkAsync, deny, recommended, snapshot, type Arg } from '#src/index.ts';
 
 const values = (args: Arg[]) => args.map((arg) => (arg.kind === 'static' ? arg.value : `<${arg.reason}>`));
@@ -427,6 +428,45 @@ describe('invocations', () => {
     expect(findings('npm test | cat; ./build.sh')).toEqual([]);
   });
 
+  test("husky's hooks are the project's own in .husky, for every version of what husky writes", () => {
+    const { stub91, stub90, dispatcher91, dispatcher90, helper8, helper7, deprecated91 } = huskyFiles;
+    const repo = (hooksPath: string, husky: Record<string, string>) => {
+      const files: Record<string, string> = {
+        '/repo/.git/HEAD': 'ref: refs/heads/main\n',
+        '/repo/.git/config': `[core]\n\thooksPath = ${hooksPath}\n`,
+        ...Object.fromEntries(Object.entries(husky).map(([path, text]) => [`/repo/.husky/${path}`, text])),
+      };
+      const fs = { readFile: (path: string) => files[path] ?? null, realpath: (path: string) => path };
+      return (source: string) => check(source, recommended, { cwd: '/repo', fs });
+    };
+    const own = (lines: string) => `#!/usr/bin/env sh\n. "$(dirname -- "$0")/_/husky.sh"\n\n${lines}\n`;
+    const versions = {
+      '9.1': repo('.husky/_', { '_/pre-commit': stub91, '_/h': dispatcher91, '_/husky.sh': deprecated91 }),
+      '9.0': repo('.husky/_', { '_/pre-commit': stub90, '_/h': dispatcher90, '_/husky.sh': '' }),
+      '8': repo('.husky', { '_/husky.sh': helper8 }),
+      '7': repo('.husky', { '_/husky.sh': helper7 }),
+    };
+    // With no hook of the project's own, husky runs nothing.
+    for (const [version, files] of Object.entries(versions))
+      expect([version, files('git commit -m x').decision]).toEqual([version, 'allow']);
+    // The project's hook is what's judged, with husky's old helper line left out.
+    const hooked = (hook: string) =>
+      repo('.husky/_', { '_/pre-commit': stub91, '_/h': dispatcher91, '_/husky.sh': deprecated91, 'pre-commit': own(hook) });
+    expect(hooked('cat lint')('git commit -m x').decision).toBe('allow');
+    expect(hooked('rm -rf /')('git commit -m x').decision).toBe('deny');
+    expect(hooked('rm -rf /')('git commit --no-verify -m x').decision).toBe('allow');
+    const legacy = repo('.husky', { '_/husky.sh': helper8, 'pre-commit': own('rm -rf /') });
+    expect(legacy('git commit -m x').decision).toBe('deny');
+    // A file husky didn't write as it is, or one the script may change first, is walked as it is, which asks.
+    for (const changed of [
+      repo('.husky/_', { '_/pre-commit': stub91, '_/h': `${dispatcher91}\necho`, 'pre-commit': 'cat lint' }),
+      repo('.husky/_', { '_/pre-commit': `${stub91}\nls`, '_/h': dispatcher91, 'pre-commit': 'cat lint' }),
+      repo('.husky', { '_/husky.sh': `${helper8}\necho`, 'pre-commit': own('cat lint') }),
+    ])
+      expect(changed('git commit -m x').decision).toBe('ask');
+    expect(hooked('cat lint')('echo x > .husky/_/h && git commit -m x').decision).toBe('ask');
+  });
+
   test('tsc and biome write only files of their kinds, where project code may write anything', () => {
     const files: Record<string, string> = {
       '/repo/package.json': JSON.stringify({ scripts: { test: 'cat ok' } }),
@@ -444,7 +484,7 @@ describe('invocations', () => {
     ])
       expect([source, findings(source)]).toEqual([source, []]);
     for (const source of ['oxlint --fix && npm test', 'prettier --write . && npm test', 'vitest run && npm test'])
-      expect([source, findings(source)]).toEqual([source, ["`/repo/package.json` may be changed by the script before it's read"]]);
+      expect([source, findings(source)]).toEqual([source, ["`/repo/package.json` may be changed by project code before it's read"]]);
     // A file of a kind tsc emits is unknown after it, wherever it is: git config may include one.
     expect(findings('git status')).toEqual([]);
     expect(findings('tsc && git status')).toEqual(["`/repo/settings.js` may be changed by the script before it's read"]);
@@ -617,15 +657,33 @@ describe('filesystem', () => {
   });
 
   test('a program that may write files no spec names makes every later read unknown', () => {
+    const kinds = (source: string) => [...new Set(analyze(source, environment).findings.map((finding) => finding.kind))];
     for (const source of [
-      'make && git commit -m x',
-      'cargo build && git commit -m x',
       'python3 -c x && git commit -m x',
       './build.sh && git commit -m x',
       'npm install && git commit -m x',
       'git clone url dir && git commit -m x',
     ])
-      expect([source, unknown(source)]).toEqual([source, true]);
+      expect([source, kinds(source)]).toEqual([source, ['unknown-file']]);
+    // Project code it trusts but doesn't follow says so, for a policy that allows it to allow what follows.
+    for (const source of ['make && git commit -m x', 'cargo build && git commit -m x', 'oxlint --fix src && git commit -m x'])
+      expect([source, kinds(source)]).toEqual([source, ['project-file']]);
+    expect(kinds('make && ./build.sh && git commit -m x')).toEqual(['unknown-file']);
+    // recommended runs project code, so what it may have changed is no reason to ask; nor is a symlink it may have made.
+    for (const source of ['cargo build && git commit -m x', 'cargo test && echo x > out.txt'])
+      expect([source, check(source, recommended, environment).decision]).toEqual([source, 'allow']);
+    // A symlink that was there before still leads where it leads.
+    expect(check('cargo test && echo x > out', recommended, environment).decision).toBe('ask');
+    // And what was there before is still walked: the hook git runs is that, or what project code wrote.
+    const hooked = {
+      cwd: '/repo',
+      fs: { ...fs, readFile: (path: string) => (path === '/repo/.git/hooks/pre-commit' ? 'rm -rf /' : fs.readFile(path)) },
+    };
+    expect(check('cargo build && git commit -m x', recommended, hooked).decision).toBe('deny');
+    expect(
+      check('cargo build && git commit -m x', { ...recommended, rules: [...recommended.rules, ask({ effects: ['exec:project'] })] })
+        .decision,
+    ).toBe('ask');
   });
 
   test('git rewrites its work tree, but not its .git', () => {

@@ -93,7 +93,8 @@ export type FindingKind =
   | 'exec-config'
   | 'too-deep'
   | 'unknown-syntax'
-  | 'unknown-file';
+  | 'unknown-file'
+  | 'project-file';
 
 /** Something about the script itself, not one invocation, that a gate should know: what the analysis couldn't follow. */
 export interface Finding {

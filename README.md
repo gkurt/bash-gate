@@ -123,8 +123,9 @@ const policy: Policy = {
   option the spec doesn't know. A rule naming `network` doesn't match `network:read`: name both to cover both.
 - An allow rule never applies to a program given by a non-system path (`./ls`).
 - Findings (`parse-error`, `dynamic-command`, `dynamic-script`, `dynamic-arithmetic`, `sensitive-variable`,
-  `exec-config`, `loads-code`, `unknown-alias`, `too-deep`, `unknown-syntax`, `unknown-file`) ask unless `policy.findings` says
-  otherwise.
+  `exec-config`, `loads-code`, `unknown-alias`, `too-deep`, `unknown-syntax`, `unknown-file`, `project-file`) ask unless
+  `policy.findings` says otherwise. `recommended` allows `project-file`: a file only project code it runs may have
+  changed before it's read.
 
 `recommended` (`src/recommended.ts`) is a starting point. It allows reading and everyday git, denies force pushes and
 deleting top-level directories, and asks about deleting, network, privilege, code it can't see, writes outside the
@@ -188,8 +189,10 @@ invocation gets the `realpaths` of its paths. `make` remains `exec:project`; Mak
 The hooks are each command's own (`pre-commit`, `post-checkout`, `pre-push`…), plus `post-index-change` and
 `reference-transaction` for every command: git runs those whenever it writes the index (`git status` does) or a ref.
 They're read from `core.hooksPath` when the repository's config sets it, as husky does, so `git status` there is
-judged like anywhere else, and `git commit` by what its hook runs: husky's sources a file by a computed path, which
-asks. Where git would look isn't always certain (a relative path with `--git-dir` or `--work-tree`, `~` without a
+judged like anywhere else, and `git commit` by what its hook runs. husky's stub sources its dispatcher by a computed
+path, so a hook that is exactly what husky 7, 8 or 9 writes is followed to the project's own hook in `.husky`,
+without the line older versions put at its top: `.husky/pre-commit` is what's judged, and with none, nothing runs.
+A husky file changed by hand is walked as it is, which asks. Where git would look isn't always certain (a relative path with `--git-dir` or `--work-tree`, `~` without a
 known `HOME`, a path set in a conditional include): that's an `exec-config` finding.
 
 - `readFile(path)` returns the text, `null` when nothing is there or it isn't a file, or `undefined` when it isn't
@@ -206,7 +209,10 @@ known `HOME`, a path set in a conditional include): that's an `exec-config` find
   that rewrite the work tree (`checkout`, `stash`, `reset`, `merge`…) change everything in it but its `.git`. A program
   that may write files no one can name makes every later read unknown: one without a spec, one running code the
   analysis doesn't follow (`make`, `npm install`, `vitest`, `python3 -c`, `./build.sh`), or one whose spec writes
-  without saying where. `tsc` writes only what it emits (`.js`, `.d.ts`, `.map`, `.tsbuildinfo`), and `biome` only the
+  without saying where. When the only such program is project code (`exec:project`: a test run, a build, a hook it
+  doesn't follow), what it may have changed is a `project-file` finding instead, what was there is still walked, and
+  real paths stay as they were: a
+  policy that runs project code gains nothing by asking about what that code could have done itself. `tsc` writes only what it emits (`.js`, `.d.ts`, `.map`, `.tsbuildinfo`), and `biome` only the
   kinds of file it formats, so after them only files of those kinds are unknown, wherever they are.
 
 `snapshot({ files, realpaths })` builds a `FileSystem` from records: a path in neither isn't known. Where the

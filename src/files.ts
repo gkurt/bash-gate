@@ -88,6 +88,8 @@ export class Changes {
   /** Files by name, wherever they are: what a compiler emits (`.js`, `.d.ts`). */
   patterns: RegExp[] = [];
   any = false;
+  /** Project code the analysis trusts but doesn't follow (a test run, a build) may have changed any path. */
+  project = false;
 
   add(path: string | undefined): void {
     if (path === undefined) this.any = true;
@@ -108,10 +110,16 @@ export class Changes {
     this.trees.push(...other.trees);
     for (const pattern of other.patterns) this.addPattern(pattern);
     this.any ||= other.any;
+    this.project ||= other.project;
   }
 
   get empty(): boolean {
-    return !this.any && this.paths.size === 0 && this.trees.length === 0 && this.patterns.length === 0;
+    return !this.named && !this.project;
+  }
+
+  /** Whether anything but project code may have changed something. */
+  get named(): boolean {
+    return this.any || this.paths.size > 0 || this.trees.length > 0 || this.patterns.length > 0;
   }
 
   /** Whether `path` is, or may be, a changed path or under one. */

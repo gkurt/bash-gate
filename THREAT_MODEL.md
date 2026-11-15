@@ -32,6 +32,10 @@ through a symlink that's already there, so writes count at their real path too, 
 write makes later reads unknown. The writes counted are those of redirections and specs, plus the work tree (all but
 its `.git`) of a git command that rewrites it. A program that may write files no one can name (no spec, code the
 analysis doesn't follow, or a spec that writes without saying where) makes every later read and real path unknown.
+When only project code (`exec:project`) may have written it, a read is a `project-file` finding rather than
+`unknown-file`, what was there before is still walked, and real paths are kept: a policy that allows project code to run (as `recommended` does, and allows
+`project-file`) already lets it write anything, a hook or a symlink included. A policy that asks about `exec:project`
+asks about the code itself.
 
 Nothing else changes the filesystem between the analysis and the end of the run. That rules out a process an earlier
 command left running: a job from an allowed `make &`, `nohup` or `setsid -f` could rewrite `.git/config` or a hook
@@ -49,7 +53,9 @@ Out of scope:
   and `refs`. One that may lack them is followed, and so are those above it. The hooks followed are the ones the
   command runs in git 2.55, plus `pre-auto-gc` where older gits collect garbage afterwards; a command the table
   doesn't have may run any. They're read from `core.hooksPath` where that directory is certain, and from the config's
-  own `hook.<name>.command`. The user's and the system's git config are never read. gh's stored aliases and config are never read: a first word gh
+  own `hook.<name>.command`. The user's and the system's git config are never read, nor husky's
+  user files (`~/.config/husky/init.sh`, `~/.huskyrc`). Hooks husky wrote are followed to the project's own hook in
+  `.husky`, only when their text is exactly what husky 7, 8 or 9 writes. gh's stored aliases and config are never read: a first word gh
   doesn't know is code unseen (`exec:arbitrary`), and its pager, editor and browser are what they were. Specs describe other known argument behavior, writes included: a
   specified program that writes a file its spec doesn't name can change what a later read sees.
 - **What the filesystem holds.** Globs and which files exist. `$HOME` too, unless the script sets it or the integration

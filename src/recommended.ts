@@ -8,6 +8,8 @@ import { allow, ask, deny, type Policy } from './policy.ts';
  */
 export const recommended: Policy = {
   default: 'ask',
+  // Project code is allowed to run, so a file it may have changed is no more than what it could do itself.
+  findings: { 'project-file': 'allow' },
   rules: [
     allow(
       'cat|head|tail|wc|stat|file|nl|od|strings|md5sum|sha1sum|sha224sum|sha256sum|sha384sum|sha512sum|b2sum|cksum|cmp|tac|rev|base64|grep|egrep|fgrep|rg|ls|du|df|sort|uniq|cut|tr|paste|join|fold|fmt|column|expand|unexpand|diff|comm|jq|yq|sed|awk|gawk|mawk|nawk|realpath|readlink|basename|dirname|find|which|type|echo|printf|true|false|:|test|[|pwd|cd|pushd|popd|whoami|id|uname|date|nproc|uptime|free|ps|pgrep|printenv|seq|sleep|exit|return|break|continue|set|shift|local|declare|export|read|unset|wait|mkdir|touch|cp|mv|tee',

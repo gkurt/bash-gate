@@ -38,6 +38,7 @@ runs everything on Linux, then builds and loads `dist/` in Node.
   policy.
 - `src/files.ts`: the `FileSystem` the analysis reads, `snapshot`, and what it didn't know (needs).
 - `src/paths.ts`: path resolution against the tracked working directory.
+- `src/husky.ts`: husky's hooks, recognised by the exact text each version writes, followed to the project's own.
 - `src/cover.ts`: whether an analysis covers a process a run started (S1): `covers` and `predicting`.
 - `src/trace/`: layer 3, `bash-gate/trace`. `index.ts` runs a command under `supervisor.c` (ptrace and seccomp, x86_64
   Linux) and checks each exec against the analysis: refused in `enforce` mode, reported in `trace` mode. The only code

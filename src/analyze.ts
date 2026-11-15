@@ -18,6 +18,7 @@ import {
 } from 'unbash';
 import { assignment, emptyParsed, normalize, type Parsed } from './argv.ts';
 import { Changes, Probe, type FileSystem } from './files.ts';
+import { huskyHook } from './husky.ts';
 import { basename, isSystemPath, resolvePath } from './paths.ts';
 import { gitConfig, specFor } from './specs.ts';
 import type { Analysis, Arg, Effect, FindingKind, Invocation } from './types.ts';
@@ -353,15 +354,21 @@ function gitHooksOf(parsed: Parsed): string[] {
  * or one whose spec writes without saying where. Git's own writes are its work tree (`gitWritesTree`) and `.git`, but
  * a clone, a new worktree or an init lands somewhere else.
  */
-function writesUnknown(program: string, parsed: Parsed, followed: boolean): boolean {
+function writesUnknown(program: string, parsed: Parsed, followed: boolean): boolean | 'project' {
   if (!specFor(program)) return true;
   const { effects } = parsed;
-  if (effects.has('exec:arbitrary') || effects.has('exec:file') || (effects.has('exec:project') && !followed)) return true;
+  if (effects.has('exec:arbitrary') || effects.has('exec:file')) return true;
+  // Project code it doesn't follow (a test run, a build, a hook), and not code fetched as it runs (`npm install`).
+  const project = effects.has('exec:project') && !followed && !effects.has('network');
   if (program === 'git') {
     const subcommands = parsed.subcommands.join(' ');
-    return /^(clone|init|worktree( (add|move|repair))?)$/.test(subcommands) || (!followed && gitWritesTree.test(subcommands));
+    if (/^(clone|init|worktree( (add|move|repair))?)$/.test(subcommands) || (!followed && gitWritesTree.test(subcommands))) return true;
+  } else if ((effects.has('fs:write') || effects.has('fs:delete')) && parsed.writes.length === 0 && !specFor(program)?.edits) {
+    // What project code writes without naming it (`cargo fmt`) is its own writing.
+    return project ? 'project' : true;
   }
-  return (effects.has('fs:write') || effects.has('fs:delete')) && parsed.writes.length === 0 && !specFor(program)?.edits;
+  if (project) return 'project';
+  return effects.has('exec:project') && !followed;
 }
 
 /** Programs that run package.json scripts, by the options that run another package's scripts instead. */
@@ -440,13 +447,18 @@ class Walker {
     }
   }
 
-  /** A program writes files no one can name: from here on, every file and real path is unknown. */
-  wroteAnything(): void {
+  /**
+   * A program writes files no one can name: from here on, every file and real path is unknown. With `project`, only
+   * project code the analysis trusts does (see `Changes.project`).
+   */
+  wroteAnything(project = false): void {
     if (!this.files) return;
     this.writes++;
     for (const written of this.recorded) {
-      written.contents.add(undefined);
-      written.links.add(undefined);
+      for (const changes of [written.contents, written.links]) {
+        if (project) changes.project = true;
+        else changes.add(undefined);
+      }
     }
   }
 
@@ -471,25 +483,36 @@ class Walker {
     }
   }
 
-  /** Whether the script may have changed `path` before now: its contents, or (`links`) a symlink on its way. */
-  changed(path: string, ctx: Context, kind: keyof Written): boolean {
+  /**
+   * Whether the script may have changed `path` before now: its contents, or (`links`) a symlink on its way.
+   * `'project'` when only project code it trusts but doesn't follow may have.
+   */
+  changed(path: string, ctx: Context, kind: keyof Written): boolean | 'project' {
     const sets = [
       this.written[kind],
       ...(ctx.concurrent && this.everything ? [this.everything[kind]] : []),
       ...(ctx.alongside ?? []).map((written) => written[kind]),
-    ].filter((changes) => !changes.empty);
-    if (sets.length === 0) return false;
+    ];
+    const named = sets.filter((changes) => changes.named);
     const real = path.startsWith('/') ? this.files?.physical(path) : undefined;
-    return real === undefined || sets.some((changes) => changes.covers(path) || changes.covers(real));
+    if (named.length > 0 && (real === undefined || named.some((changes) => changes.covers(path) || changes.covers(real)))) return true;
+    return sets.some((changes) => changes.project) ? 'project' : false;
+  }
+
+  /** A finding for a file the script may have changed before git or a package manager reads it. */
+  changedFinding(path: string, changed: true | 'project', ctx: Context, call: Call, looked = false): void {
+    const when = looked ? "before it's looked for" : "before it's read";
+    if (changed === 'project') this.finding(ctx, 'project-file', `\`${path}\` may be changed by project code ${when}`, call.span);
+    else this.finding(ctx, 'unknown-file', `\`${path}\` may be changed by the script ${when}`, call.span);
   }
 
   /** A file the command reads (Git config, a hook): its text, or `undefined` when it's absent or not known (a finding). */
   read(path: string, ctx: Context, call: Call): string | undefined {
     const text = this.files!.readFile(path);
-    if (this.changed(path, ctx, 'contents')) {
-      this.finding(ctx, 'unknown-file', `\`${path}\` may be changed by the script before it's read`, call.span);
-      return undefined;
-    }
+    const changed = this.changed(path, ctx, 'contents');
+    if (changed !== false) this.changedFinding(path, changed, ctx, call);
+    // What project code may have written in its place is its own: what was there is walked as well.
+    if (changed === true) return undefined;
     if (text === undefined) this.finding(ctx, 'unknown-file', `What \`${path}\` holds isn't known`, call.span);
     return text ?? undefined;
   }
@@ -501,7 +524,8 @@ class Walker {
     for (const arg of args) {
       const resolved = arg.kind === 'static' ? resolvePath(call.cwd, arg.value, call.home) : undefined;
       if (!resolved?.startsWith('/') || Object.hasOwn(realpaths, resolved)) continue;
-      realpaths[resolved] = this.changed(resolved, ctx, 'links') ? null : (this.files!.physical(resolved) ?? null);
+      // A symlink project code may have put on the way is no more than what it could write itself.
+      realpaths[resolved] = this.changed(resolved, ctx, 'links') === true ? null : (this.files!.physical(resolved) ?? null);
     }
     return realpaths;
   }
@@ -2097,8 +2121,10 @@ class Walker {
     const edits = specFor(program)?.edits;
     // A program that names what it writes only by the kind of file writes those files where they are, and no others.
     if (edits && (parsed.effects.has('fs:write') || parsed.effects.has('fs:delete'))) this.wrotePattern(edits);
-    this.wrote(parsed.writes, call, edits ? 'none' : writeKind(program));
-    if (writesUnknown(program, parsed, followed)) this.wroteAnything();
+    const unknown = writesUnknown(program, parsed, followed);
+    // Project code may write anything: what its spec names (`oxlint --fix src`) is its own writing too.
+    if (unknown !== 'project') this.wrote(parsed.writes, call, edits ? 'none' : writeKind(program));
+    if (unknown !== false) this.wroteAnything(unknown === 'project');
   }
 
   /**
@@ -2189,10 +2215,9 @@ class Walker {
   /** Whether something is at `path`: `undefined` when that isn't known, or the script may have changed it (a finding). */
   exists(path: string, ctx: Context, call: Call): boolean | undefined {
     const real = this.files!.realpath(path);
-    if (this.changed(path, ctx, 'contents')) {
-      this.finding(ctx, 'unknown-file', `\`${path}\` may be changed by the script before it's looked for`, call.span);
-      return undefined;
-    }
+    const changed = this.changed(path, ctx, 'contents');
+    if (changed !== false) this.changedFinding(path, changed, ctx, call, true);
+    if (changed === true) return undefined;
     if (real === undefined) this.finding(ctx, 'unknown-file', `Whether \`${path}\` is there isn't known`, call.span);
     return real === undefined ? undefined : real !== null;
   }
@@ -2302,7 +2327,9 @@ class Walker {
         if (walked.has(path)) continue;
         walked.add(path);
         const script = readFile(path);
-        if (script !== undefined) this.code(script, childState(state, workTree ?? root), ctx, call, `git hook ${name}`);
+        // husky's stub runs the project's hook in `.husky`, which is what's walked.
+        const hook = script === undefined ? undefined : huskyHook(path, script, readFile);
+        if (hook) this.code(hook.text, childState(state, workTree ?? root), ctx, call, `git hook ${name}`);
       }
     };
 
