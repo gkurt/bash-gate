@@ -187,6 +187,35 @@ function finishConfig(parsed: Parsed): void {
 
 const hooks: Effect[] = ['fs:write', 'exec:project'];
 
+/** A git remote by its name: where it leads is what the repository's config says, not the command line. */
+const remoteName = /^\w[\w.-]*$/;
+
+/**
+ * `git fetch` and `ls-remote` only read from a remote the repository already has (`network:read`), unless the command
+ * line says where to go: a URL or a path, config of its own, another repository, or words it's unsure of.
+ */
+function finishRemoteRead(parsed: Parsed): void {
+  const repositories = parsed.options['--multiple'] ? parsed.positionals : parsed.positionals.slice(0, 1);
+  // A `+` refspec forces the update of what it names, as `--force` does for all.
+  for (const refspec of parsed.positionals.slice(repositories.length)) {
+    const value = staticValue(refspec);
+    if (value === undefined) parsed.maybeOptions = true;
+    else if (value.startsWith('+')) (parsed.options['--force'] ??= []).push(refspec);
+  }
+  const named = repositories.every((arg) => arg.kind === 'static' && remoteName.test(arg.value));
+  const elsewhere =
+    parsed.unknownOptions.length > 0 ||
+    parsed.maybeOptions ||
+    parsed.configs.length > 0 ||
+    ['--git-dir', '--work-tree', '--namespace', '--exec-path'].some((name) => parsed.options[name] !== undefined);
+  parsed.effects.add(named && !elsewhere ? 'network:read' : 'network');
+}
+
+/** `git remote add`, `set-url` and the like rewrite the repository's config: where its fetches and pushes go. */
+function finishRemoteEdit(parsed: Parsed): void {
+  parsed.writes.push({ kind: 'static', value: '.git/config' });
+}
+
 const git: CommandSpec = {
   options: opts(
     o('-C=', { role: 'cwd' }),
@@ -242,7 +271,23 @@ const git: CommandSpec = {
       'blame annotate shortlog reflog describe rev-parse rev-list ls-files ls-tree show-ref cat-file whatchanged merge-base name-rev count-objects var check-ignore check-attr for-each-ref help version',
       { abbreviations: true },
     ),
-    'ls-remote': { abbreviations: true, effects: ['network'] },
+    'ls-remote': {
+      abbreviations: true,
+      options: opts(
+        '-q --quiet',
+        o('--upload-pack= --exec=', { effects: ['exec:arbitrary'] }),
+        '-t --tags',
+        '-b --branches',
+        '-h --heads',
+        '--refs',
+        '--get-url',
+        '--sort=',
+        '--exit-code',
+        '--symref',
+        '-o= --server-option=',
+      ),
+      finish: finishRemoteRead,
+    },
     grep: { abbreviations: true, options: opts('-e=', '-f=', o('-O --open-files-in-pager=?', { effects: ['exec:arbitrary'] })) },
     'add|stage': {
       abbreviations: true,
@@ -320,8 +365,58 @@ const git: CommandSpec = {
     },
     fetch: {
       abbreviations: true,
-      effects: ['network', 'fs:write'],
-      options: opts('--all', '-p --prune', '-f --force', '-t --tags', '--depth=', o('--upload-pack=', { effects: ['exec:arbitrary'] })),
+      effects: ['fs:write'],
+      options: opts(
+        '-v --verbose',
+        '-q --quiet',
+        '--all',
+        '--set-upstream',
+        '-a --append',
+        '--atomic',
+        o('--upload-pack=', { effects: ['exec:arbitrary'] }),
+        '-f --force',
+        '-m --multiple',
+        '-t --tags',
+        '-n --no-tags',
+        '-j= --jobs=',
+        '--prefetch',
+        '-p --prune',
+        '-P --prune-tags',
+        '--recurse-submodules=?',
+        '--no-recurse-submodules',
+        '--dry-run',
+        '--porcelain',
+        '--write-fetch-head',
+        '--no-write-fetch-head',
+        '-k --keep',
+        '-u --update-head-ok',
+        '--progress',
+        '--depth=',
+        '--shallow-since=',
+        '--shallow-exclude=',
+        '--deepen=',
+        '--unshallow',
+        '--refetch',
+        '--update-shallow',
+        '--refmap=',
+        '-o= --server-option=',
+        '-4 --ipv4',
+        '-6 --ipv6',
+        '--negotiation-restrict=',
+        '--negotiation-tip=',
+        '--negotiation-include=',
+        '--negotiate-only',
+        '--filter=',
+        '--auto-maintenance',
+        '--no-auto-maintenance',
+        '--auto-gc',
+        '--no-auto-gc',
+        '--show-forced-updates',
+        '--no-show-forced-updates',
+        '--write-commit-graph',
+        '--stdin',
+      ),
+      finish: finishRemoteRead,
     },
     clone: {
       abbreviations: true,
@@ -471,7 +566,7 @@ const git: CommandSpec = {
     remote: {
       options: opts('-v --verbose'),
       subcommands: {
-        ...each('add remove|rm rename set-url set-head set-branches', { effects: ['fs:write'] }),
+        ...each('add remove|rm rename set-url set-head set-branches', { effects: ['fs:write'], finish: finishRemoteEdit }),
         'get-url': {},
         ...each('show prune update', { effects: ['network'] }),
       },
@@ -585,6 +680,43 @@ function sshRuns(options: Parsed['options'], command: Arg[], parsed: Parsed): vo
 /** A word gh doesn't know is an alias (a shell one, with `!`) or an extension: code of its own. */
 function finishGh(parsed: Parsed): void {
   if (parsed.subcommands.length === 0 && parsed.unknownSubcommand) parsed.effects.add('exec:arbitrary');
+  if (!ghReads.has(parsed.subcommands.join(' ')) || ghGoesElsewhere(parsed)) return;
+  parsed.effects.delete('network');
+  parsed.effects.add('network:read');
+}
+
+/** gh's commands that only read from GitHub: the host gh is signed in to, or the one the repository's remotes name. */
+const ghReads = new Set(
+  [
+    'pr checks|diff|list|status|view',
+    'issue list|status|view',
+    'run list|view|watch',
+    'workflow list|view',
+    'release list|view',
+    'repo list|read-dir|read-file|view',
+    'search code|commits|issues|prs|repos',
+    'label list',
+    'cache list',
+    'ruleset check|list|view',
+    'discussion list|view',
+    'project field-list|item-list|list|view',
+    'org list',
+    'status',
+  ].flatMap((line) => {
+    const [group, names] = line.split(' ');
+    return names ? names.split('|').map((name) => `${group} ${name}`) : [line];
+  }),
+);
+
+/**
+ * Whether a gh command that reads may call a host of the command line's choosing, or open a browser: a URL, a
+ * repository given as `HOST/OWNER/REPO` or as a git URL, `--web`, or words the spec isn't sure of.
+ */
+function ghGoesElsewhere(parsed: Parsed): boolean {
+  if (parsed.unknownOptions.length > 0 || parsed.maybeOptions || parsed.options['--web'] !== undefined) return true;
+  const repositories = [...(parsed.options['--repo'] ?? []), ...(parsed.subcommands.join(' ') === 'repo view' ? parsed.positionals : [])];
+  if (repositories.some((arg) => arg === true || arg.kind === 'dynamic' || !/^[\w.-]+\/[\w.-]+$/.test(arg.value))) return true;
+  return parsed.positionals.some((arg) => arg.kind === 'dynamic' || arg.value.includes('://'));
 }
 
 /** `gh alias set name expansion` defines code that runs later: shell code (`--shell`, or `!`), else a gh command line. */

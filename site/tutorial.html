@@ -151,7 +151,8 @@ check('git status', recommended).decision; // 'allow'</pre>
             <li><code>args</code>, <code>writes</code>: globs over positionals and the files written, redirections included.</li>
             <li>
               <code>effects</code>: any of <code>fs:read</code>, <code>fs:write</code>, <code>fs:delete</code>, <code>network</code>,
-              <code>privilege</code>, <code>exec:*</code>, <code>shell-state</code>.
+              <code>network:read</code> (<code>git fetch</code>, <code>gh pr view</code>), <code>privilege</code>, <code>exec:*</code>,
+              <code>shell-state</code>.
             </li>
           </ul>
           <p>

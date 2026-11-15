@@ -111,8 +111,12 @@ const policy: Policy = {
   anywhere. Relative globs (`src/**`, `../**`) also match paths from where the script starts, when `cwd` was given as
   an absolute path (and from its real path, with a filesystem). Without it, an absolute path may be anywhere against
   the start, so it may match a deny or ask rule's relative glob.
-- `effects`: `fs:read`, `fs:write`, `fs:delete`, `network`, `privilege`, `exec:arbitrary`, `exec:project`, `exec:file`,
-  `exec:remote`, `shell-state`.
+- `effects`: `fs:read`, `fs:write`, `fs:delete`, `network`, `network:read`, `privilege`, `exec:arbitrary`,
+  `exec:project`, `exec:file`, `exec:remote`, `shell-state`. `network:read` only reads, from a host already set up:
+  `git fetch` and `git ls-remote` from a remote given by its name (or none), and the `gh` commands that look
+  (`gh pr view`, `gh run list`, `gh search`). They have `network` instead once the command line may say where to go:
+  a URL or a path, `git -c`, `--git-dir`, `gh -R HOST/OWNER/REPO`, `--web`, an argument only known at run time, or an
+  option the spec doesn't know. A rule naming `network` doesn't match `network:read`: name both to cover both.
 - An allow rule never applies to a program given by a non-system path (`./ls`).
 - Findings (`parse-error`, `dynamic-command`, `dynamic-script`, `dynamic-arithmetic`, `sensitive-variable`,
   `exec-config`, `loads-code`, `unknown-alias`, `too-deep`, `unknown-syntax`, `unknown-file`) ask unless `policy.findings` says
@@ -123,6 +127,10 @@ deleting top-level directories, and asks about deleting, network, privilege, cod
 working directory (`..`, `../**`, `~/**`: an absolute path counts as outside unless `cwd` shows it's inside), and
 writes to `.git`, `.git/config` or `.git/hooks`. `sed` and `awk` run when their script only edits what they read
 (`sed -n '1,40p'`, `awk '{print $1}'`): one that runs a command, writes a file, edits in place or isn't followed asks.
+Of the network, `network:read` runs: `git fetch`, `git ls-remote`, and gh's commands that look at pull requests,
+issues, runs, releases, repositories and search. A fetch that forces or deletes local refs asks, and so do `git pull`,
+`git remote add` and `set-url` (they write `.git/config`), `gh api`, and a proxy, `GH_HOST` or `GH_REPO` set on the
+command line (sensitive variables).
 It does not ask about `exec:project` (`npm test`, `make`, git hooks); add that if it matters.
 
 ## The environment
@@ -288,6 +296,10 @@ bun run checks   # tsc, then bun test
 - **Project code depends on the integration.** Without `fs`, npm scripts, Git hooks and config includes cannot be
   followed; commands remain `exec:project`, and the recommended policy asks about direct writes to `.git`,
   `.git/config` and `.git/hooks`. `make` is `exec:project` and Makefiles aren't parsed.
+- **`network:read` trusts the remote.** A fetch goes where the repository's config says, and tells that host which
+  refs it asked for and which commits it has; gh's reads send their arguments (a search, a branch name) to the host gh
+  is signed in to. Neither sends file contents, but both are a way to pass a few words to a host that was set up
+  before the command ran.
 - **What a specified program writes is what its spec says.** With `fs`, a file is unknown once a redirection, a spec's
   write, a work tree git rewrites, or a program that may write anything may have reached it. A program whose spec
   names some of its writes but misses others can still change a hook or put a symlink in place before a later command

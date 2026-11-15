@@ -109,7 +109,9 @@ execs kill the process, and so does any x32 system call.
 - **The specs.** A wrong spec, such as a missed option that takes a value or runs code, breaks S1 for that program.
   The wrappers' specs are fuzzed against the real programs; the rest are checked by hand-written cases. `sed` and
   `awk` are on the recommended allowlist, so how their scripts are read is trusted too: a sed script only in the
-  forms every sed reads alike, an awk program by the tokens it can't run a command or write a file without. Where GNU
+  forms every sed reads alike, an awk program by the tokens it can't run a command or write a file without. So is
+  `network:read`, which the recommended policy doesn't ask about: that `git fetch`, `git ls-remote` and gh's reading
+  commands, given no URL, host or config of their own, call only the hosts the repository and gh were set up with. Where GNU
   coreutils and uutils (Ubuntu's since 25.10) read a wrapper's arguments differently, the command it runs is unknown.
 - **The integration.** It must run exactly the string that was analysed, in the shell the assumptions describe, with
   nothing from an earlier command still running. `bash-gate/trace` does that itself, given the analysis that was

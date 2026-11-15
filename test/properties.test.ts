@@ -23,6 +23,7 @@ const effects: Effect[] = [
   'fs:write',
   'fs:delete',
   'network',
+  'network:read',
   'privilege',
   'exec:arbitrary',
   'exec:project',

@@ -221,9 +221,12 @@ const setOptions = new Set(
   ),
 );
 
-/** Variables that change what runs or where it's looked up, for the shell or the programs it starts (prompt strings and `PROMPT_COMMAND` are walked as code instead). */
+/**
+ * Variables that change what runs, where it's looked up or which host it calls, for the shell or the programs it starts
+ * (prompt strings and `PROMPT_COMMAND` are walked as code instead).
+ */
 const sensitive =
-  /^(PATH|EXECIGNORE|BASH_ENV|ENV|IFS|SHELLOPTS|BASHOPTS|BASH_LOADABLES_PATH|TEXTDOMAIN|TEXTDOMAINDIR|CDPATH|HOME|ZDOTDIR|TMPDIR|XDG_CONFIG_HOME|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_[A-Z_]+|GH_(PAGER|EDITOR|BROWSER|CONFIG_DIR|PATH)|BROWSER|PAGER|MANPAGER|EDITOR|VISUAL|LESSOPEN|LESSCLOSE|NODE_OPTIONS|NODE_PATH|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|SSH_ASKPASS|SUDO_ASKPASS|npm_config_\w+|NPM_CONFIG_\w+)$/;
+  /^(PATH|EXECIGNORE|BASH_ENV|ENV|IFS|SHELLOPTS|BASHOPTS|BASH_LOADABLES_PATH|TEXTDOMAIN|TEXTDOMAINDIR|CDPATH|HOME|ZDOTDIR|TMPDIR|XDG_CONFIG_HOME|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_[A-Z_]+|GH_(PAGER|EDITOR|BROWSER|CONFIG_DIR|PATH|HOST|REPO)|(HTTPS?|ALL)_PROXY|(https?|all)_proxy|BROWSER|PAGER|MANPAGER|EDITOR|VISUAL|LESSOPEN|LESSCLOSE|NODE_OPTIONS|NODE_PATH|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|SSH_ASKPASS|SUDO_ASKPASS|npm_config_\w+|NPM_CONFIG_\w+)$/;
 
 /** Files a redirection may name without touching the file system. */
 const devices = /^\/dev\/(null|stdin|stdout|stderr|tty|fd\/\d+)$/;

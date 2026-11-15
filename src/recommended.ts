@@ -2,8 +2,9 @@ import { allow, ask, deny, type Policy } from './policy.ts';
 
 /**
  * A starting policy for gating an agent's commands: reading and looking around runs, everyday git runs, destructive
- * forms are denied, and anything that deletes, reaches the network, escalates, writes outside the working directory or
- * runs code the analysis can't see asks. Commands no rule covers ask.
+ * forms are denied, and anything that deletes, escalates, writes outside the working directory or runs code the
+ * analysis can't see asks. So does the network, except to read from a git remote the repository already has, or from
+ * GitHub through `gh` (`network:read`). Commands no rule covers ask.
  */
 export const recommended: Policy = {
   default: 'ask',
@@ -25,6 +26,11 @@ export const recommended: Policy = {
     ask('git clean', { options: ['--force'], reason: 'Deletes untracked files' }),
     ask('git branch|tag', { options: ['--delete', '--force'], reason: 'Deletes or moves a ref' }),
     ask('git stash drop|clear', { reason: 'Deletes stashed work' }),
+    ask('git fetch', { options: ['--force', '--update-head-ok', '--refmap', '--prune-tags'], reason: 'Deletes or moves a local ref' }),
+    // Only those of gh's commands that read: the others in these groups have `network`.
+    allow('gh pr|issue|run|workflow|release|repo|search|label|cache|ruleset|discussion|project|org|status', {
+      effects: ['network:read'],
+    }),
     deny('rm', {
       options: ['--recursive'],
       args: ['/', '/*', '~', '~/', '~/*', '..', '../*', '.', './'],

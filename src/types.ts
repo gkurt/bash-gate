@@ -14,6 +14,8 @@ export type Arg =
 
 /**
  * What running an invocation can do, beyond printing:
+ * - `network:read` only reads, from a host already set up (a git remote by its name, GitHub through `gh`), where
+ *   `network` is every other way of reaching one;
  * - `exec:arbitrary` runs code given inline in another language, or a string the analysis can't see into;
  * - `exec:project` runs code the project defines (package scripts, Makefiles, git hooks);
  * - `exec:file` runs a script or program file that isn't a system program;
@@ -25,6 +27,7 @@ export type Effect =
   | 'fs:write'
   | 'fs:delete'
   | 'network'
+  | 'network:read'
   | 'privilege'
   | 'exec:arbitrary'
   | 'exec:project'
