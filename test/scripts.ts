@@ -109,6 +109,7 @@ export const scripts = [
   'shopt shopt -s expand_aliases\nalias ls=cat\nls a\nshopt -so posix\nalias ls=sort\nls b\ncat <<< <(ls here)enable -n x',
   'shopt -s expand_aliases\nalias ls=cat <missing\nls b\nx=ls; { x=sort; } <missing; $x c; hash -p /bin/cat rm <missing; rm d',
   "PS4='+$(ls ps4) '; set -x; cat a",
+  "PS4='+$(ls a\\\\[\\]c \\\\$(cat d)) '; set -x; cat a",
   "PS4='+$(ls a\\nls b\\[\\]c) '; set -x; cat a",
   'x=\'$(ls a\\rb\\nls \\140cat c\\140)\'; echo "${x@P}"',
   'x=<(sort s) y=1 cat a<(ls l)b',

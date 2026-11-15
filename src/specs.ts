@@ -298,7 +298,8 @@ const bunOptions = opts(
   '--jsx-runtime=',
   '--jsx-side-effects',
   '--ignore-dce-annotations',
-  o('--env-file=', { role: 'read' }),
+  // What it sets may load code: `NODE_OPTIONS=--require …`.
+  o('--env-file=', { role: 'read', effects: ['exec:file'] }),
   '--no-env-file',
   o('--cwd=', { role: 'cwd' }),
   // bunfig.toml may preload modules.
@@ -409,6 +410,11 @@ function writesFile(parsed: Parsed, name: string): void {
   parsed.writes.push({ kind: 'static', value: name });
 }
 
+/** `args` are files it runs, or finds configuration beside (see `Parsed.loads`). */
+function loadsFrom(parsed: Parsed, args: (Arg | true)[]): void {
+  for (const arg of args) if (arg !== true) (parsed.loads ??= []).push(arg);
+}
+
 const given = (parsed: Parsed, ...names: string[]) => names.some((name) => parsed.options[name] !== undefined);
 
 /** Options spelled in camelCase, each also in kebab-case, as yargs and cac read them: `--setupFiles`, `--setup-files`. */
@@ -417,6 +423,7 @@ function camel(...spellings: string[]): string[] {
     spelling
       .split(' ')
       .flatMap((name) => {
+        if (!name.startsWith('--')) return [name];
         const kebab = name.replaceAll(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
         return kebab === name ? [name] : [name, kebab];
       })
@@ -3159,7 +3166,7 @@ const programs: Record<string, CommandSpec> = {
   ruby: interpreter(opts(inline('-e='), '-n', '-p', o('-i=?', { effects: ['fs:write'] }), '-r=', '-I=', '-w', '-W=?')),
   npm: {
     options: opts(
-      o('--prefix= -C', { role: 'cwd' }),
+      o('--prefix= -C=', { role: 'cwd' }),
       '-w= --workspace=',
       '--workspaces',
       '--include-workspace-root',
@@ -3240,9 +3247,10 @@ const programs: Record<string, CommandSpec> = {
         command: {},
         effects: ['exec:project'],
       },
-      ...each('dlx|x create', { posix: true, effects: ['network', 'exec:arbitrary'] }),
+      // `pnpm with <version> …` runs another pnpm.
+      ...each('dlx|x create with', { posix: true, effects: ['network', 'exec:arbitrary'] }),
       ...each(
-        'install|i add update|up|upgrade remove|rm|uninstall|un link|ln unlink import rebuild|rb fetch install-test|it dedupe prune deploy patch patch-commit patch-remove approve-builds env runtime|rt setup self-update clean',
+        'install|i add update|up|upgrade remove|rm|uninstall|un link|ln unlink import rebuild|rb fetch install-test|it ci query dedupe prune deploy patch patch-commit patch-remove approve-builds env runtime|rt setup self-update clean',
         { effects: ['network', 'fs:write', 'exec:project'] },
       ),
       ...each(
@@ -3260,7 +3268,7 @@ const programs: Record<string, CommandSpec> = {
           if (staticValue(parsed.positionals[0]) !== 'get') writesManifest(parsed);
         },
       },
-      ...each('ls|list ll|la why root bin help get ignored-builds cat-file cat-index find-hash completion query', {}),
+      ...each('ls|list ll|la why root bin help get ignored-builds cat-file cat-index find-hash completion', {}),
     },
     finish(parsed) {
       unknownIsConfig(parsed);
@@ -3316,6 +3324,13 @@ const programs: Record<string, CommandSpec> = {
           ),
         ],
         effects: ['exec:project'],
+        // A word that's a path is a test file it runs; any other filters the project's.
+        finish(parsed) {
+          loadsFrom(
+            parsed,
+            parsed.positionals.filter((arg) => arg.kind !== 'static' || /^[.~]|\//.test(arg.value)),
+          );
+        },
       },
       // A script of the same name runs in place of these.
       check: {
@@ -3352,7 +3367,7 @@ const programs: Record<string, CommandSpec> = {
         ),
         effects: ['exec:project', 'fs:write'],
       },
-      build: {
+      'build|bun': {
         // `-e` is --external here, ahead of the runtime's --eval.
         options: [
           ...opts(
@@ -3419,15 +3434,19 @@ const programs: Record<string, CommandSpec> = {
           ...bunOptions,
         ],
         effects: ['exec:project'],
+        // It runs the macros its entry points import.
+        finish(parsed) {
+          loadsFrom(parsed, parsed.positionals);
+        },
       },
       'x|bunx': { posix: true, effects: ['network', 'exec:arbitrary'] },
       ...each('repl exec', { effects: ['exec:arbitrary'] }),
       ...each('create|c', { effects: ['network', 'exec:arbitrary'] }),
-      ...each('install|i add|a remove|rm update link unlink patch patch-commit pm init dedupe prune upgrade completions', {
+      ...each('install|i|ci add|a remove|rm|r|uninstall update link unlink patch patch-commit pm init dedupe prune upgrade completions', {
         effects: ['network', 'fs:write', 'exec:project'],
       }),
       ...each('audit outdated info why publish whoami login logout discord feedback', { effects: ['network'] }),
-      ...each('help deploy', {}),
+      ...each('help deploy list getcompletes', {}),
     },
     finish(parsed) {
       unknownIsConfig(parsed);
@@ -3461,6 +3480,8 @@ const programs: Record<string, CommandSpec> = {
   // TypeScript 7, native: its configuration is JSON, and it writes only what it emits.
   'tsc|tsgo': {
     edits: tscEmits,
+    // With resolveJsonModule, the JSON files the sources import are copied into the output.
+    copies: /\.json$/,
     options: opts(
       '-b --build',
       '-w --watch',
@@ -3599,6 +3620,7 @@ const programs: Record<string, CommandSpec> = {
       // Its configuration may list JavaScript plugins.
       loadsModules(parsed, ['--config'], true);
       unknownIsConfig(parsed);
+      loadsFrom(parsed, parsed.positionals);
       rewrites(parsed, given(parsed, '--fix', '--fix-suggestions', '--fix-dangerously'));
     },
   },
@@ -3625,6 +3647,7 @@ const programs: Record<string, CommandSpec> = {
       // Its configuration may be TypeScript.
       loadsModules(parsed, ['--config'], true);
       unknownIsConfig(parsed);
+      loadsFrom(parsed, [...parsed.positionals, ...(parsed.options['--stdin-filepath'] ?? [])]);
       if (given(parsed, '--init', '--migrate')) {
         writesFile(parsed, '.oxfmtrc.json');
         return;
@@ -3690,6 +3713,8 @@ const programs: Record<string, CommandSpec> = {
       loadsModules(parsed, ['--config', '--rulesdir', '--resolve-plugins-relative-to'], true);
       loadsModules(parsed, ['--plugin', '--parser', '--format']);
       unknownIsConfig(parsed);
+      // ESLint 10 finds the configuration beside each file it lints.
+      loadsFrom(parsed, [...parsed.positionals, ...(parsed.options['--stdin-filename'] ?? [])]);
       rewrites(parsed, given(parsed, '--fix'));
     },
   },
@@ -3746,6 +3771,7 @@ const programs: Record<string, CommandSpec> = {
       loadsModules(parsed, ['--config'], true);
       loadsModules(parsed, ['--plugin']);
       unknownIsConfig(parsed);
+      loadsFrom(parsed, [...parsed.positionals, ...(parsed.options['--stdin-filepath'] ?? [])]);
       rewrites(parsed, given(parsed, '--write'));
     },
   },
@@ -3823,6 +3849,8 @@ const programs: Record<string, CommandSpec> = {
     ),
     finish(parsed) {
       loadsModules(parsed, ['--config'], true);
+      // Each workspace's configuration, from the directories it finds or is given.
+      if (parsed.options['--workspace']) parsed.effects.add('exec:file');
       unknownIsConfig(parsed);
     },
   },

@@ -35,9 +35,16 @@ analysis doesn't follow, or a spec that writes without saying where) makes every
 When only project code (`exec:project`) may have written it, a read is a `project-file` finding rather than
 `unknown-file`, what was there before is still walked, and real paths are kept: a policy that allows project code to run (as `recommended` does, and allows
 `project-file`) already lets it write anything, a hook or a symlink included. A policy that asks about `exec:project`
-asks about the code itself. A git command that rewrites the work tree checks out the repository's own content, so a
-read there after it is a `project-file` finding too; the real paths in it are unknown, since a commit may hold a
-symlink to anywhere.
+asks about the code itself. A git command that rewrites the work tree from what the project already holds (`HEAD`, the
+index, a stash: `git checkout -- f`, `reset --hard`, `stash pop`) puts back the project's own content, so a read there
+after it is a `project-file` finding too; one that checks out another branch or commit, merges, rebases, or applies a
+patch may bring in anything anyone pushed, so a read after it is unknown. Either way the real paths in it are unknown,
+since a commit may hold a symlink to anywhere. So is what `tsc` copies into its output (the JSON its sources import).
+
+Project code is the code of the project where the script starts (`cwd`). Run from anywhere else (`cd .. && npm test`,
+`npm --prefix /tmp/x test`, `git -C /tmp/x commit`, and git with any command there: its config may run code), or given files from elsewhere to run or to find configuration
+beside (`bun test /tmp/x.test.ts`, `eslint ../other`), it's `exec:file`. The words after a package script's name are
+appended to it: they're walked with it, and without `fs` they make it `exec:arbitrary`.
 
 Nothing else changes the filesystem between the analysis and the end of the run. That rules out a process an earlier
 command left running: a job from an allowed `make &`, `nohup` or `setsid -f` could rewrite `.git/config` or a hook

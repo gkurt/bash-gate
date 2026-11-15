@@ -90,6 +90,8 @@ export class Changes {
   any = false;
   /** Project code the analysis trusts but doesn't follow (a test run, a build) may have changed any path. */
   project = false;
+  /** Files by name that the project's own content may have been copied over (see `CommandSpec.copies`). */
+  projectPatterns: RegExp[] = [];
   /** Work trees git may have rewritten from the repository's own content: like project code, under each but its `.git`. */
   projectTrees: { root: string; git: string }[] = [];
 
@@ -102,8 +104,9 @@ export class Changes {
     (project ? this.projectTrees : this.trees).push({ root, git });
   }
 
-  addPattern(pattern: RegExp): void {
-    if (!this.patterns.includes(pattern)) this.patterns.push(pattern);
+  addPattern(pattern: RegExp, project = false): void {
+    const patterns = project ? this.projectPatterns : this.patterns;
+    if (!patterns.includes(pattern)) patterns.push(pattern);
   }
 
   /** Adds what `other` may have changed. */
@@ -112,12 +115,13 @@ export class Changes {
     this.trees.push(...other.trees);
     this.projectTrees.push(...other.projectTrees);
     for (const pattern of other.patterns) this.addPattern(pattern);
+    for (const pattern of other.projectPatterns) this.addPattern(pattern, true);
     this.any ||= other.any;
     this.project ||= other.project;
   }
 
   get empty(): boolean {
-    return !this.named && !this.project && this.projectTrees.length === 0;
+    return !this.named && !this.project && this.projectTrees.length === 0 && this.projectPatterns.length === 0;
   }
 
   /** Whether anything but project code may have changed something. */
@@ -135,7 +139,7 @@ export class Changes {
 
   /** Whether only the project's own code or content may have changed `path` (see `project`). */
   coversProject(path: string): boolean {
-    return this.project || under(this.projectTrees, path);
+    return this.project || under(this.projectTrees, path) || this.projectPatterns.some((pattern) => pattern.test(path));
   }
 }
 
@@ -150,7 +154,7 @@ function within(path: string, dir: string): boolean {
 }
 
 /** Whether `path` is `dir` or under it; `undefined` when they can't be compared. */
-function compare(path: string, dir: string): boolean | undefined {
+export function compare(path: string, dir: string): boolean | undefined {
   if (dir.startsWith('~') || path.startsWith('~') || path.startsWith('/') !== dir.startsWith('/')) return undefined;
   const [dirUp, dirRest] = steps(dir);
   const [pathUp, pathRest] = steps(path);

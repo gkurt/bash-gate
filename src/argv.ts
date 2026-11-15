@@ -38,6 +38,8 @@ export interface CommandSpec {
    * a program that writes without saying where may write anything.
    */
   edits?: RegExp;
+  /** Files, by name, it copies from the project's own into its output: tsc's JSON modules. */
+  copies?: RegExp;
   /** For programs whose arguments aren't options and positionals (`find`): parses them in place of the generic parser. */
   parse?: (args: Arg[], parsed: Parsed) => void;
   /** Whatever options and positionals can't say, once they're parsed: `bash -c`'s script is its first positional. */
@@ -55,6 +57,13 @@ export interface Parsed {
   effects: Set<Effect>;
   reads: Arg[];
   writes: Arg[];
+  /**
+   * Files and directories whose code it runs, or whose configuration it loads, as the project's: another's where
+   * they're outside the project (`bun test /tmp/x.test.ts`, `eslint ../other`).
+   */
+  loads?: Arg[];
+  /** How many positionals came before `--`, where one ended its options. */
+  dashed?: number;
   /** Of `writes`, where a program with `edits` rewrites only files of that kind: the files and directories it is given. */
   edited?: Arg[];
   /** Command lines it runs. */
@@ -113,6 +122,7 @@ export function normalize(args: Arg[], spec: CommandSpec | undefined): Parsed {
     if (arg.kind === 'static' && optionsOpen) {
       if (arg.value === '--') {
         ended = true;
+        parsed.dashed = parsed.positionals.length;
         continue;
       }
       if (isOption(arg.value)) {

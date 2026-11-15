@@ -403,6 +403,57 @@ describe('invocations', () => {
     expect(run('pnpm test --silent')).toEqual([[], ['exec:project']]);
   });
 
+  test('the words after a script are walked with it, and npm pack and version run theirs', () => {
+    const scripts = { test: 'cat', cfg: 'git config', prepack: 'cat pack', version: 'cat version', x: 'cat x' };
+    const fs = {
+      readFile: (path: string) =>
+        path === '/repo/package.json'
+          ? JSON.stringify({ scripts })
+          : path === '/repo/run/package.json'
+            ? JSON.stringify({ scripts: { test: 'cat other' } })
+            : null,
+      realpath: (path: string) => path,
+    };
+    const environment = { cwd: '/repo', fs };
+    const ran = (source: string) =>
+      analyze(source, environment)
+        .invocations.slice(1)
+        .map((invocation) => values(invocation.argv).join(' '));
+    for (const source of ["npm test -- a 'b c'", "pnpm test a 'b c'", "pnpm run test a 'b c'", "bun run test a 'b c'"])
+      expect([source, ran(source)]).toEqual([source, ['cat a b c']]);
+    expect(ran('npm test -- "it\'s"')).toEqual(["cat it's"]);
+    expect(check('npm run cfg -- core.hooksPath /tmp/x', recommended, environment).decision).toBe('ask');
+    expect(check('npm test -- "$x"', recommended, environment).decision).toBe('ask');
+    // npm's -C takes a directory: `run` here.
+    expect(ran('npm -C run test')).toEqual(['cat other']);
+    expect(ran('npm -g run x')).toEqual(['cat x']);
+    expect(ran('npm pack')).toEqual(['cat pack']);
+    expect(ran('npm version patch')).toEqual(['cat version']);
+    expect(ran('npm pack --ignore-scripts')).toEqual([]);
+    // Without a package.json here, npm looks for one above.
+    expect(check('npm test', recommended, { cwd: '/bare', fs }).decision).toBe('ask');
+  });
+
+  test('git opens core.hooksPath and include paths as given: a .. after a symlink leads up from its target', () => {
+    const files: Record<string, string> = {
+      '/repo/.git/HEAD': 'ref: refs/heads/main\n',
+      '/repo/.git/config': '[core]\n\thooksPath = x/../hooks\n',
+      '/repo/hooks/pre-commit': 'cat ok',
+      '/other/hooks/pre-commit': 'rm -rf /',
+      '/other/evil.cfg': '[core]\n\thooksPath = /other/hooks\n',
+    };
+    const fs = {
+      readFile: (path: string) => files[path] ?? null,
+      realpath: (path: string) => (path === '/repo/x' || path.startsWith('/repo/x/') ? `/other/sub${path.slice(7)}` : path),
+    };
+    const environment = { cwd: '/repo', fs };
+    expect(check('git commit -m x', recommended, environment).decision).toBe('deny');
+    files['/repo/.git/config'] = '[include]\n\tpath = ../x/../evil.cfg\n';
+    expect(check('git commit -m x', recommended, environment).decision).toBe('deny');
+    files['/repo/.git/config'] = '[core]\n\thooksPath = hooks\n';
+    expect(check('git commit -m x', recommended, environment).decision).toBe('allow');
+  });
+
   test("a package.json the script writes first isn't the one its scripts are read from", () => {
     const fs = snapshot({
       files: { '/repo/package.json': JSON.stringify({ scripts: { test: 'cat ok' } }) },
@@ -476,14 +527,11 @@ describe('invocations', () => {
     };
     const fs = { readFile: (path: string) => files[path] ?? null, realpath: (path: string) => path };
     const findings = (source: string) => analyze(source, { cwd: '/repo', fs }).findings.map((finding) => finding.message);
-    for (const source of [
-      'tsc && npm test',
-      'tsgo -b && npm test',
-      'biome check --write && npm test',
-      'biome format --write . && npm test',
-      'tsc --outDir . -p . && npm test',
-    ])
+    for (const source of ['biome check --write && npm test', 'biome format --write . && npm test'])
       expect([source, findings(source)]).toEqual([source, []]);
+    // tsc copies the JSON its sources import into its output: the project's own content.
+    for (const source of ['tsc && npm test', 'tsgo -b && npm test', 'tsc --outDir . -p . && npm test'])
+      expect([source, findings(source)]).toEqual([source, ["`/repo/package.json` may be changed by project code before it's read"]]);
     // A file it's given to write is written whatever its name.
     for (const source of [
       'tsc --outFile package.json && npm test',
@@ -712,13 +760,15 @@ describe('filesystem', () => {
     const fs = { readFile: (path: string) => project[path] ?? null, realpath: (path: string) => path };
     const environment = { cwd: '/repo', fs };
     const kinds = (source: string) => [...new Set(analyze(source, environment).findings.map((finding) => finding.kind))];
-    // What it checks out is the repository's own, as project code is: what was there is walked, and recommended allows.
+    // What it checks out from the project's own (HEAD, the index, a stash) is trusted as project code is: what was there
+    // is walked, and recommended allows.
     for (const source of [
-      'git checkout main && git commit -m x',
       'git reset --hard && npm test',
       'git stash pop && npm test',
       'git stash apply && npm test',
-      'git revert HEAD && npm test',
+      'git checkout -- package.json && npm test',
+      'git checkout HEAD~1 -- package.json && npm test',
+      'git restore --source=HEAD~1 . && npm test',
     ]) {
       expect([source, kinds(source)]).toEqual([source, ['project-file']]);
       // `reset --hard` asks of itself: it discards work.
@@ -727,6 +777,19 @@ describe('filesystem', () => {
     }
     for (const source of ['git commit -m x && npm test', 'git stash list && npm test', 'npm test && git commit -m x'])
       expect([source, kinds(source)]).toEqual([source, []]);
+    // Another branch, a commit, what was fetched or a patch may hold anything anyone pushed.
+    for (const source of [
+      'git checkout main && git commit -m x',
+      'git revert HEAD && npm test',
+      'git merge origin/x && npm test',
+      'git fetch origin pull/1/head && git checkout FETCH_HEAD -- package.json && npm test',
+      'git restore -s origin/x . && npm test',
+      'git apply x.patch && npm test',
+      'git checkout package.json && npm test',
+    ]) {
+      expect([source, kinds(source)]).toEqual([source, ['unknown-file']]);
+      expect([source, check(source, recommended, environment).decision]).toEqual([source, 'ask']);
+    }
     project['/repo/hooks/pre-commit'] = 'rm -rf /';
     expect(check('git stash pop && git commit -m x', recommended, environment).decision).toBe('deny');
     // A commit may hold a symlink: where a path leads after a checkout isn't known.
