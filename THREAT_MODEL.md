@@ -35,16 +35,20 @@ analysis doesn't follow, or a spec that writes without saying where) makes every
 When only project code (`exec:project`) may have written it, a read is a `project-file` finding rather than
 `unknown-file`, what was there before is still walked, and real paths are kept: a policy that allows project code to run (as `recommended` does, and allows
 `project-file`) already lets it write anything, a hook or a symlink included. A policy that asks about `exec:project`
-asks about the code itself. A git command that rewrites the work tree from what the project already holds (`HEAD`, the
-index, a stash: `git checkout -- f`, `reset --hard`, `stash pop`) puts back the project's own content, so a read there
-after it is a `project-file` finding too; one that checks out another branch or commit, merges, rebases, or applies a
-patch may bring in anything anyone pushed, so a read after it is unknown. Either way the real paths in it are unknown,
-since a commit may hold a symlink to anywhere. So is what `tsc` copies into its output (the JSON its sources import).
+asks about the code itself. A git command that rewrites the work tree may bring in anything: another branch or commit,
+a merge, a rebase or a patch anything anyone pushed, and even `HEAD`, the index or a stash (`git checkout -- f`, `reset
+--hard`, `stash pop`) what an earlier command, or this one, committed, staged or stashed. So a read after it is
+unknown, and so are the real paths in it, since a commit may hold a symlink to anywhere. So is what `tsc` copies into its
+output (the JSON its sources import, from wherever they are).
 
-Project code is the code of the project where the script starts (`cwd`). Run from anywhere else (`cd .. && npm test`,
+Project code is the code of the project where the script starts (`cwd`), at its real path. Run from anywhere else (`cd .. && npm test`,
 `npm --prefix /tmp/x test`, `git -C /tmp/x commit`, and git with any command there: its config may run code), or given files from elsewhere to run or to find configuration
-beside (`bun test /tmp/x.test.ts`, `eslint ../other`), it's `exec:file`. The words after a package script's name are
-appended to it: they're walked with it, and without `fs` they make it `exec:arbitrary`.
+beside (`bun test /tmp/x.test.ts`, `eslint ../other`), it's `exec:file`; so is project code run under a symlink the
+script may have put there, or under a work tree git rewrote. The words after a package script's name are appended to
+it: they're walked with it, and without `fs` they make it `exec:arbitrary`. What the project holds is its own, whoever
+put it there: code the analysis doesn't read (a `build.rs`, a `vitest.config.ts`) is trusted as it is when it runs,
+including what the script writes or copies into the project before (`cp /tmp/x.test.ts . && bun test`). A policy
+for which that matters asks about `exec:project`.
 
 Nothing else changes the filesystem between the analysis and the end of the run. That rules out a process an earlier
 command left running: a job from an allowed `make &`, `nohup` or `setsid -f` could rewrite `.git/config` or a hook
@@ -136,7 +140,9 @@ execs kill the process, and so does any x32 system call.
   coreutils and uutils (Ubuntu's since 25.10) read a wrapper's arguments differently, the command it runs is unknown.
   For npm, pnpm and bun, the specs say which of their own commands beat a script of the same name, which words they
   run as a script, a file or a command from PATH, and which of their options they know: the one they don't is
-  configuration, `exec:arbitrary`. Checked against npm 11, pnpm 11 and bun 1.4. That `tsc` (TypeScript 7, whose
+  configuration, `exec:arbitrary`. A flag that turns something off (`--ignore-scripts`, `--offline`) counts only
+  given bare: npm reads `--ignore-scripts=false` as false. That cargo's builds and bun's runs fetch only from the
+  registries and git hosts the project names (`network:read`). Checked against npm 11, pnpm 11 and bun 1.4. That `tsc` (TypeScript 7, whose
   configuration is JSON) writes only what it emits, and `biome` only the kinds of file it formats; and that a formatter
   keeps every value in a JSON file, so `biome` leaves a package.json's scripts as they were.
 - **The integration.** It must run exactly the string that was analysed, in the shell the assumptions describe, with

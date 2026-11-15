@@ -140,9 +140,10 @@ command line (sensitive variables).
 It allows project code (`exec:project`) as it does git hooks: the scripts, tests and builds `npm`, `pnpm`, `bun` and
 `cargo` run (`npm test`, `bun typecheck`, `cargo build`), and the tools those scripts run (`tsc`, `biome`, `oxlint`,
 `oxfmt`, `eslint`, `prettier`, `vitest`, `jest`, `tsdown`, `vite`), unless they also install, publish, delete, write
-outside the working directory, or run code the analysis can't place. Project code is the project's where the script
-starts: another directory's scripts, hooks or tests (`cd .. && npm test`, `bun test /tmp/x.test.ts`) are `exec:file`
-and ask. Without `fs`, a name `pnpm` or `bun run` may run from PATH asks, since no script may have it, and so do words
+outside the working directory, or run code the analysis can't place. cargo's builds and bun's runs may fetch the
+dependencies they haven't got (`network:read`, which runs). Project code is the project's where the script starts, at
+its real path: another directory's scripts, hooks or tests (`cd .. && npm test`, `bun test /tmp/x.test.ts`, `cd
+link` to elsewhere), or project code run after git rewrote the work tree, are `exec:file` and ask. Without `fs`, a name `pnpm` or `bun run` may run from PATH asks, since no script may have it, and so do words
 after a script's name (`npm test -- --config x`), which are appended to a script the analysis can't see.
 `make` isn't followed and asks. Add an ask rule for `exec:project` if project code matters.
 
@@ -209,10 +210,10 @@ known `HOME`, a path set in a conditional include): that's an `exec-config` find
   after; a command's own writes after its read don't count (`npm test | tail`).
   A write may go through a symlink, so without an absolute `cwd` any write makes later reads unknown. A path under one
   the script may put a symlink on (`ln`, `cp`, `mv`, `tar`…) has no known real path. `mkdir`, `touch` and `chmod` change nothing a read sees. Git commands
-  that rewrite the work tree (`checkout`, `stash`, `reset`, `merge`…) change everything in it but its `.git`. From what
-  the project already holds (`HEAD`, the index, a stash), a file read after them (a hook in `.husky`, a package.json)
-  is a `project-file` finding, and what was there is walked; from another branch, a commit, a merge, a rebase or a
-  patch, it's unknown. Either way its real paths are unknown, since a commit may hold a symlink. A program
+  that rewrite the work tree (`checkout`, `stash`, `reset`, `merge`…) change everything in it but its `.git`, whatever
+  they check out: `HEAD`, the index and a stash hold what an earlier command may have committed, staged or stashed. A
+  file read after them (a hook in `.husky`, a package.json) is unknown, and so are its real paths, since a commit may
+  hold a symlink. A program
   that may write files no one can name makes every later read unknown: one without a spec, one running code the
   analysis doesn't follow (`make`, `npm install`, `vitest`, `python3 -c`, `./build.sh`), or one whose spec writes
   without saying where. When the only such program is project code (`exec:project`: a test run, a build, a hook it
@@ -220,7 +221,8 @@ known `HOME`, a path set in a conditional include): that's an `exec-config` find
   real paths stay as they were: a
   policy that runs project code gains nothing by asking about what that code could have done itself. `tsc` writes only what it emits (`.js`, `.d.ts`, `.map`, `.tsbuildinfo`), and `biome` only the
   kinds of file it formats, so after them only files of those kinds are unknown, wherever they are, along with a file
-  named for them to write (`tsc --outFile`); the JSON files `tsc` copies into its output are `project-file` findings.
+  named for them to write (`tsc --outFile`). `tsc` copies the JSON its sources import into its output, from wherever
+  it is, so after it every `.json` is unknown too, a package.json included (`tsc --noEmit` writes nothing).
 
 `snapshot({ files, realpaths })` builds a `FileSystem` from records: a path in neither isn't known. Where the
 filesystem is only reachable asynchronously (a browser, a remote sandbox), `checkAsync` analyses with what it has,
@@ -333,7 +335,7 @@ bun run checks   # tsc, then bun test
   stops a repository made by hand, but not a copy of one under another name (`cp -r .git r`) whose config is then
   edited: only `fs` shows git reading it. `make` is `exec:project` and Makefiles aren't parsed. Package scripts are
   read from the package.json where the command runs, with the words after the script's name appended, and the
-  scripts `npm pack` and `npm version` run are walked too: a workspace's (`--filter`, `-r`, `-w`) aren't followed, nor
+  scripts `npm pack` and `npm version` run are walked too, with the commit `npm version` makes (its hooks run): a workspace's (`--filter`, `-r`, `-w`) aren't followed, nor
   those bun runs in its own shell (`--shell=bun`), and with no package.json there, one above it may be used, which is
   an `exec-config` finding. cargo's build scripts, aliases and `rustc-wrapper` are project code that isn't read.
 - **`network:read` trusts the remote.** A fetch goes where the repository's config says, and tells that host which

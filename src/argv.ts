@@ -38,8 +38,6 @@ export interface CommandSpec {
    * a program that writes without saying where may write anything.
    */
   edits?: RegExp;
-  /** Files, by name, it copies from the project's own into its output: tsc's JSON modules. */
-  copies?: RegExp;
   /** For programs whose arguments aren't options and positionals (`find`): parses them in place of the generic parser. */
   parse?: (args: Arg[], parsed: Parsed) => void;
   /** Whatever options and positionals can't say, once they're parsed: `bash -c`'s script is its first positional. */
@@ -62,8 +60,6 @@ export interface Parsed {
    * they're outside the project (`bun test /tmp/x.test.ts`, `eslint ../other`).
    */
   loads?: Arg[];
-  /** How many positionals came before `--`, where one ended its options. */
-  dashed?: number;
   /** Of `writes`, where a program with `edits` rewrites only files of that kind: the files and directories it is given. */
   edited?: Arg[];
   /** Command lines it runs. */
@@ -122,7 +118,6 @@ export function normalize(args: Arg[], spec: CommandSpec | undefined): Parsed {
     if (arg.kind === 'static' && optionsOpen) {
       if (arg.value === '--') {
         ended = true;
-        parsed.dashed = parsed.positionals.length;
         continue;
       }
       if (isOption(arg.value)) {
@@ -284,8 +279,9 @@ function readOption(args: Arg[], i: number, spec: CommandSpec | undefined, parse
       return i;
     }
     const takes = (option.value ?? false) !== false && (!option.valued || option.valued.some((spelling) => spelling.startsWith('--')));
+    // A flag given a value keeps it: npm reads `--ignore-scripts=false` as false. Only `true` means it's simply on.
     let optionValue: Arg | true = true;
-    if (takes && attached !== undefined) optionValue = { kind: 'static', value: attached };
+    if (attached !== undefined) optionValue = { kind: 'static', value: attached };
     else if (takes && option.value === true && i + 1 < args.length) optionValue = args[++i]!;
     record(parsed, option, optionValue);
     return i;
@@ -342,7 +338,18 @@ function record(parsed: Parsed, option: OptionSpec, value: Arg | true): void {
   if (option.role === 'read') parsed.reads.push(value);
   if (option.role === 'write') parsed.writes.push(value);
   if (option.role === 'config') parsed.configs.push(value);
-  if (option.role === 'cwd') parsed.cwd = value;
+  if (option.role === 'cwd') {
+    // A relative one after another is from there for git and make (`git -C /tmp -C x`), from the start for others.
+    const after = parsed.cwd !== undefined && !(value.kind === 'static' && value.value.startsWith('/'));
+    parsed.cwd = after
+      ? { kind: 'dynamic', text: value.kind === 'static' ? value.value : value.text, reason: 'placeholder', split: false, prefix: '' }
+      : value;
+  }
+}
+
+/** Whether a flag that turns something off is on: given last, and without a value (`--offline=false`). */
+export function flag(parsed: Parsed, name: string): boolean {
+  return parsed.options[name]?.at(-1) === true;
 }
 
 function unknown(parsed: Parsed, name: string, value: Arg | true): void {

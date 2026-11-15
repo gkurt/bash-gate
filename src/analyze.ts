@@ -16,7 +16,7 @@ import {
   type Word,
   type WordPart,
 } from 'unbash';
-import { assignment, emptyParsed, normalize, type Parsed } from './argv.ts';
+import { assignment, emptyParsed, flag, normalize, type Parsed } from './argv.ts';
 import { Changes, compare, Probe, type FileSystem } from './files.ts';
 import { huskyHook } from './husky.ts';
 import { basename, isSystemPath, resolvePath } from './paths.ts';
@@ -318,23 +318,6 @@ function writeKind(program: string): 'none' | 'contents' | 'links' {
 const gitWritesTree =
   /^(checkout|switch|restore|reset|merge|rebase|cherry-pick|revert|pull|apply|am|mv|clean|submodule|filter-branch|gc|sparse-checkout|lfs|bisect( \S+)?|stash( (push|save|pop|apply|branch))?)$/;
 
-/** `HEAD`, the index's own commit, and those before it: `HEAD~2`, `@^`. */
-const headRef = /^(HEAD|@)([~^]\d*)*$/;
-
-/**
- * Whether a git command that rewrites the work tree does it with what the project already holds: `HEAD`, the index
- * or a stash. Another branch, a commit, `FETCH_HEAD` or a patch may hold anything anyone pushed.
- */
-function gitOwnContent(parsed: Parsed): boolean {
-  const subcommand = parsed.subcommands.join(' ');
-  if (/^(stash( \S+)?|clean|mv|gc|sparse-checkout)$/.test(subcommand)) return true;
-  if (!/^(checkout|restore|reset|switch)$/.test(subcommand)) return false;
-  // Before `--`, a word may name what it checks out; after it, only paths. restore's words are all paths.
-  const refs = subcommand === 'restore' ? [] : parsed.positionals.slice(0, parsed.dashed ?? parsed.positionals.length);
-  const sources = [...refs, ...(parsed.options['--source'] ?? [])];
-  return sources.every((source) => source !== true && source.kind === 'static' && headRef.test(source.value));
-}
-
 const commitHooks = 'pre-commit prepare-commit-msg commit-msg post-commit post-rewrite';
 const mergeHooks = `pre-merge-commit post-merge pre-auto-gc ${commitHooks}`;
 const rebaseHooks = `pre-rebase post-checkout ${mergeHooks}`;
@@ -493,36 +476,28 @@ class Walker {
   }
 
   /** A program rewrites files whose names match `pattern`, wherever they are, and puts no symlinks anywhere. */
-  wrotePattern(pattern: RegExp, project = false): void {
+  wrotePattern(pattern: RegExp): void {
     if (!this.files) return;
     this.writes++;
-    for (const written of this.recorded) written.contents.addPattern(pattern, project);
+    for (const written of this.recorded) written.contents.addPattern(pattern);
   }
 
   /**
-   * Git rewrites the work tree at `root`, files and symlinks, but not its `.git` (`git`). `own`: with what the
-   * project already holds (`HEAD`, the index, a stash), not a branch or a patch that may have come from anywhere.
+   * Git rewrites the work tree at `root`, files and symlinks, but not its `.git` (`git`). Whatever it checks out, from
+   * a branch, a commit, a patch, or even `HEAD`, the index or a stash, may hold anything: an earlier command may have
+   * committed, staged or stashed it.
    */
-  wroteTree(root: string, git: string, own: boolean): void {
+  wroteTree(root: string, git: string): void {
     if (!this.files) return;
     if (!root.startsWith('/')) return this.wroteAnything();
     this.writes++;
     const real = this.files.physical(root);
     const realGit = this.files.physical(git);
     for (const written of this.recorded) {
-      // What git checks out from the project's own content is trusted as project code is; but a commit may hold a
-      // symlink, and where one leads is no one's to trust.
-      for (const [changes, project] of [
-        [written.contents, own],
-        [written.links, false],
-      ] as const) {
-        changes.addTree(root, git, project);
-        if (real === undefined || realGit === undefined) {
-          if (project) changes.project = true;
-          else changes.add(undefined);
-        } else {
-          changes.addTree(real, realGit, project);
-        }
+      for (const changes of [written.contents, written.links]) {
+        changes.addTree(root, git);
+        if (real === undefined || realGit === undefined) changes.add(undefined);
+        else changes.addTree(real, realGit);
       }
     }
   }
@@ -540,10 +515,7 @@ class Walker {
     const named = sets.filter((changes) => changes.named);
     const real = path.startsWith('/') ? this.files?.physical(path) : undefined;
     if (named.length > 0 && (real === undefined || named.some((changes) => changes.covers(path) || changes.covers(real)))) return true;
-    const project = sets.some(
-      (changes) => changes.coversProject(path) || (real !== undefined && real !== null && changes.coversProject(real)),
-    );
-    return project ? 'project' : false;
+    return sets.some((changes) => changes.project) ? 'project' : false;
   }
 
   /** A finding for a file the script may have changed before git or a package manager reads it. */
@@ -2208,7 +2180,14 @@ class Walker {
     const cwd = parsed.cwd?.kind === 'static' ? resolvePath(call.cwd, parsed.cwd.value, call.home) : parsed.cwd ? undefined : call.cwd;
     // Project code is the code of the project where the script starts: elsewhere (`npm --prefix /tmp/x test`,
     // `cd .. && cargo build`), it's another project's, from a place no one vouched for.
-    const outside = (path: string | undefined) => path === undefined || compare(path, this.start) !== true;
+    // Where it really is, too: a symlink under the project (`cd link`) may lead out of it.
+    const realStart = this.files && this.start.startsWith('/') ? this.files.physical(this.start) : undefined;
+    const outside = (path: string | undefined) => {
+      if (path === undefined || compare(path, this.start) !== true) return true;
+      if (!this.files || !this.start.startsWith('/')) return false;
+      const real = this.changed(path, ctx, 'links') === true ? undefined : this.files.physical(path);
+      return real === undefined || realStart === undefined || compare(real, realStart) !== true;
+    };
     if (parsed.effects.has('exec:project') && outside(cwd)) parsed.effects.add('exec:file');
     // Another repository's config and hooks are its own, whatever the command: `core.fsmonitor` runs on `git status`.
     if (program === 'git') {
@@ -2288,11 +2267,8 @@ class Walker {
     // After what it reads first: `git config k v` reads the config, then writes it.
     const edits = specFor(program)?.edits;
     // A program that names what it writes only by the kind of file writes those files where they are, and no others.
-    if (edits && (parsed.effects.has('fs:write') || parsed.effects.has('fs:delete'))) {
-      this.wrotePattern(edits);
-      const copies = specFor(program)?.copies;
-      if (copies) this.wrotePattern(copies, true);
-    }
+    if (edits && (parsed.effects.has('fs:write') || parsed.effects.has('fs:delete'))) this.wrotePattern(edits);
+
     const unknown = writesUnknown(program, parsed, followed);
     // Project code may write anything: what its spec names (`oxlint --fix src`) is its own writing too. Where a program
     // with `edits` only rewrites files of its kind, the pattern stands for what it writes; elsewhere (`tsc --outFile`)
@@ -2501,9 +2477,9 @@ class Walker {
       }
 
       if (writesTree && tree !== undefined && workTree === undefined) this.wroteAnything();
-      else if (writesTree) this.wroteTree(workTree ?? root, inside, gitOwnContent(parsed));
+      else if (writesTree) this.wroteTree(workTree ?? root, inside);
       for (const name of hooks) {
-        if (parsed.options['--no-verify'] && ['pre-commit', 'commit-msg', 'pre-push'].includes(name)) continue;
+        if (flag(parsed, '--no-verify') && ['pre-commit', 'commit-msg', 'pre-push'].includes(name)) continue;
         const path = `${directory}/${name}`;
         if (walked.has(path)) continue;
         walked.add(path);
@@ -2586,7 +2562,10 @@ class Walker {
     if (names.length === 0 || (program === 'bun' && verb === 'test')) return unfollowed;
     // The words after the name are appended to the script, quoted: they're not the project's, and change what it runs
     // (`npm test -- --config /tmp/x.ts`). Where the script isn't walked with them, they may make it run anything.
-    const extra = given ? parsed.positionals.slice(1) : parsed.positionals;
+    const words = given ? parsed.positionals.slice(1) : parsed.positionals;
+    // bun drops a `--` right after the name; npm's own parsing ends at it, and pnpm passes it on.
+    const first = words[0];
+    const extra = program === 'bun' && first?.kind === 'static' && first.value === '--' ? words.slice(1) : words;
     const unwalked = () => {
       if (extra.length > 0) parsed.effects.add('exec:arbitrary');
       return unfollowed;
@@ -2619,8 +2598,9 @@ class Walker {
   }
 
   /**
-   * The scripts `npm pack` or `npm version` runs as it goes. Not all it runs: `npm version` commits with git, whose
-   * hooks run too.
+   * The scripts `npm pack` or `npm version` runs as it goes, and the git that `npm version` commits and tags with
+   * before its last, whose hooks run too. `--ignore-scripts` skips the scripts only as a flag: npm reads
+   * `--ignore-scripts=false` as the value it says.
    */
   lifecycle(
     program: string,
@@ -2630,16 +2610,21 @@ class Walker {
     ctx: Context,
     call: Call,
   ): { run: [string, string][]; followed: boolean } | undefined {
-    if (!this.files || !cwd || workspaces[program]!.some((option) => parsed.options[option]) || parsed.options['--ignore-scripts'])
-      return { run: [], followed: false };
-    const scripts = this.manifestScripts(cwd, ctx, call) ?? {};
     const run: [string, string][] = [];
+    const version = names.includes('version');
+    // npm stages, commits and tags the new version (the hooks of a commit run), unless told not to.
+    const git: [string, string] = ['(git)', 'git add -- package.json && git commit -m version && git tag -m version version'];
+    if (!this.files || !cwd || workspaces[program]!.some((option) => parsed.options[option]))
+      return { run: version ? [git] : [], followed: false };
+    if (flag(parsed, '--ignore-scripts')) return { run: version ? [git] : [], followed: true };
+    const scripts = this.manifestScripts(cwd, ctx, call);
     for (const name of names) {
-      const script = scripts[name];
+      if (name === 'postversion') run.push(git);
+      const script = scripts?.[name];
       if (typeof script === 'string') run.push([name, script]);
       else if (script !== undefined) this.finding(ctx, 'exec-config', `${program} script ${name} is not a string`, call.span);
     }
-    return { run, followed: names.includes('prepack') };
+    return { run, followed: scripts !== undefined };
   }
 
   /** The scripts in the package.json in `cwd`, or `undefined` when they can't be read (a finding says why). */

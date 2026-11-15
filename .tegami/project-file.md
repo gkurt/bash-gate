@@ -12,12 +12,6 @@ the analysis doesn't follow (`exec:project`), a read after it is now a `project-
 allows. What was there before is still walked, so a hook that denies still denies, and real paths are kept. A policy that asks about `exec:project` still asks about the code. Anything else that
 may write anything (`python3 -c`, `./build.sh`, `npm install`) still makes later reads `unknown-file`.
 
-### What git checks out is the repository's own
-
-A file in the work tree read after a git command rewrote it (`git stash pop && git commit`, with husky's hooks in
-`.husky`; `git checkout main && npm test`) is a `project-file` finding too, and what was there is walked. Real paths in
-the work tree stay unknown after such a command, since a commit may hold a symlink.
-
 ### A program's redirection no longer makes every later read unknown
 
 `cat a > out && git commit` asked with a filesystem: the redirection gave `cat` a write its spec didn't name, which

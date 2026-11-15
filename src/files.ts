@@ -90,38 +90,31 @@ export class Changes {
   any = false;
   /** Project code the analysis trusts but doesn't follow (a test run, a build) may have changed any path. */
   project = false;
-  /** Files by name that the project's own content may have been copied over (see `CommandSpec.copies`). */
-  projectPatterns: RegExp[] = [];
-  /** Work trees git may have rewritten from the repository's own content: like project code, under each but its `.git`. */
-  projectTrees: { root: string; git: string }[] = [];
 
   add(path: string | undefined): void {
     if (path === undefined) this.any = true;
     else this.paths.add(path);
   }
 
-  addTree(root: string, git: string, project = false): void {
-    (project ? this.projectTrees : this.trees).push({ root, git });
+  addTree(root: string, git: string): void {
+    this.trees.push({ root, git });
   }
 
-  addPattern(pattern: RegExp, project = false): void {
-    const patterns = project ? this.projectPatterns : this.patterns;
-    if (!patterns.includes(pattern)) patterns.push(pattern);
+  addPattern(pattern: RegExp): void {
+    if (!this.patterns.includes(pattern)) this.patterns.push(pattern);
   }
 
   /** Adds what `other` may have changed. */
   merge(other: Changes): void {
     for (const path of other.paths) this.paths.add(path);
     this.trees.push(...other.trees);
-    this.projectTrees.push(...other.projectTrees);
     for (const pattern of other.patterns) this.addPattern(pattern);
-    for (const pattern of other.projectPatterns) this.addPattern(pattern, true);
     this.any ||= other.any;
     this.project ||= other.project;
   }
 
   get empty(): boolean {
-    return !this.named && !this.project && this.projectTrees.length === 0 && this.projectPatterns.length === 0;
+    return !this.named && !this.project;
   }
 
   /** Whether anything but project code may have changed something. */
@@ -135,11 +128,6 @@ export class Changes {
     for (const changed of this.paths) if (within(path, changed)) return true;
     if (this.patterns.some((pattern) => pattern.test(path))) return true;
     return under(this.trees, path);
-  }
-
-  /** Whether only the project's own code or content may have changed `path` (see `project`). */
-  coversProject(path: string): boolean {
-    return this.project || under(this.projectTrees, path) || this.projectPatterns.some((pattern) => pattern.test(path));
   }
 }
 

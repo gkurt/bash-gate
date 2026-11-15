@@ -389,14 +389,17 @@ describe('invocations', () => {
         analysis.invocations[0]!.effects.toSorted(),
       ];
     };
-    for (const source of ['pnpm lint', 'pnpm run lint', 'bun lint', 'bun run lint'])
-      expect([source, run(source)]).toEqual([source, [['cat before', 'cat lint', 'cat after'], ['exec:project']]]);
+    // bun installs what the code it runs imports, with no node_modules.
+    for (const source of ['pnpm lint', 'pnpm run lint', 'bun lint', 'bun run lint']) {
+      const effects = source.startsWith('bun') ? ['exec:project', 'network:read'] : ['exec:project'];
+      expect([source, run(source)]).toEqual([source, [['cat before', 'cat lint', 'cat after'], effects]]);
+    }
     expect(run('bun check')).toEqual([['cat check'], ['exec:project']]);
     expect(run('pnpm node -e 1')).toEqual([['node -e 1'], ['exec:project']]);
-    expect(run('bun run node -e 1')).toEqual([['node -e 1'], ['exec:file', 'exec:project']]);
-    expect(run('bun f')).toEqual([[], ['exec:file', 'exec:project']]);
+    expect(run('bun run node -e 1')).toEqual([['node -e 1'], ['exec:file', 'exec:project', 'network:read']]);
+    expect(run('bun f')).toEqual([[], ['exec:file', 'exec:project', 'network:read']]);
     expect(run('bun fmt')).toEqual([[], ['exec:project', 'fs:write']]);
-    expect(run('bun --cwd /bare lint')).toEqual([[], ['exec:file', 'exec:project']]);
+    expect(run('bun --cwd /bare lint')).toEqual([[], ['exec:file', 'exec:project', 'network:read']]);
     // Another package's scripts, and those bun runs in its own shell, aren't followed.
     for (const source of ['pnpm -r lint', 'pnpm --filter a lint', 'bun --filter a lint', 'bun --shell=bun lint', 'npm -w a run lint'])
       expect([source, run(source)[0]!.filter((words) => words.startsWith('cat'))]).toEqual([source, []]);
@@ -428,10 +431,39 @@ describe('invocations', () => {
     expect(ran('npm -C run test')).toEqual(['cat other']);
     expect(ran('npm -g run x')).toEqual(['cat x']);
     expect(ran('npm pack')).toEqual(['cat pack']);
-    expect(ran('npm version patch')).toEqual(['cat version']);
+    // and commits and tags with git, whose hooks run.
+    expect(ran('npm version patch')).toEqual([
+      'cat version',
+      'git add -- package.json',
+      'git commit -m version',
+      'git tag -m version version',
+    ]);
     expect(ran('npm pack --ignore-scripts')).toEqual([]);
+    // Only as a flag: npm reads a value it's given.
+    expect(ran('npm --ignore-scripts=false pack')).toEqual(['cat pack']);
+    // bun drops the `--` right after the name; pnpm passes it on.
+    expect(ran('bun run test -- a')).toEqual(['cat a']);
+    expect(ran('bun test -- a')).toEqual([]);
+    expect(ran('bun run test a -- b')).toEqual(['cat a -- b']);
+    expect(ran('pnpm test -- a')).toEqual(['cat -- a']);
     // Without a package.json here, npm looks for one above.
     expect(check('npm test', recommended, { cwd: '/bare', fs }).decision).toBe('ask');
+  });
+
+  test('project code is where the script starts, really: a symlink under it may lead out', () => {
+    const fs = snapshot({
+      files: { '/repo/package.json': '{}', '/tmp/x/package.json': '{}' },
+      realpaths: { '/repo': '/repo', '/repo/sub': '/repo/sub', '/repo/link': '/tmp/x', '/tmp/x': '/tmp/x' },
+    });
+    const effects = (source: string) => analyze(source, { cwd: '/repo', fs }).invocations.at(-1)!.effects;
+    expect(effects('cd sub && cargo build --offline')).toEqual(['exec:project']);
+    for (const source of [
+      'cd link && cargo build --offline',
+      'bun test ./link/a.test.ts',
+      'eslint link',
+      'cp -s /tmp/x/a l && cd l && cargo build',
+    ])
+      expect([source, effects(source)]).toContainEqual(expect.arrayContaining(['exec:file']));
   });
 
   test('git opens core.hooksPath and include paths as given: a .. after a symlink leads up from its target', () => {
@@ -529,9 +561,10 @@ describe('invocations', () => {
     const findings = (source: string) => analyze(source, { cwd: '/repo', fs }).findings.map((finding) => finding.message);
     for (const source of ['biome check --write && npm test', 'biome format --write . && npm test'])
       expect([source, findings(source)]).toEqual([source, []]);
-    // tsc copies the JSON its sources import into its output: the project's own content.
+    // tsc copies the JSON its sources import into its output, from wherever they are; but --noEmit writes nothing.
     for (const source of ['tsc && npm test', 'tsgo -b && npm test', 'tsc --outDir . -p . && npm test'])
-      expect([source, findings(source)]).toEqual([source, ["`/repo/package.json` may be changed by project code before it's read"]]);
+      expect([source, findings(source)]).toEqual([source, ["`/repo/package.json` may be changed by the script before it's read"]]);
+    expect(findings('tsc --noEmit && npm test')).toEqual([]);
     // A file it's given to write is written whatever its name.
     for (const source of [
       'tsc --outFile package.json && npm test',
@@ -760,24 +793,10 @@ describe('filesystem', () => {
     const fs = { readFile: (path: string) => project[path] ?? null, realpath: (path: string) => path };
     const environment = { cwd: '/repo', fs };
     const kinds = (source: string) => [...new Set(analyze(source, environment).findings.map((finding) => finding.kind))];
-    // What it checks out from the project's own (HEAD, the index, a stash) is trusted as project code is: what was there
-    // is walked, and recommended allows.
-    for (const source of [
-      'git reset --hard && npm test',
-      'git stash pop && npm test',
-      'git stash apply && npm test',
-      'git checkout -- package.json && npm test',
-      'git checkout HEAD~1 -- package.json && npm test',
-      'git restore --source=HEAD~1 . && npm test',
-    ]) {
-      expect([source, kinds(source)]).toEqual([source, ['project-file']]);
-      // `reset --hard` asks of itself: it discards work.
-      const decision = source.startsWith('git reset') ? 'ask' : 'allow';
-      expect([source, check(source, recommended, environment).decision]).toEqual([source, decision]);
-    }
     for (const source of ['git commit -m x && npm test', 'git stash list && npm test', 'npm test && git commit -m x'])
       expect([source, kinds(source)]).toEqual([source, []]);
-    // Another branch, a commit, what was fetched or a patch may hold anything anyone pushed.
+    // Whatever it checks out may hold anything: another branch, a commit, what was fetched, a patch, and even HEAD, the
+    // index or a stash, which an earlier command (or this one) may have committed, staged or stashed.
     for (const source of [
       'git checkout main && git commit -m x',
       'git revert HEAD && npm test',
@@ -786,12 +805,24 @@ describe('filesystem', () => {
       'git restore -s origin/x . && npm test',
       'git apply x.patch && npm test',
       'git checkout package.json && npm test',
+      'git reset --hard && npm test',
+      'git stash pop && npm test',
+      'git stash apply && npm test',
+      'git fetch origin pull/1/head && git stash apply FETCH_HEAD && npm test',
+      'git checkout -- package.json && npm test',
+      'git checkout HEAD~1 -- package.json && npm test',
+      'git restore --source=HEAD~1 . && npm test',
+      'echo x > a && git add a && git mv -f a package.json && npm test',
     ]) {
       expect([source, kinds(source)]).toEqual([source, ['unknown-file']]);
       expect([source, check(source, recommended, environment).decision]).toEqual([source, 'ask']);
     }
+    // Project code run where the checkout landed is no longer the project's own.
+    expect(analyze('git checkout FETCH_HEAD && cargo build', environment).invocations.at(-1)?.effects).toContain('exec:file');
     project['/repo/hooks/pre-commit'] = 'rm -rf /';
-    expect(check('git stash pop && git commit -m x', recommended, environment).decision).toBe('deny');
+    expect(check('git commit -m x', recommended, environment).decision).toBe('deny');
+    // After a rewrite, the hook in the work tree isn't known: it asks.
+    expect(check('git stash pop && git commit -m x', recommended, environment).decision).toBe('ask');
     // A commit may hold a symlink: where a path leads after a checkout isn't known.
     const write = analyze('git checkout main && echo x > out', environment).invocations.find((invocation) => invocation.program === 'echo');
     expect(write?.realpaths?.['/repo/out']).toBeNull();

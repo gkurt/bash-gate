@@ -1,4 +1,4 @@
-import { anyWords, isOption, normalize, readCobra, type CommandSpec, type OptionSpec, type Parsed } from './argv.ts';
+import { anyWords, flag, isOption, normalize, readCobra, type CommandSpec, type OptionSpec, type Parsed } from './argv.ts';
 import type { Arg, Effect } from './types.ts';
 import { dynamicArg, resolveWords } from './words.ts';
 
@@ -158,6 +158,19 @@ function writesManifest(parsed: Parsed): void {
   if (!cwd) parsed.writes.push({ kind: 'static', value: 'package.json' });
   else if (cwd.kind === 'static') parsed.writes.push({ kind: 'static', value: `${cwd.value.replace(/\/+$/, '')}/package.json` });
   else parsed.writes.push(dynamicArg(`${cwd.text}/package.json`, cwd.reason, false, cwd.prefix));
+}
+
+/**
+ * `npm pack <spec>`: another package, from a directory (whose scripts it runs as it packs), the registry or a git
+ * host (which it clones, installs and runs `prepare` in). Only `.` is the project's.
+ */
+function packsElsewhere(parsed: Parsed): void {
+  for (const spec of parsed.positionals) {
+    const value = staticValue(spec);
+    if (value !== undefined && /^\.\/*$/.test(value)) continue;
+    if (value !== undefined && /^[.~/]/.test(value)) parsed.effects.add('exec:file');
+    else parsed.effects.add('network').add('exec:arbitrary');
+  }
 }
 
 /** `npm config`: a key it sets may name the shell every later command's scripts run in. */
@@ -663,8 +676,11 @@ const viteBuild = opts(
   o(camel('--outDir=')[0]!, { role: 'write' }),
 );
 
-/** What tsc emits: JavaScript, declarations, source maps and build info, beside the sources or under its outDir. */
-const tscEmits = /\.([cm]?js|jsx|d\.[cm]?ts|map|tsbuildinfo)$/;
+/**
+ * What tsc emits: JavaScript, declarations, source maps and build info, beside the sources or under its outDir, and with
+ * resolveJsonModule the JSON its sources import, copied there from wherever they are.
+ */
+const tscEmits = /\.([cm]?js|jsx|d\.[cm]?ts|map|tsbuildinfo|json)$/;
 
 /** What biome formats and fixes. A JSON formatter keeps every value, so a package.json's scripts stay what they were. */
 const biomeEdits = /(?<!(?:^|\/)package)\.(jsonc?|[cm]?[jt]sx?|css|graphql|gql|html|vue|svelte|astro|grit)$/;
@@ -3210,7 +3226,7 @@ const programs: Record<string, CommandSpec> = {
       ),
       // `npm version` runs the version scripts, and commits and tags with git.
       'version|verison': { effects: ['exec:project'], finish: writesManifest },
-      pack: { effects: ['exec:project', 'fs:write'] },
+      pack: { effects: ['exec:project', 'fs:write'], finish: packsElsewhere },
       shrinkwrap: { effects: ['fs:write'] },
       cache: { effects: ['fs:write', 'fs:delete'] },
       'config|c': { finish: setsConfig },
@@ -3259,7 +3275,7 @@ const programs: Record<string, CommandSpec> = {
       ),
       ...each('edit recursive|multi|m', { effects: ['exec:arbitrary'] }),
       'version|verison': { effects: ['exec:project'], finish: writesManifest },
-      pack: { effects: ['exec:project', 'fs:write'] },
+      pack: { effects: ['exec:project', 'fs:write'], finish: packsElsewhere },
       init: { finish: writesManifest },
       'config|c': { finish: setsConfig },
       set: { effects: ['exec:arbitrary'] },
@@ -3450,6 +3466,10 @@ const programs: Record<string, CommandSpec> = {
     },
     finish(parsed) {
       unknownIsConfig(parsed);
+      // With no node_modules, bun installs what the code it runs imports, from the registry the project names.
+      const verb = parsed.subcommands[0];
+      const runs = verb === undefined ? parsed.unknownSubcommand !== undefined : verb === 'run' || verb === 'test';
+      if (runs && !flag(parsed, '--no-install')) parsed.effects.add('network:read');
       // A word bun doesn't know is a script, or else a file: `bun f` runs `f.ts`.
       if (parsed.subcommands.length > 0 || !parsed.unknownSubcommand) return;
       runsScript(parsed, parsed.unknownSubcommand, false);
@@ -3473,6 +3493,10 @@ const programs: Record<string, CommandSpec> = {
       ...each('install uninstall', { options: cargoOptions, effects: ['network', 'fs:write', 'exec:arbitrary'] }),
     },
     finish(parsed) {
+      // What builds fetches the dependencies it hasn't got, from the registries and git hosts the project names.
+      const fetches = /^(build|check|test|run|bench|doc|rustc|rustdoc|clippy|metadata|tree|fix|generate-lockfile)$/;
+      if (fetches.test(parsed.subcommands[0] ?? '') && !flag(parsed, '--offline') && !flag(parsed, '--frozen'))
+        parsed.effects.add('network:read');
       // A word cargo doesn't know is an alias, or the program `cargo-<word>` on PATH; `+toolchain` is rustup's.
       if (parsed.subcommands.length === 0 && parsed.unknownSubcommand) parsed.effects.add('exec:arbitrary');
     },
@@ -3480,8 +3504,6 @@ const programs: Record<string, CommandSpec> = {
   // TypeScript 7, native: its configuration is JSON, and it writes only what it emits.
   'tsc|tsgo': {
     edits: tscEmits,
-    // With resolveJsonModule, the JSON files the sources import are copied into the output.
-    copies: /\.json$/,
     options: opts(
       '-b --build',
       '-w --watch',
