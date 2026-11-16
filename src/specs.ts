@@ -1045,7 +1045,18 @@ const git: CommandSpec = {
       abbreviations: true,
       dryRun: { options: ['--dry-run'] },
       effects: ['fs:write'],
-      options: opts('-A --all', '-u --update', '-f --force', '-p --patch', '-n --dry-run', '-N --intent-to-add', '-v --verbose'),
+      // Patch, interactive and edit modes open the editor on a hunk or the whole diff.
+      options: opts(
+        '-A --all',
+        '-u --update',
+        '-f --force',
+        o('-p --patch', { effects: editor }),
+        o('-i --interactive', { effects: editor }),
+        o('-e --edit', { effects: editor }),
+        '-n --dry-run',
+        '-N --intent-to-add',
+        '-v --verbose',
+      ),
     },
     commit: {
       abbreviations: true,
@@ -1062,6 +1073,9 @@ const git: CommandSpec = {
         '-C= --reuse-message=',
         o('-c= --reedit-message=', { effects: editor }),
         o('-e --edit', { effects: editor }),
+        // Choosing hunks, as `git add -p` does, may open the editor on one. (`-i` is `--include`.)
+        o('-p --patch', { effects: editor }),
+        o('--interactive', { effects: editor }),
         '--no-edit',
         '-S=? --gpg-sign=?',
         '--author=',
@@ -1375,11 +1389,13 @@ const git: CommandSpec = {
     stash: {
       abbreviations: true,
       effects: ['fs:write'],
+      // `git stash -p` is `git stash push -p`, which may open the editor on a hunk.
+      options: opts(o('-p --patch', { effects: editor })),
       subcommands: {
         ...each('push save', {
           abbreviations: true,
           effects: ['fs:write'],
-          options: opts('-m= --message=', '-u --include-untracked', '-a --all', '-k --keep-index', '-p --patch'),
+          options: opts('-m= --message=', '-u --include-untracked', '-a --all', '-k --keep-index', o('-p --patch', { effects: editor })),
         }),
         ...each('pop apply branch', { effects: ['fs:write'] }),
         ...each('drop clear', { effects: ['fs:delete'] }),
@@ -5424,12 +5440,20 @@ const programs: Record<string, CommandSpec> = {
   biome: {
     edits: biomeEdits,
     options: biomeOptions,
+    // A command only known at run time may be any: `clean` deletes, `format --write` rewrites what it's given.
+    finish(parsed) {
+      if (parsed.subcommands.length === 0 && parsed.unknownSubcommand?.kind === 'dynamic') parsed.effects.add('exec:arbitrary');
+    },
     subcommands: {
+      // A word that may be an option may be `--write` (`biome check $x`).
       ...each('check lint', {
         options: biomeOptions,
-        finish: (parsed) => rewrites(parsed, given(parsed, '--write', '--fix', '--apply', '--apply-unsafe'), false),
+        finish: (parsed) => rewrites(parsed, given(parsed, '--write', '--fix', '--apply', '--apply-unsafe') || parsed.maybeOptions, false),
       }),
-      ...each('format migrate', { options: biomeOptions, finish: (parsed) => rewrites(parsed, given(parsed, '--write', '--fix'), false) }),
+      ...each('format migrate', {
+        options: biomeOptions,
+        finish: (parsed) => rewrites(parsed, given(parsed, '--write', '--fix') || parsed.maybeOptions, false),
+      }),
       init: { options: opts('--jsonc'), finish: (parsed) => writesFile(parsed, given(parsed, '--jsonc') ? 'biome.jsonc' : 'biome.json') },
       clean: { effects: ['fs:delete'] },
       ...each('ci explain rage search version help lsp-proxy start stop', { options: biomeOptions }),

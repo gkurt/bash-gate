@@ -594,3 +594,12 @@ Fix: a nameref or an `-i`/`-l`/`-u`/`-c` attribute on `_`, PWD or OLDPWD, and an
 Rejected: none.
 Costs: `declare -n`/`-i`/`-l`/`-u`/`-c` on `_`, PWD or OLDPWD, and attributes on a nameref, ask. No everyday verdict moved.
 Needs a decision: none.
+
+## Round 50: src/analyze.ts dispatch and wrappers (seventh pass), 2026-11-16, see commit
+The reviewer ran about 700 candidates in-process and checked the important ones in WSL (bash 5.2.21, findutils 4.9.0, coreutils 9.4, git 2.54); I re-ran the git claims under `env -i` with a fake HOME whose `core.editor` only touches a file. Dispatch and wrapper parsing held up; both findings are in specs that wrappers reach. 9 new escapes cases fail on 04afbd3.
+Confirmed and fixed:
+- `biome "$(echo format)" --write ../outside.js`, `biome ${x:-format} --write ../x`, `biome check $x`, `… | xargs biome`, `find . -exec biome {} +` → allow with no effects; biome's spec had no fallback for a command or `--write` only known at run time (biome isn't installed: from its CLI reference, `format --write`, `check --write`, `clean`) → a dynamic command is `exec:arbitrary`, and a word that may be an option counts as `--write`.
+- `git add -e`, `printf 'e\n' | git add -p`, `git add -i`, `git commit -p -m x`, `git stash -p` → allow; the editor ran in each (WSL) → `-p`/`-i`/`-e` on add, `-p`/`--interactive` on commit (its `-i` is `--include`), and `-p` on stash and `stash push|save` carry the editor effect.
+Rejected (not bypasses under `recommended`): `file -z` and `rg -z` start decompressors from PATH that aren't reported as invocations (system programs under a fixed PATH, which any change of asks about); `nohup` writes `~/nohup.out` when the working directory isn't writable, a path `recommended` doesn't ask about.
+Costs: `git add -p` and `git commit -p` ask; biome with a dynamic word asks. No everyday verdict moved.
+Needs a decision: none.
