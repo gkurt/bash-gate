@@ -63,8 +63,11 @@ Out of scope:
 - **What programs do with their input.** `cat` reading a file, a compiler running build scripts, and file-based
   configuration when no `fs` is supplied. With it, repository Git config (and includes), Git hooks, SSH config passed
   with `-F`, and the package.json scripts npm, pnpm and bun run are followed. The repository is the one git takes: what `--git-dir` or `--bare`
-  names, else the first from the working directory up, a `.git` or the directory itself, that has a `HEAD`, `objects`
-  and `refs`. One that may lack them is followed, and so are those above it. The hooks followed are the ones the
+  names, else the first from the working directory up (both the shell's path and where it really is, as git uses
+  `getcwd`), a `.git` or the directory itself, that has a `HEAD` and the directories `objects` and `refs`. One that may
+  lack them is followed, and so are those above it. A `.git` file and `commondir` are read as git reads them, a `..`
+  after a symlink leading up from its target; config is parsed as git parses it, with a finding where git would refuse
+  it. The submodules `.gitmodules` names are followed too; a nested repository it doesn't name is not. The hooks followed are the ones the
   command runs in git 2.55, plus `pre-auto-gc` where older gits collect garbage afterwards; a command the table
   doesn't have may run any. They're read from `core.hooksPath` where that directory is certain, and from the config's
   own `hook.<name>.command`. A hook is read as the shell its first line names (`sh`, which expands aliases, with

@@ -186,5 +186,7 @@ export function huskyHook(
   if (!header) return hook;
   const helper = read(`${parent(hook.path)}/_/husky.sh`);
   if (helper === undefined || !helpers.has(helper)) return hook;
-  return { ...hook, text: `${header[1]}${hook.text.slice(header[0].length)}` };
+  // 7's and 8's helper run the hook again with `sh -e`, whatever its first line says.
+  const again = helper === helper7 || helper === helper8;
+  return { ...hook, text: `${header[1]}${hook.text.slice(header[0].length)}`, ...(again ? { husky: true } : {}) };
 }

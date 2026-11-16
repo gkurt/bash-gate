@@ -1,4 +1,5 @@
 import { describe, test } from 'bun:test';
+import { huskyFiles } from '#src/husky.ts';
 import { check, recommended, type Decision, type Environment } from '#src/index.ts';
 
 /** Each case: a command, the decision the recommended policy should reach, and what it exercises. */
@@ -995,4 +996,151 @@ describe('recommended policy, in a project under HOME', () => {
     test(`${what}: ${JSON.stringify(source)} → ${decision}`, () => expectDecision(source, decision, homed));
   for (const [source, decision, what] of nowhereCases)
     test(`${what}: ${JSON.stringify(source)} → ${decision}`, () => expectDecision(source, decision, nowhere));
+});
+
+/** Files by their real path, with the directories they imply and `dirs`, and symlinks (`links`: path → target). */
+function disk(files: Record<string, string>, links: Record<string, string> = {}, dirs: string[] = []): Environment['fs'] {
+  const real = (path: string): string => {
+    for (const [link, target] of Object.entries(links))
+      if (path === link || path.startsWith(`${link}/`)) return real(target + path.slice(link.length));
+    return path;
+  };
+  const there = new Set<string>(['/']);
+  for (const path of [...Object.keys(files), ...dirs]) for (let at = path; at !== ''; at = at.slice(0, at.lastIndexOf('/'))) there.add(at);
+  return {
+    readFile: (path) => files[real(path)] ?? null,
+    realpath: (path) => (there.has(real(path)) ? real(path) : null),
+  };
+}
+const fsmonitor = '[core]\n\tfsmonitor = touch /tmp/PWNED\n';
+const repository = (dir: string, config = '[core]\n\tbare = false\n'): Record<string, string> => ({
+  [`${dir}/HEAD`]: 'ref: refs/heads/main\n',
+  [`${dir}/config`]: config,
+  [`${dir}/objects/x`]: '',
+  [`${dir}/refs/x`]: '',
+});
+const hooked = (config: string, hooks: Record<string, string>) => ({ ...repository('/w/p/.git', config), ...hooks });
+const evilHook = '#!/bin/sh\nrm -rf /\n';
+const projectCases: [what: string, source: string, decision: Decision, fs: Environment['fs'], cwd?: string][] = [
+  [
+    'a .. after a symlink in a .git file, which git resolves physically',
+    'git status',
+    'ask',
+    disk({ '/w/p/.git': 'gitdir: link/../evil\n', ...repository('/o/evil', fsmonitor) }, { '/w/p/link': '/o/sub' }, ['/o/sub']),
+  ],
+  [
+    'the same, in commondir',
+    'git status',
+    'ask',
+    disk(
+      {
+        '/w/p/.git': 'gitdir: /w/p/wt\n',
+        '/w/p/wt/HEAD': 'ref: refs/heads/main\n',
+        '/w/p/wt/commondir': 'link/../evil\n',
+        ...repository('/o/evil', fsmonitor),
+      },
+      { '/w/p/wt/link': '/o/sub' },
+      ['/o/sub'],
+    ),
+  ],
+  [
+    'spaces after gitdir:, which are part of the path',
+    'git status',
+    'ask',
+    disk({ '/w/p/.git': 'gitdir: /w/g  \n', ...repository('/w/g'), ...repository('/w/g  ', fsmonitor) }),
+  ],
+  [
+    'a .git whose objects is a file, so git looks further up',
+    'git status',
+    'ask',
+    disk({ ...repository('/w/p/.git'), '/w/p/.git/objects': 'x', ...repository('/w/.git', fsmonitor) }),
+  ],
+  [
+    'an include under ~',
+    'git status',
+    'ask',
+    disk({ ...repository('/w/p/.git', '[include]\n\tpath = ~/inc.cfg\n'), '/home/me/inc.cfg': fsmonitor }),
+  ],
+  ['a key on the line of its section', 'git status', 'ask', disk(repository('/w/p/.git', '[core] fsmonitor = touch /tmp/PWNED\n'))],
+  [
+    'a comment after a value',
+    'git commit -m x',
+    'deny',
+    disk(hooked('[core]\n\thooksPath = .githooks ; note\n', { '/w/p/.githooks/pre-commit': evilHook })),
+  ],
+  [
+    'a comment after an include',
+    'git status',
+    'ask',
+    disk({ ...repository('/w/p/.git', '[include]\n\tpath = evil.cfg # note\n'), '/w/p/.git/evil.cfg': fsmonitor }),
+  ],
+  [
+    'single quotes, which are part of the value',
+    'git commit -m x',
+    'deny',
+    disk(hooked("[core]\n\thooksPath = 'q'\n", { "/w/p/'q'/pre-commit": evilHook, '/w/p/q/pre-commit': '#!/bin/sh\necho hi\n' })),
+  ],
+  [
+    'a value continued on the next line',
+    'git status',
+    'ask',
+    disk({ ...repository('/w/p/.git', '[include]\n\tpath = ev\\\nil.cfg\n'), '/w/p/.git/evil.cfg': fsmonitor }),
+  ],
+  [
+    'a relative hooksPath in a repository that says it is bare, run from where git started',
+    'git branch x',
+    'ask',
+    disk({
+      ...repository('/w/.git', '[core]\n\tbare = true\n\thooksPath = hooks2\n'),
+      '/w/hooks2/reference-transaction': '#!/bin/sh\necho root\n',
+      '/w/p/hooks2/reference-transaction': evilHook,
+    }),
+  ],
+  [
+    'a working directory that is a symlink, from whose target git looks up',
+    'git status',
+    'ask',
+    disk({ ...repository('/w/.git'), ...repository('/o/.git', fsmonitor) }, { '/w/p': '/o/q' }, ['/o/q']),
+  ],
+  [
+    'cd through a symlink to a nested repository',
+    'cd link && git status',
+    'ask',
+    disk({ ...repository('/w/p/.git'), ...repository('/w/p/deep/.git', fsmonitor) }, { '/w/p/link': '/w/p/deep/x' }, ['/w/p/deep/x']),
+  ],
+  [
+    'a submodule, whose config git status runs',
+    'git status',
+    'ask',
+    disk({
+      ...repository('/w/p/.git'),
+      '/w/p/.gitmodules': '[submodule "sub"]\n\tpath = sub\n',
+      ...repository('/w/p/sub/.git', fsmonitor),
+    }),
+  ],
+  [
+    "a bash hook under husky 8's helper, which runs it with sh",
+    'git commit -m x',
+    'ask',
+    disk(
+      hooked('[core]\n\thooksPath = .husky\n', {
+        '/w/p/.husky/_/husky.sh': huskyFiles.helper8,
+        '/w/p/.husky/pre-commit': '#!/usr/bin/env bash\n. "$(dirname -- "$0")/_/husky.sh"\necho hi &>/dev/null rm -rf /\n',
+      }),
+    ),
+  ],
+  [
+    'a key package.json gives twice, which bun and npm read differently',
+    'bun run t',
+    'ask',
+    disk({ '/w/p/package.json': '{"name":"d","scripts":{"t":"rm -rf /"},"scripts":{"t":"echo second"}}' }),
+  ],
+  ['a plain repository', 'git status && git commit -m x', 'allow', disk(repository('/w/p/.git'))],
+];
+
+describe('recommended policy, with the project on disk', () => {
+  for (const [what, source, decision, fs, cwd] of projectCases) {
+    test(`${what}: ${JSON.stringify(source)} → ${decision}`, () =>
+      expectDecision(source, decision, { cwd: cwd ?? '/w/p', env: { HOME: '/home/me' }, fs }));
+  }
 });

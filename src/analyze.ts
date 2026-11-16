@@ -2638,15 +2638,17 @@ class Walker {
     const hooks = gitHooksOf(parsed);
     /** Where a worktree's git directory keeps what it shares with the others: its config and hooks. */
     const commonOf = (gitDir: string): string => {
-      const pointer = readFile(`${gitDir}/commondir`)?.trim();
-      return pointer ? (resolvePath(gitDir, pointer) ?? pointer) : gitDir;
+      const pointer = readFile(`${gitDir}/commondir`)?.replace(/[\r\n]+$/, '');
+      return pointer ? this.pointedTo(gitDir, pointer, ctx, call) : gitDir;
     };
-    /** Whether git takes `gitDir` for certain: a `HEAD` it can read, with `objects` and `refs` beside it. */
+    /** A directory for certain: something is there, and it isn't a file. */
+    const directory = (path: string): boolean => this.exists(path, ctx, call) === true && this.files!.readFile(path) === null;
+    /** Whether git takes `gitDir` for certain: a `HEAD` it can read, with the directories `objects` and `refs` beside it. */
     const valid = (gitDir: string): boolean => {
       const head = readFile(`${gitDir}/HEAD`);
       if (head === undefined || !/^(ref:\s*refs\/|[0-9a-f]{40})/.test(head)) return false;
       const common = commonOf(gitDir);
-      return this.exists(`${common}/objects`, ctx, call) === true && this.exists(`${common}/refs`, ctx, call) === true;
+      return directory(`${common}/objects`) && directory(`${common}/refs`);
     };
     /** Whether `gitDir` has a `HEAD`: without one, git never takes it. Not knowing is a finding. */
     const heads = new Map<string, boolean>();
@@ -2676,14 +2678,16 @@ class Walker {
         visited.add(path);
         const text = readFile(path);
         if (text === undefined) return;
-        for (const entry of parseGitConfig(text)) {
+        const parsed = parseGitConfig(text);
+        if (parsed.bad) this.finding(ctx, 'exec-config', `Git config ${path} isn't read here as git reads it`, call.span);
+        for (const entry of parsed.entries) {
           if (entry.key === 'include.path' || (entry.key.startsWith('includeif.') && entry.key.endsWith('.path'))) {
             if (/[${}]/.test(entry.value)) {
               this.finding(ctx, 'exec-config', `Git config include path is dynamic: ${entry.value}`, call.span);
               continue;
             }
             const base = path.slice(0, Math.max(0, path.lastIndexOf('/'))) || '.';
-            const included = this.openedPath(base, entry.value);
+            const included = this.openedPath(base, entry.value, call.home);
             if (included === undefined && entry.value.split('/').includes('..')) {
               this.finding(ctx, 'exec-config', `Where git config include path ${entry.value} leads isn't known`, call.span);
               continue;
@@ -2705,12 +2709,14 @@ class Walker {
       // The hooks of `core.hooksPath` are followed like those in `.git/hooks`, where that directory is certain: git
       // reads `~` and `%(prefix)` in it, and a relative one from where it runs the hook.
       const hooksPath = hooksPaths.at(-1)?.value;
+      // A repository whose config says it's bare runs a relative hooks path from wherever git started.
+      const bare = entries.some((entry) => entry.key === 'core.bare' && !/^(false|no|off|0)$/i.test(entry.value));
       const certain = (path: string): string | undefined => {
         if (path === '' || path.startsWith('%(') || hooksPaths.some((entry) => entry.conditional)) return undefined;
         if (path.startsWith('/')) return this.openedPath(root, path);
         if (path.startsWith('~'))
           return /^~(\/|$)/.test(path) && call.home !== undefined ? this.openedPath(root, path, call.home) : undefined;
-        return hooksFrom === undefined ? undefined : this.openedPath(hooksFrom, path);
+        return hooksFrom === undefined || bare ? undefined : this.openedPath(hooksFrom, path);
       };
       let directory = `${common}/hooks`;
       if (hooksPath !== undefined) {
@@ -2753,34 +2759,76 @@ class Walker {
       return true;
     }
 
-    let dir = cwd;
-    for (let depth = 0; depth < 16; depth++) {
-      const dotGit = resolvePath(dir, '.git');
-      if (!dotGit) return false;
-      // A `.git` file names the git directory, which git takes or fails on.
-      const pointer = /^gitdir:\s*(.+?)\s*$/im.exec(readFile(dotGit) ?? '')?.[1];
-      // Git runs the hooks of a repository it finds in a `.git` in the work tree, unless it's told of another.
-      const hooksFrom = tree === undefined ? dir : undefined;
-      if (pointer !== undefined) {
-        follow(resolvePath(dir, pointer) ?? pointer, dir, dotGit, hooksFrom);
-        return true;
+    /** The submodules `.gitmodules` names in the work tree at `root`: commands that look into them run their config. */
+    const submodules = (root: string): void => {
+      // What was there, since git's own writes to the work tree may rewrite it but make no repository.
+      const path = `${root}/.gitmodules`;
+      const text = this.files!.readFile(path);
+      if (text === undefined) this.finding(ctx, 'unknown-file', `What \`${path}\` holds isn't known`, call.span);
+      if (text === undefined || text === null) return;
+      const parsed = parseGitConfig(text);
+      if (parsed.bad) this.finding(ctx, 'exec-config', `${root}/.gitmodules isn't read here as git reads it`, call.span);
+      for (const entry of parsed.entries) {
+        if (!/^submodule\..*\.path$/.test(entry.key)) continue;
+        const sub = this.openedPath(root, entry.value);
+        if (sub === undefined || !sub.startsWith('/')) {
+          this.finding(ctx, 'exec-config', `Where submodule ${entry.value} is isn't known`, call.span);
+          continue;
+        }
+        const dotGit = `${sub}/.git`;
+        const pointer = gitfile(readFile(dotGit));
+        if (pointer !== undefined) follow(this.pointedTo(sub, pointer, ctx, call), sub, dotGit, sub);
+        else if (readFile(`${dotGit}/config`) !== undefined || hasHead(dotGit)) follow(dotGit, sub, dotGit, sub);
       }
-      if (readFile(`${dotGit}/config`) !== undefined || hasHead(dotGit)) {
-        follow(dotGit, dir, dotGit, hooksFrom);
-        if (valid(dotGit)) return true;
+    };
+
+    /** Git's discovery from `start` up: whether it settled on a repository, every one it may take followed. */
+    const discover = (start: string): boolean => {
+      let dir = start;
+      for (let depth = 0; depth < 16; depth++) {
+        const dotGit = resolvePath(dir, '.git');
+        if (!dotGit) return false;
+        // A `.git` file names the git directory, which git takes or fails on.
+        const pointer = gitfile(readFile(dotGit));
+        // Git runs the hooks of a repository it finds in a `.git` in the work tree, unless it's told of another.
+        const hooksFrom = tree === undefined ? dir : undefined;
+        // What it reads from the work tree, it reads before it writes there.
+        if (pointer !== undefined) {
+          submodules(dir);
+          follow(this.pointedTo(dir, pointer, ctx, call), dir, dotGit, hooksFrom);
+          return true;
+        }
+        if (readFile(`${dotGit}/config`) !== undefined || hasHead(dotGit)) {
+          submodules(dir);
+          follow(dotGit, dir, dotGit, hooksFrom);
+          if (valid(dotGit)) return true;
+        }
+        // The directory itself, when it has what a `.git` has: a bare repository, or one made to look like it.
+        if (hasHead(dir)) {
+          follow(dir, dir, dir);
+          if (valid(dir)) return true;
+        }
+        const parent = resolvePath(dir, '..');
+        // Up to the root, every directory git may have taken was followed.
+        if (!parent || parent === dir) return followed.size > 0;
+        dir = parent;
       }
-      // The directory itself, when it has what a `.git` has: a bare repository, or one made to look like it.
-      if (hasHead(dir)) {
-        follow(dir, dir, dir);
-        if (valid(dir)) return true;
-      }
-      const parent = resolvePath(dir, '..');
-      // Up to the root, every directory git may have taken was followed.
-      if (!parent || parent === dir) return followed.size > 0;
-      dir = parent;
-    }
-    this.finding(ctx, 'exec-config', 'The repository git finds may be further up than the analysis looks', call.span);
-    return false;
+      this.finding(ctx, 'exec-config', 'The repository git finds may be further up than the analysis looks', call.span);
+      return false;
+    };
+    // Git looks up from where it really is (`getcwd`), past the symlinks the shell's path went through.
+    const real = cwd.startsWith('/') ? this.files.physical(cwd) : cwd;
+    if (real === undefined) this.finding(ctx, 'unknown-file', `Where \`${cwd}\` really is isn't known`, call.span);
+    const settled = discover(cwd);
+    return real === undefined || real === cwd ? settled : discover(real) && settled;
+  }
+
+  /** The git directory a `.git` file or `commondir` names, from `base`, as the kernel finds it. */
+  pointedTo(base: string, pointer: string, ctx: Context, call: Call): string {
+    const path = this.openedPath(base, pointer);
+    if (path !== undefined) return path;
+    this.finding(ctx, 'exec-config', `Where the git directory ${pointer} leads isn't known`, call.span);
+    return resolvePath(base, pointer) ?? pointer;
   }
 
   /**
@@ -2896,6 +2944,11 @@ class Walker {
     } catch (error) {
       if (!(error instanceof SyntaxError)) throw error;
       this.finding(ctx, 'exec-config', 'package.json is invalid JSON; its scripts cannot be inspected', call.span);
+      return undefined;
+    }
+    // bun takes the first of a key given twice, and npm (as JSON.parse) the last.
+    if (repeatsKey(manifest)) {
+      this.finding(ctx, 'exec-config', 'package.json gives a key twice, which package managers read differently', call.span);
       return undefined;
     }
     if (typeof packageJson !== 'object' || packageJson === null || Array.isArray(packageJson)) {
@@ -3209,30 +3262,117 @@ function shape(invocation: Invocation): string {
   return [invocation.program ?? '<dynamic>', ...invocation.subcommands, ...options, ...positionals].join(' ');
 }
 
-function parseGitConfig(text: string): { key: string; value: string }[] {
+/** Whether an object in the JSON `text` (which parses) gives a key more than once. */
+function repeatsKey(text: string): boolean {
+  const objects: (Set<string> | undefined)[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (c === '{') {
+      objects.push(new Set());
+    } else if (c === '[') {
+      objects.push(undefined);
+    } else if (c === '}' || c === ']') {
+      objects.pop();
+    } else if (c === '"') {
+      let end = i + 1;
+      while (text[end] !== '"') end += text[end] === '\\' ? 2 : 1;
+      const colon = /\s*:/y;
+      colon.lastIndex = end + 1;
+      const keys = objects.at(-1);
+      if (keys && colon.test(text)) {
+        const key = String(JSON.parse(text.slice(i, end + 1)));
+        if (keys.has(key)) return true;
+        keys.add(key);
+      }
+      i = end;
+    }
+  }
+  return false;
+}
+
+/** What a `.git` file names: all after `gitdir: `, less the line ends at the end, as git reads it. */
+function gitfile(text: string | undefined): string | undefined {
+  return text?.startsWith('gitdir: ') ? text.slice('gitdir: '.length).replace(/[\r\n]+$/, '') : undefined;
+}
+
+/**
+ * Git config as git's own parser reads it: a key may follow its section's header on the line, `;` and `#` start a
+ * comment outside double quotes, single quotes are text, a backslash at a line's end goes on to the next, and the
+ * spaces around a value aren't part of it. `bad` when git would refuse the file, or this may read it otherwise.
+ */
+function parseGitConfig(text: string): { entries: { key: string; value: string }[]; bad: boolean } {
   const entries: { key: string; value: string }[] = [];
   let section = '';
-  let subsection = '';
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || /^[#;]/.test(line)) continue;
-    const header = /^\[([^\s\]]+)(?:\s+"((?:\\.|[^"])*)")?\]$/.exec(line);
-    if (header) {
-      section = header[1]!.toLowerCase();
-      subsection = header[2]?.replace(/\\(.)/g, '$1').toLowerCase() ?? '';
+  let i = text.startsWith('﻿') ? 1 : 0;
+  const bad = () => ({ entries, bad: true });
+  const blank = (c: string | undefined) => c === ' ' || c === '\t' || c === '\r' || c === '\v' || c === '\f';
+  while (i < text.length) {
+    const c = text[i]!;
+    if (c === '\n' || blank(c)) {
+      i++;
       continue;
     }
-    const setting = /^([A-Za-z][A-Za-z0-9.-]*)\s*(?:=\s*(.*))?$/.exec(line);
-    if (!setting || !section) continue;
-    const value = (setting[2] ?? 'true')
-      .replace(/^\s*"(.*)"\s*$/, '$1')
-      .replace(/^\s*'(.*)'\s*$/, '$1')
-      .replace(/\\(.)/g, '$1')
-      .trim();
-    const key = subsection ? `${section}.${subsection}.${setting[1]!.toLowerCase()}` : `${section}.${setting[1]!.toLowerCase()}`;
+    if (c === '#' || c === ';') {
+      while (i < text.length && text[i] !== '\n') i++;
+      continue;
+    }
+    if (c === '[') {
+      const header = /^\[([A-Za-z0-9.-]+)(?:[ \t]+"((?:\\[^\n]|[^"\\\n])*)")?\]/.exec(text.slice(i));
+      if (!header) return bad();
+      section = header[1]!.toLowerCase();
+      if (header[2] !== undefined) section += `.${header[2].replace(/\\(.)/g, '$1').toLowerCase()}`;
+      i += header[0].length;
+      continue;
+    }
+    const name = /^[A-Za-z][A-Za-z0-9-]*/.exec(text.slice(i))?.[0];
+    if (!name || !section) return bad();
+    i += name.length;
+    while (blank(text[i])) i++;
+    const key = `${section}.${name.toLowerCase()}`;
+    if (i >= text.length || text[i] === '\n') {
+      entries.push({ key, value: 'true' });
+      continue;
+    }
+    if (text[i] !== '=') return bad();
+    i++;
+    let value = '';
+    let spaces = '';
+    let quoted = false;
+    for (; i < text.length; i++) {
+      const v = text[i]!;
+      if (v === '\n') {
+        if (quoted) return bad();
+        break;
+      }
+      if (!quoted && (v === ';' || v === '#')) {
+        while (i < text.length && text[i] !== '\n') i++;
+        break;
+      }
+      if (!quoted && blank(v)) {
+        if (value !== '') spaces += ' ';
+        continue;
+      }
+      value += spaces;
+      spaces = '';
+      if (v === '"') {
+        quoted = !quoted;
+        continue;
+      }
+      if (v !== '\\') {
+        value += v;
+        continue;
+      }
+      const next = text[++i];
+      if (next === '\r' && text[i + 1] === '\n') i++;
+      if (next === '\n' || next === '\r') continue;
+      const escaped = next === undefined ? undefined : { n: '\n', t: '\t', b: '\b', '"': '"', '\\': '\\' }[next];
+      if (escaped === undefined) return bad();
+      value += escaped;
+    }
+    if (quoted) return bad();
     entries.push({ key, value });
   }
-  return entries;
+  return { entries, bad: false };
 }
 
 /**
