@@ -207,7 +207,8 @@ const pnpmOptions = opts(
   '-s --silent',
   '--reporter=',
   '--loglevel=',
-  '--color',
+  // `[Boolean, 'always', 'auto', 'never']` in pnpm's config types: nopt takes one of those after it.
+  o('--color', { words: ['always', 'auto', 'never'] }),
   '--no-color',
   '--aggregate-output',
   '--stream',
@@ -4586,6 +4587,24 @@ function scanAwk(code: string, parsed: Parsed): void {
   parsed.effects.add('fs:write');
 }
 
+/**
+ * bun picks its command as the first word that doesn't start with `-`, skipping no option's value: `bun --title create
+ * test` runs `bun create`, and `bun --cwd add test x` runs `bun add`. Where the spec reads that word as an option's
+ * value, the command bun runs is another, which may fetch and run any package.
+ */
+function parseBun(args: Arg[], parsed: Parsed): void {
+  const { parse: _, ...plain } = programs.bun!;
+  Object.assign(parsed, normalize(args, plain));
+  // A word that names no command of bun's sends it down its run path, which reads every option's value as the spec does.
+  const first = args.find((arg) => arg.kind === 'dynamic' || !arg.value.startsWith('-'));
+  const command = first?.kind === 'dynamic' || (first !== undefined && bunCommands.test(first.value));
+  if (first && command && Object.values(parsed.options).flat().includes(first)) parsed.effects.add('exec:arbitrary').add('network');
+}
+
+/** The words bun's `Command.which` takes as a command of its own. */
+const bunCommands =
+  /^(add|a|install|i|remove|rm|uninstall|update|upgrade|link|unlink|pm|create|c|init|x|exec|run|test|build|outdated|publish|patch|patch-commit|audit|info|why|repl|discord|help|completions|getcompletes)$/;
+
 /** Programs by name, aliases after `|`. */
 const programs: Record<string, CommandSpec> = {
   'bash|sh|dash|ksh|mksh|ash|busybox-sh': shell,
@@ -5086,6 +5105,7 @@ const programs: Record<string, CommandSpec> = {
   },
   bun: {
     posix: true,
+    parse: parseBun,
     options: bunOptions,
     subcommands: {
       // `bun run` runs a script, else a file, else a command from PATH (`bun run echo hi`).

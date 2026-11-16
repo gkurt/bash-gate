@@ -10,6 +10,8 @@ export interface OptionSpec {
   /** What the value is, when it's more than data: shell code, a command line, a path, a working directory, a config entry. */
   role?: 'script' | 'argv' | 'read' | 'write' | 'cwd' | 'config';
   effects?: Effect[];
+  /** Words besides `true` and `false` nopt takes after the flag as its value: pnpm's `--color never`. */
+  words?: string[];
 }
 
 export interface CommandSpec {
@@ -308,14 +310,14 @@ function mayBeSeveral(arg: Arg): boolean {
 
 function readOption(args: Arg[], i: number, spec: CommandSpec | undefined, parsed: Parsed, nopt = false, dashless = false): number {
   // nopt reads the word after a flag as its value when it's `true` or `false`; one only known at run time may be.
-  const boolean = (at: number): Arg | true => {
+  const boolean = (at: number, option?: OptionSpec): Arg | true => {
     const next = args[at];
     if (!nopt || !next) return true;
     if (next.kind === 'dynamic') {
       parsed.maybeOptions = true;
       return true;
     }
-    return next.value === 'true' || next.value === 'false' ? next : true;
+    return next.value === 'true' || next.value === 'false' || option?.words?.includes(next.value) ? next : true;
   };
   // Whether the next word is the option's value. Where values never start with `-`, one only known at run time may
   // not be, and then it's read as options.
@@ -348,7 +350,7 @@ function readOption(args: Arg[], i: number, spec: CommandSpec | undefined, parse
     let optionValue: Arg | true = true;
     if (attached !== undefined) optionValue = { kind: 'static', value: attached };
     else if (takes && option.value === true && takesNext(i + 1)) optionValue = args[++i]!;
-    else if (!takes && (optionValue = boolean(i + 1)) !== true) i++;
+    else if (!takes && (optionValue = boolean(i + 1, option)) !== true) i++;
     record(parsed, option, optionValue);
     if (optionValue === args[i] && mayBeSeveral(optionValue)) parsed.maybeOptions = true;
     return i;
@@ -376,7 +378,7 @@ function readOption(args: Arg[], i: number, spec: CommandSpec | undefined, parse
       break;
     }
     if ((option.value ?? false) === false || (option.valued && !option.valued.includes(name))) {
-      const given = j === value.length - 1 ? boolean(i + 1) : true;
+      const given = j === value.length - 1 ? boolean(i + 1, option) : true;
       if (given !== true) i++;
       record(parsed, option, given);
       continue;

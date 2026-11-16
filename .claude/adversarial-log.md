@@ -603,3 +603,12 @@ Confirmed and fixed:
 Rejected (not bypasses under `recommended`): `file -z` and `rg -z` start decompressors from PATH that aren't reported as invocations (system programs under a fixed PATH, which any change of asks about); `nohup` writes `~/nohup.out` when the working directory isn't writable, a path `recommended` doesn't ask about.
 Costs: `git add -p` and `git commit -p` ask; biome with a dynamic word asks. No everyday verdict moved.
 Needs a decision: none.
+
+## Round 51: src/argv.ts (sixth pass), 2026-11-17, see commit
+The reviewer checked GNU abbreviations, nopt, cobra and subcommand rules against the programs in WSL (bun 1.4.4, pnpm 11.13, git 2.54, coreutils). It broke the no-network rule once by accident: pnpm 11.13's update notifier reached the registry. Next time set `npm_config_update_notifier=false` with the dead registry. I re-ran bun under `env -i` with dead registries (both commands went down `create` and `add`). WSL's pnpm is now a shim that downloads its binary and couldn't start offline, so the pnpm claim rests on the reviewer's run and pnpm's config types. 3 new escapes cases fail on 9f25fc4.
+Confirmed and fixed:
+- `bun --title create test` (`--shell`, `--watch-kill-signal`, `--elide-lines`) → allow as `bun test`; bun's `Command.which` takes the first word without a dash as the command, skipping no value, so bun ran `create` (which fetches and runs `create-test`). `bun --cwd add test left-pad` ran `bun add`. → when that word names a bun command and the spec read it as an option's value, it's `exec:arbitrary` and `network`. `bun --cwd /bare lint` (no command word) goes down bun's run path, which matches the spec.
+- `pnpm --color never exec rm -rf ../victim`, in a project with a `never` script → allow; pnpm's nopt takes `never` as `--color`'s value (`[Boolean, "always", "auto", "never"]`), and rm ran → `OptionSpec.words`, and pnpm's `--color` takes those words.
+Rejected (no verdict change): `git cherry-pick|revert -s` read as a strategy (it's `--signoff`, an over-read that asks); `git pull|merge --ff` read as `--ff-only` and `branch --set-upstream` as `--set-upstream-to`; GNU abbreviation differences on `sort --version`, `tr --d`, `diff --f` and `chmod --n`; `git -c remote.origin.mirror=true push` (push asks already; it would only lower a deny to ask).
+Costs: `bun --<valued option> <bun command> …` asks. No everyday verdict moved.
+Needs a decision: none.

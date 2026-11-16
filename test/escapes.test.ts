@@ -990,6 +990,10 @@ const startedCases: [source: string, decision: Decision, what: string][] = [
   ['git add -i', 'ask', 'interactive mode'],
   ['git commit -p -m x', 'ask', 'commit choosing hunks'],
   ['git stash -p', 'ask', 'stash choosing hunks'],
+  // Round 51: bun picks its command as the first word without a dash, skipping no option's value.
+  ['bun --title create test', 'ask', "bun's create, read as an option's value"],
+  ['bun --cwd add test left-pad', 'ask', 'bun add, read as the working directory'],
+  ['bun --watch test', 'allow', 'a flag before the command'],
   // Round 44: dry runs that aren't, and more that prints, fetches or writes.
   ['kubectl delete --raw /api/v1/namespaces/default/pods/x --dry-run=server', 'ask', 'a raw request, which ignores --dry-run'],
   ['kubectl create --raw /api/v1/namespaces/default/pods -f pod.json --dry-run=client', 'ask', 'the same for create'],
@@ -1521,6 +1525,12 @@ const repository = (dir: string, config = '[core]\n\tbare = false\n'): Record<st
 const hooked = (config: string, hooks: Record<string, string>) => ({ ...repository('/w/p/.git', config), ...hooks });
 const evilHook = '#!/bin/sh\nrm -rf /\n';
 const projectCases: [what: string, source: string, decision: Decision, fs: Environment['fs'], cwd?: string][] = [
+  [
+    "pnpm's --color, which takes never as its value",
+    'pnpm --color never exec rm -rf ../victim',
+    'deny',
+    disk({ '/w/p/package.json': '{"scripts":{"never":"echo hi"}}' }),
+  ],
   [
     'a .. after a symlink in a .git file, which git resolves physically',
     'git status',
