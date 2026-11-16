@@ -150,6 +150,8 @@ const deprecated91 = [
 const stub91 = '#!/usr/bin/env sh\n. "$(dirname "$0")/h"';
 const stub90 = '#!/usr/bin/env sh\n. "${0%/*}/h"';
 const stubs = new Set([stub91, stub90]);
+/** Whether `text` is one of husky 9's stubs, which hand the hook to its dispatcher. */
+export const huskyStub = (text: string): boolean => stubs.has(text.replace(/\n$/, ''));
 
 /** The files husky writes, by version. */
 export const huskyFiles = { stub91, stub90, dispatcher91, dispatcher90, helper8, helper7, deprecated91 } as const;
@@ -173,7 +175,7 @@ export function huskyHook(
 ): { path: string; text: string; husky?: boolean } | undefined {
   // husky 9's dispatcher runs the project's hook with `sh -e` (`husky`), whatever its first line says.
   let hook: { path: string; text: string; husky?: boolean } = { path, text };
-  if (stubs.has(text.replace(/\n$/, ''))) {
+  if (huskyStub(text)) {
     const dispatcher = read(`${parent(path)}/h`);
     if (dispatcher !== undefined && dispatchers.has(dispatcher)) {
       const own = `${parent(parent(path))}/${path.slice(path.lastIndexOf('/') + 1)}`;

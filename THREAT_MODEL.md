@@ -67,7 +67,7 @@ Out of scope:
   `getcwd`), a `.git` or the directory itself, that has a `HEAD` and the directories `objects` and `refs`. One that may
   lack them is followed, and so are those above it. A `.git` file and `commondir` are read as git reads them, a `..`
   after a symlink leading up from its target; config is parsed as git parses it, with a finding where git would refuse
-  it. The submodules `.gitmodules` names are followed too; a nested repository it doesn't name is not. The hooks followed are the ones the
+  it. The submodules `.gitmodules` names are followed too, and theirs in turn; a nested repository it doesn't name is not. The hooks followed are the ones the
   command runs in git 2.55, plus `pre-auto-gc` where older gits collect garbage afterwards; a command the table
   doesn't have may run any. They're read from `core.hooksPath` where that directory is certain, and from the config's
   own `hook.<name>.command`. A hook is read as the shell its first line names (`sh`, which expands aliases, with
@@ -77,7 +77,8 @@ Out of scope:
   reads otherwise (`&>`, `((`, `$'…'`, `[[`, brace expansion) and for builtins dash doesn't have (`declare`, `shopt`,
   `source`), which it skips. The user's and the system's git config are never read, nor husky's
   user files (`~/.config/husky/init.sh`, `~/.huskyrc`). Hooks husky wrote are followed to the project's own hook in
-  `.husky`, only when their text is exactly what husky 7, 8 or 9 writes. gh's stored aliases and config are never read: a first word gh
+  `.husky`, only when their text is exactly what husky 7, 8 or 9 writes; under a hooks path ending in `.` or `..`, where
+  husky's dispatcher finds another hook than the folded path, they're a finding. gh's stored aliases and config are never read: a first word gh
   doesn't know is code unseen (`exec:arbitrary`), and its pager, editor and browser are what they were. Specs describe other known argument behavior, writes included: a
   specified program that writes a file its spec doesn't name can change what a later read sees.
 - **What the filesystem holds.** Globs and which files exist. `$HOME` too, unless the script sets it or the integration

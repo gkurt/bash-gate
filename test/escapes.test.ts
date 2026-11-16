@@ -1450,6 +1450,10 @@ const inHomeCases: [source: string, decision: Decision, what: string][] = [
   ["printf '[core]\\n\\tfsmonitor = touch x\\n' >> ~/.gitconfig; cd repo && git status", 'ask', "the user's git config, from HOME"],
   ['mkdir -p ~/.config/git && echo x > ~/.config/git/config', 'ask', 'the same, under XDG'],
   ['echo "touch x" >> .bashrc', 'ask', 'a shell startup file, from HOME'],
+  ['mkdir -p .config/husky && echo "touch x" > .config/husky/init.sh', 'ask', "husky's init script, which its hooks source"],
+  ['echo "touch x" > .huskyrc', 'ask', "husky's older init script"],
+  ['mkdir -p .config/fish && echo "touch x" > .config/fish/config.fish', 'ask', "fish's startup file"],
+  ['cp tool .cargo/bin/ls', 'ask', "cargo's bin directory, on PATH"],
   ['echo key >> .ssh/authorized_keys', 'ask', '~/.ssh, from HOME'],
   ['echo hi > notes.txt', 'allow', 'another file in HOME'],
   ['cp -r d/.ssh ~/', 'ask', '~/.ssh copied in whole'],
@@ -1643,6 +1647,32 @@ const projectCases: [what: string, source: string, decision: Decision, fs: Envir
       '/w/p/.gitmodules': '[submodule "sub"]\n\tpath = sub\n',
       ...repository('/w/p/sub/.git', fsmonitor),
     }),
+  ],
+  [
+    "a submodule's own submodule, whose config git status runs too",
+    'git status',
+    'ask',
+    disk({
+      ...repository('/w/p/.git'),
+      '/w/p/.gitmodules': '[submodule "sub"]\n\tpath = sub\n',
+      ...repository('/w/p/sub/.git'),
+      '/w/p/sub/.gitmodules': '[submodule "inner"]\n\tpath = inner\n',
+      ...repository('/w/p/sub/inner/.git', fsmonitor),
+    }),
+  ],
+  [
+    "husky's stub under a hooks path ending in .., which its dispatcher reads as text",
+    'git commit -m x',
+    'ask',
+    disk(
+      hooked('[core]\n\thooksPath = .husky/x/..\n', {
+        '/w/p/.husky/pre-commit': huskyFiles.stub91,
+        '/w/p/.husky/h': huskyFiles.dispatcher91,
+        '/w/p/.husky/x/pre-commit': evilHook,
+      }),
+      {},
+      ['/w/p/.husky/x'],
+    ),
   ],
   [
     "a bash hook under husky 8's helper, which runs it with sh",

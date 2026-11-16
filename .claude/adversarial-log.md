@@ -627,3 +627,15 @@ Confirmed and fixed (main root cause: a file named by an option's value went uns
 Rejected or not verified: `echo :.env | git cat-file --batch` (the object is named on standard input: the documented limit for words only known at run time); `cargo build --target ../x.json` and `--lockfile-path` (cargo isn't installed; nightly-gated in current toolchains); `git -c remote.origin.mirror=true push` (asks already; it only lowers a deny to ask). Known limits left: recursive reads, pathspec globs.
 Costs: an unknown option whose value names a secret file, gh `--jq env`, awk programs using `ARGV`, `SYMTAB` or `PROCINFO`, and bun profile paths outside the project ask. No everyday verdict moved.
 Needs a decision: none.
+
+## Round 53: files and project code (sixth pass), 2026-11-17, see commit
+The reviewer ran git 2.54, husky 9's stub and dispatcher, and npm in WSL under `env -i` with fake values. I re-ran the nested submodule and husky claims the same way: both commands ran. 6 new escapes cases fail on 8564486.
+Confirmed and fixed:
+- Nested submodules: `git status` in a repository whose submodule has its own submodule → allow, but git ran the inner submodule's `core.fsmonitor`. `submodules()` didn't recurse. → it now follows each submodule's `.gitmodules`, with a seen set and a limit.
+- husky under `core.hooksPath = .husky/x/..` → `git commit` walked the folded `.husky/pre-commit` stub's target. husky's dispatcher takes `dirname "$(dirname "$0")"` as text and ran `.husky/x/pre-commit`. → a husky stub under a hooks path ending in `.` or `..` is a `loads-code` finding.
+- From HOME, `mkdir -p .config/husky && echo … > .config/husky/init.sh` (and `~/.huskyrc`) → allow; husky's dispatcher sources it on every hook. → added to `recommended`'s home writes, with `~/.config/fish`, `systemd`, `environment.d` and `autostart`, and `~/.cargo/bin`.
+Rejected: none.
+Costs: writes to those home paths ask; a husky stub under a hooks path ending in `.` or `..` asks. No everyday verdict moved.
+Needs a decision:
+- A project `.npmrc` with `script-shell=/elsewhere/prog`: `npm test` runs that program, not `sh`. This is round 39's question again (project config is trusted), and it was left as it is.
+- A nested repository added as a gitlink with no `.gitmodules` entry (`git add nested && git status`): git runs the nested repository's `core.fsmonitor`. THREAT_MODEL says such a repository is not followed, and the `FileSystem` can't list directories to find one. Closing it means either asking about every git command in a work tree that may hold one, or a directory listing in the `FileSystem` interface. That's an API and trust decision.

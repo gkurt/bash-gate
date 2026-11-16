@@ -18,7 +18,7 @@ import {
 } from 'unbash';
 import { assignment, emptyParsed, flag, normalize, rehearse, type Parsed } from './argv.ts';
 import { Changes, compare, Probe, type FileSystem } from './files.ts';
-import { huskyHook } from './husky.ts';
+import { huskyHook, huskyStub } from './husky.ts';
 import { basename, isSystemPath, resolvePath } from './paths.ts';
 import { arithmeticNames, expandedNames, printsEnvironment, secretFile, secretGlob, secretVariable } from './secrets.ts';
 import { gitConfig, specFor } from './specs.ts';
@@ -3200,6 +3200,12 @@ class Walker {
         if (walked.has(path)) continue;
         walked.add(path);
         const script = readFile(path);
+        // husky's dispatcher finds the project's hook from `$0` as text, so a hooks path ending in `.` or `..` points
+        // it somewhere other than the folded path.
+        if (script !== undefined && huskyStub(script) && hooksPath !== undefined && /(^|\/)\.\.?\/*$/.test(hooksPath)) {
+          this.finding(ctx, 'loads-code', `git hook ${name} runs a husky hook the analysis doesn't place`, call.span);
+          continue;
+        }
         // husky's stub runs the project's hook in `.husky`, which is what's walked.
         const hook = script === undefined ? undefined : huskyHook(path, script, readFile);
         if (!hook) continue;
@@ -3233,7 +3239,14 @@ class Walker {
     }
 
     /** The submodules `.gitmodules` names in the work tree at `root`: commands that look into them run their config. */
+    const nested = new Set<string>();
     const submodules = (root: string): void => {
+      if (nested.has(root)) return;
+      nested.add(root);
+      if (nested.size > 64) {
+        this.finding(ctx, 'exec-config', 'Submodules nest deeper than the analysis follows', call.span);
+        return;
+      }
       // What was there, since git's own writes to the work tree may rewrite it but make no repository.
       const path = `${root}/.gitmodules`;
       const text = this.files!.readFile(path);
@@ -3252,6 +3265,9 @@ class Walker {
         const pointer = gitfile(readFile(dotGit));
         if (pointer !== undefined) follow(this.pointedTo(sub, pointer, ctx, call), sub, dotGit, sub);
         else if (readFile(`${dotGit}/config`) !== undefined || hasHead(dotGit)) follow(dotGit, sub, dotGit, sub);
+        else continue;
+        // A submodule's own submodules are looked into as well.
+        submodules(sub);
       }
     };
 
