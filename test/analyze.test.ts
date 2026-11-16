@@ -143,6 +143,13 @@ describe('options', () => {
     expect(analyze('unshare -r true').invocations[0]!.effects).not.toContain('exec:arbitrary');
   });
 
+  test('enable -p and -d turn no builtin off', () => {
+    for (const source of ['enable -n -p printf; printf -v x touch', 'enable -n -d printf; printf -v x touch']) {
+      const printf = analyze(source).invocations.find((invocation) => invocation.program === 'printf');
+      expect([source, printf?.kind]).toEqual([source, 'builtin']);
+    }
+  });
+
   test('output-file positionals are writes, not reads', () => {
     for (const source of ['uniq input output', 'xxd -r input output']) {
       const invocation = only(source);

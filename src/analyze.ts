@@ -1445,7 +1445,7 @@ class Walker {
       span,
       writes: files.writes,
       reads: files.reads,
-      ...(command.name && plain(command.name) ? { command } : {}),
+      ...(command.name && aliasable(command.name) ? { command } : {}),
       noFunctions: false,
       open: false,
       cwd: state.cwd,
@@ -1524,7 +1524,11 @@ class Walker {
       return;
     }
     const name = head.value;
-    if (call.command && !ctx.externalOnly && ctx.aliases.expand !== false && this.alias(name, argv, state, ctx, call)) return;
+    // Bash looks a command word up as an alias as it's written, braces and all, and not after an assignment and then a
+    // redirection (`x=1 >f rm`).
+    const command = call.command && !assignedThenRedirected(call.command) ? call.command : undefined;
+    if (command && !ctx.externalOnly && ctx.aliases.expand !== false && this.alias(aliasName(command.name!), argv, state, ctx, call))
+      return;
     const defined = ctx.externalOnly || call.noFunctions ? undefined : state.functions.get(name);
     // In POSIX mode, a special builtin is found before a function: one that may be in it may run either.
     const special = specialBuiltins.has(name) && !state.disabled.has(name) && state.posix !== false;
@@ -1615,9 +1619,9 @@ class Walker {
     for (const item of command.suffix) {
       // A quoted word isn't expanded, and the next one is still checked; one with an unquoted expansion ends it.
       if (item.type === 'Word' && item.parts?.some((part) => aliasStoppers.has(part.type))) break;
-      if (item.type === 'Word' && !plain(item)) continue;
+      if (item.type === 'Word' && !aliasable(item)) continue;
       if (!check || item.type !== 'Word') break;
-      const words = this.aliasWord(item.value, active(ctx, item.pos), ctx, call);
+      const words = this.aliasWord(aliasName(item), active(ctx, item.pos), ctx, call);
       if (!words) break;
       text += ctx.source.slice(rest, item.pos);
       const start = text.length;
@@ -1695,9 +1699,9 @@ class Walker {
         check = false;
         break;
       }
-      if (item.type === 'Word' && !plain(item)) continue;
+      if (item.type === 'Word' && !aliasable(item)) continue;
       if (!check) break;
-      const inner = item.type === 'Word' ? this.aliasWord(item.value, [...reading, word], ctx, call) : undefined;
+      const inner = item.type === 'Word' ? this.aliasWord(aliasName(item), [...reading, word], ctx, call) : undefined;
       if (!inner) {
         check = false;
         break;
@@ -1870,6 +1874,8 @@ class Walker {
           this.finding(ctx, 'dynamic-command', '`enable` has arguments only known at run time: a builtin may run a program', call.span);
 
         const disabling = options.some(([letter]) => letter === 'n');
+        // -p only prints, and -d removes only a builtin -f loaded: neither turns one on or off.
+        if (options.some(([letter]) => letter === 'p' || letter === 'd')) break;
         for (const value of names) {
           if (value === undefined || !builtins.has(value)) continue;
           if (disabling) state.disabled.add(value);
@@ -1905,8 +1911,11 @@ class Walker {
           arg?.kind === 'static' &&
           ((physical !== false && arg.value.split('/').includes('..')) ||
             (option(state, 'cdable_vars') !== false && /^[A-Za-z_]\w*$/.test(arg.value)));
-        // It fails on a directory that isn't there, and the shell stays where it was.
-        state.failedCwd = { cwd: state.cwd };
+        // It fails on a directory that isn't there, and the shell stays where it was. Through a nameref, setting PWD or
+        // OLDPWD may fail after it moved.
+        const named = state.refs.has('PWD') || state.refs.has('OLDPWD');
+        const from = state.cwd;
+        state.failedCwd = { cwd: named ? undefined : from };
         const logical =
           index === -1
             ? (homeOf(state) ?? '~')
@@ -1917,6 +1926,13 @@ class Walker {
         const real =
           physical === false || logical === undefined ? logical : logical.startsWith('/') ? this.files?.physical(logical) : undefined;
         state.cwd = physical === undefined && real !== logical ? undefined : real;
+        // Logically, a `..` path that isn't there is tried again as the kernel reads it: up from where a symlink leads.
+        const given = arg?.kind === 'static' ? arg.value : undefined;
+        if (physical === false && given?.split('/').includes('..') && this.files && logical?.startsWith('/')) {
+          const there = this.files.realpath(logical);
+          if (there === null) state.cwd = this.openedPath(from, given, homeOf(state));
+          else if (there === undefined) state.cwd = undefined;
+        }
         break;
       }
       case 'popd':
@@ -2020,7 +2036,11 @@ class Walker {
             if (inherit === false) state.cases.delete(variable);
             else if (inherit === undefined && state.cases.has(variable)) state.cases.set(variable, undefined);
           }
-          if (name === 'export' || flags.includes('x')) {
+          // `export -n` and `declare +x` take the export away: what's started after doesn't get it.
+          if ((name === 'export' && flags.includes('n')) || off.includes('x')) {
+            state.exported.delete(variable);
+            state.maybeExported.delete(variable);
+          } else if (name === 'export' || flags.includes('x')) {
             state.exported.add(variable);
             state.maybeExported.delete(variable);
           }
@@ -2121,6 +2141,9 @@ class Walker {
             unknownVariable(state, value);
           } else {
             state.vars.set(value, { kind: 'static', value: '' });
+            // Unset, it isn't exported: assigned again, it's the shell's own.
+            state.exported.delete(value);
+            state.maybeExported.delete(value);
             state.integers.delete(value);
             state.maybeIntegers.delete(value);
             state.cases.delete(value);
@@ -2491,7 +2514,36 @@ class Walker {
       cwd,
     });
     // What a program starts is found on `PATH`: the shell's `hash -p` table isn't passed on.
-    const unhashed = () => ({ ...clone(state), hashed: new Map<string, string | undefined>(), hashUnknown: false });
+    const unhashed = () => passed({ ...clone(state), hashed: new Map<string, string | undefined>(), hashUnknown: false });
+    // What a wrapper puts in its command's environment (`env -i`, `-u x`, `x=`): what a shell under it sees.
+    const passed = (s: State): State => {
+      if (parsed.options['--ignore-environment']) {
+        for (const name of s.exported) s.vars.delete(name);
+        s.exported.clear();
+        s.maybeExported.clear();
+      }
+      for (const name of parsed.options['--unset'] ?? []) {
+        if (name !== true && name.kind === 'static') {
+          s.vars.delete(name.value);
+          s.exported.delete(name.value);
+        } else {
+          for (const exported of s.exported) s.maybeExported.add(exported);
+        }
+      }
+      for (const entry of parsed.env) {
+        const text = entry.kind === 'static' ? entry.value : entry.prefix;
+        const equals = text.indexOf('=');
+        if (equals <= 0 || !assignment.test(text)) {
+          for (const exported of s.exported) s.maybeExported.add(exported);
+          continue;
+        }
+        const name = text.slice(0, equals);
+        s.vars.set(name, entry.kind === 'static' ? { kind: 'static', value: text.slice(equals + 1) } : { kind: 'dynamic' });
+        s.exported.add(name);
+        s.maybeExported.delete(name);
+      }
+      return s;
+    };
     for (const nested of parsed.nested) this.dispatch(nested.argv, unhashed(), inner, innerCall(nested.open));
     for (const text of parsed.argvStrings) {
       const words = text.kind === 'static' ? resolveWords(text.value, lookupIn(state)) : undefined;
@@ -3590,6 +3642,22 @@ function active(ctx: Context, pos: number): string[] {
 /** Parts that stop Bash checking words after a blank-ending alias for more aliases. */
 const aliasStoppers = new Set(['SimpleExpansion', 'ParameterExpansion', 'CommandExpansion', 'ArithmeticExpansion', 'ProcessSubstitution']);
 
+/** A word as an alias would name it: braces and all, as it's written. */
+function aliasName(word: Word): string {
+  return word.text.replaceAll('\\\n', '');
+}
+
+/** A word aliases may replace: no quotes, escapes or expansions, though braces may be in it. */
+function aliasable(word: Word): boolean {
+  return plain(word) || !/['"\\$`]/.test(word.text);
+}
+
+/** Whether a command's prefix has an assignment before a redirection, after which Bash expands no alias. */
+function assignedThenRedirected(command: Command): boolean {
+  const first = command.prefix.findIndex((item) => item.type === 'Assignment');
+  return first !== -1 && command.prefix.slice(first + 1).some((item) => item.type !== 'Assignment');
+}
+
 /** A word with no quotes or expansions, which aliases may replace. */
 function plain(word: Word): boolean {
   // A line continuation is gone before Bash reads the word: `c\` and a newline is `c`.
@@ -3773,8 +3841,16 @@ function restore(state: State, outside: State): void {
   const { saved } = frame;
   if (saved) {
     const back = <T>(now: T, then: T) => (saved.maybe && now !== then ? undefined : then);
-    state.posix = back(state.posix, saved.posix);
-    state.expandAliases = back(state.expandAliases, saved.expandAliases);
+    // POSIX mode is put back as `set` would, turning `expand_aliases` with it; `expand_aliases` itself isn't, and
+    // what Bash then does with it differs from what `shopt` says: one that changed may be either.
+    const posix = back(state.posix, saved.posix);
+    if (posix !== undefined) {
+      setPosix(state, posix);
+    } else if (state.posix !== saved.posix) {
+      state.posix = undefined;
+      state.expandAliases = undefined;
+    }
+    if (state.expandAliases !== saved.expandAliases) state.expandAliases = undefined;
     for (const [name, then] of saved.set) state.options.set(name, back(option(state, name), then));
   }
   for (const variable of frame.locals) {
