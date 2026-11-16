@@ -133,7 +133,7 @@ const policy: Policy = {
 `recommended` (`src/recommended.ts`) is a starting point. It allows reading and everyday git, denies force pushes and
 deleting top-level directories, and asks about deleting, network, privilege, code it can't see, writes outside the
 working directory (`..` and `../**`, `~` among them: a path counts as outside unless an absolute `cwd` shows it's inside, so a project under `~` is still the project), writes
-inside a `.git`, and writes to a file named `HEAD` (with `objects` and `refs` beside it, git takes any directory as a
+to the user's Git config, shell startup files and `~/.ssh` (even from a script started in `~`), writes inside a `.git`, and writes to a file named `HEAD` (with `objects` and `refs` beside it, git takes any directory as a
 repository). It asks about git forms that discard uncommitted work or move a ref (`reset --hard`, `branch -f`,
 `checkout -B`, `switch -C`, `switch -m`, `checkout -f`, `checkout -- <path>`, `merge`, `rebase` or `cherry-pick` `--abort` and `--skip`, `stash export --to-ref`, `restore` of the work tree, `fetch --stdin`) and denies those that rewrite or delete remote
 history (`push --force`, `--delete`, `--mirror`, `--prune`). `sed` and `awk` run when their script only edits what they read

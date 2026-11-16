@@ -1083,7 +1083,19 @@ describe('recommended policy, in a project under HOME', () => {
     test(`${what}: ${JSON.stringify(source)} → ${decision}`, () => expectDecision(source, decision, homed));
   for (const [source, decision, what] of nowhereCases)
     test(`${what}: ${JSON.stringify(source)} → ${decision}`, () => expectDecision(source, decision, nowhere));
+  for (const [source, decision, what] of inHomeCases)
+    test(`${what}: ${JSON.stringify(source)} → ${decision}`, () => expectDecision(source, decision, inHome));
 });
+
+/** A script started in HOME itself, where `..` doesn't reach HOME's own files. */
+const inHome: Environment = { cwd: '/home/me', env: { HOME: '/home/me' } };
+const inHomeCases: [source: string, decision: Decision, what: string][] = [
+  ["printf '[core]\\n\\tfsmonitor = touch x\\n' >> ~/.gitconfig; cd repo && git status", 'ask', "the user's git config, from HOME"],
+  ['mkdir -p ~/.config/git && echo x > ~/.config/git/config', 'ask', 'the same, under XDG'],
+  ['echo "touch x" >> .bashrc', 'ask', 'a shell startup file, from HOME'],
+  ['echo key >> .ssh/authorized_keys', 'ask', '~/.ssh, from HOME'],
+  ['echo hi > notes.txt', 'allow', 'another file in HOME'],
+];
 
 /** Files by their real path, with the directories they imply and `dirs`, and symlinks (`links`: path → target). */
 function disk(files: Record<string, string>, links: Record<string, string> = {}, dirs: string[] = []): Environment['fs'] {

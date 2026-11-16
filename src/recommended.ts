@@ -56,6 +56,22 @@ export const recommended: Policy = {
     // be placed against the start (no absolute `cwd`, or `~` with no `HOME`) may be outside it. Home itself isn't
     // named: most projects are in it.
     ask({ writes: ['..', '../**'], reason: 'Writes outside the working directory' }),
+    // The user's own configuration that runs code later, even from a script started in HOME.
+    ask({
+      writes: [
+        '~/.gitconfig',
+        '~/.config/git/**',
+        '~/.ssh/**',
+        '~/.bashrc',
+        '~/.bash_profile',
+        '~/.bash_login',
+        '~/.profile',
+        '~/.zshrc',
+        '~/.zprofile',
+        '~/.zshenv',
+      ],
+      reason: "Changes the user's shell or Git configuration, which runs code later",
+    }),
     ask('uniq|xxd|tree', { outputs: ['**'], reason: 'Writes through an output-file argument' }),
     ask('sed|awk|gawk|mawk|nawk', { outputs: ['**'], reason: 'Writes files its script names, or edits them in place' }),
     ask({
