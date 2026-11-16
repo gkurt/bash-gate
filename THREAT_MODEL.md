@@ -28,7 +28,8 @@ The answers describe the filesystem before the command, which the command may ch
 before it's read, or while it's read (code that runs alongside: the other commands of a pipeline, and with `&`,
 `<(…)` or `coproc` the rest of the script), is unknown, and
 so is the real path of anything under a path where the script may create a symlink. A write may land elsewhere
-through a symlink that's already there, so writes count at their real path too, and without an absolute `cwd` any
+through a symlink that's already there, so writes count at their real path too (a `..` after a symlink leads up from
+where it points, as the kernel has it), and without an absolute `cwd` any
 write makes later reads unknown. The writes counted are those of redirections and specs, plus the work tree (all but
 its `.git`) of a git command that rewrites it. A program that may write files no one can name (no spec, code the
 analysis doesn't follow, or a spec that writes without saying where) makes every later read and real path unknown.
@@ -66,7 +67,8 @@ Out of scope:
   and `refs`. One that may lack them is followed, and so are those above it. The hooks followed are the ones the
   command runs in git 2.55, plus `pre-auto-gc` where older gits collect garbage afterwards; a command the table
   doesn't have may run any. They're read from `core.hooksPath` where that directory is certain, and from the config's
-  own `hook.<name>.command`. The user's and the system's git config are never read, nor husky's
+  own `hook.<name>.command`. A hook is read as the shell its first line names (`sh`, which expands aliases, with
+  none); one in another language is a finding. Package scripts are read as `sh` runs them. The user's and the system's git config are never read, nor husky's
   user files (`~/.config/husky/init.sh`, `~/.huskyrc`). Hooks husky wrote are followed to the project's own hook in
   `.husky`, only when their text is exactly what husky 7, 8 or 9 writes. gh's stored aliases and config are never read: a first word gh
   doesn't know is code unseen (`exec:arbitrary`), and its pager, editor and browser are what they were. Specs describe other known argument behavior, writes included: a

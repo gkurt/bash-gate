@@ -810,6 +810,27 @@ function finishReflog(parsed: Parsed): void {
   if (first?.kind === 'dynamic' || ['expire', 'delete', 'drop'].includes(first?.value ?? '')) parsed.effects.add('fs:delete');
 }
 
+/**
+ * `git checkout` and `git restore` write the paths they're given, which may be outside the working directory when the
+ * repository is larger. A word naming `HEAD` or a commit from it is no path.
+ */
+function finishTreePaths(parsed: Parsed): void {
+  for (const arg of parsed.positionals) if (!/^(?:[A-Z_]*HEAD|@)(?:[~^]\d*)*$/.test(staticValue(arg) ?? '')) parsed.writes.push(arg);
+}
+
+/** `git mv a b` writes `b`, or `b/a` when `b` is a directory, and removes `a`. */
+function finishGitMove(parsed: Parsed): void {
+  const target = parsed.positionals.at(-1);
+  const into = staticValue(target)?.replace(/\/+$/, '');
+  parsed.writes.push(...parsed.positionals);
+  for (const source of parsed.positionals.slice(0, -1)) {
+    const name = staticValue(source)?.replace(/\/+$/, '').split('/').pop();
+    parsed.writes.push(
+      into !== undefined && name ? { kind: 'static', value: `${into}/${name}` } : dynamicArg(`${into ?? '…'}/…`, 'placeholder', false, ''),
+    );
+  }
+}
+
 /** The merge strategies git has: another (`-s evil`) is `git-merge-evil`, found on PATH. */
 const mergeStrategies = new Set(['ort', 'recursive', 'resolve', 'octopus', 'ours', 'subtree']);
 
@@ -1101,13 +1122,19 @@ const git: CommandSpec = {
         '-m --merge',
         '-q --quiet',
       ),
+      finish: finishTreePaths,
     },
     switch: {
       abbreviations: true,
       effects: hooks,
       options: opts('-c= --create=', '-C= --force-create=', '-f --force --discard-changes', '-d --detach', '--orphan=', '-t --track=?'),
     },
-    restore: { abbreviations: true, effects: ['fs:write'], options: opts('-s= --source=', '-S --staged', '-W --worktree', '-p --patch') },
+    restore: {
+      abbreviations: true,
+      effects: ['fs:write'],
+      options: opts('-s= --source=', '-S --staged', '-W --worktree', '-p --patch'),
+      finish: finishTreePaths,
+    },
     reset: {
       abbreviations: true,
       effects: ['fs:write'],
@@ -1295,7 +1322,12 @@ const git: CommandSpec = {
       positionals: 'delete',
       options: opts('-r', '-f --force', '--cached', '-n --dry-run', '-q --quiet'),
     },
-    mv: { abbreviations: true, effects: ['fs:write'], options: opts('-f --force', '-k', '-n --dry-run', '-v --verbose') },
+    mv: {
+      abbreviations: true,
+      effects: ['fs:write'],
+      options: opts('-f --force', '-k', '-n --dry-run', '-v --verbose'),
+      finish: finishGitMove,
+    },
     ...each('apply am', { abbreviations: true, effects: hooks }),
     submodule: { effects: ['network', ...hooks] },
     worktree: {
@@ -2748,10 +2780,28 @@ const copy = (all: boolean): CommandSpec => ({
   finish(parsed) {
     // An option it doesn't know may have taken the next word, so any of them may be the target.
     if (parsed.unknownOptions.length > 0) parsed.writes.push(...parsed.positionals);
-    const targets = parsed.options['--target-directory'] ? [] : parsed.positionals.slice(-1);
-    const sources = parsed.options['--target-directory'] ? parsed.positionals : parsed.positionals.slice(0, -1);
-    parsed.writes.push(...targets, ...(all ? sources : []));
+    const directories = parsed.options['--target-directory']?.filter((value) => value !== true) ?? [];
+    const targets = directories.length > 0 ? [] : parsed.positionals.slice(-1);
+    const sources = directories.length > 0 ? parsed.positionals : parsed.positionals.slice(0, -1);
+    // A hard link (`cp -l`) is the source itself: what's later written to the copy is written to it.
+    parsed.writes.push(...targets, ...(all || parsed.options['--link'] ? sources : []));
     parsed.reads.push(...sources);
+    // Into a directory, each source lands under its own name (`cp -r x/.git .` writes `./.git`), and a directory's
+    // contents (`x/.`) under names only known at run time.
+    if (parsed.options['--no-target-directory']) return;
+    for (const directory of [...directories, ...targets]) {
+      const into = staticValue(directory);
+      for (const source of sources) {
+        const name = staticValue(source)?.replace(/\/+$/, '').split('/').pop();
+        const base = into?.replace(/\/+$/, '');
+        const known = base !== undefined && name !== undefined && name !== '' && name !== '.' && name !== '..';
+        parsed.writes.push(
+          known
+            ? { kind: 'static', value: `${base}/${name}` }
+            : dynamicArg(`${into ?? '…'}/…`, 'placeholder', false, base === undefined ? '' : `${base}/`),
+        );
+      }
+    }
   },
 });
 

@@ -264,6 +264,9 @@ function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: b
       local,
       ...real,
     ].filter((form) => typeof form === 'string');
+    // On a filesystem that ignores case (Windows, macOS), `.GIT/config` is `.git/config`: a rule that may match is
+    // tried on that spelling too. A rule that must match every path isn't.
+    if (!all) forms.push(...forms.map((form) => form.replaceAll(/(^|\/)\.git(?=\/|$)/gi, '$1.git')));
     const matches = patterns.some((pattern) => forms.some((form) => pattern.test(form)));
     const realMatches = patterns.some((pattern) => real.some((form) => pattern.test(form)));
     if (all && (!matches || (realpaths !== undefined && !realMatches))) return 0;

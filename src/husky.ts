@@ -170,20 +170,21 @@ export function huskyHook(
   path: string,
   text: string,
   read: (path: string) => string | undefined,
-): { path: string; text: string } | undefined {
-  let hook = { path, text };
+): { path: string; text: string; husky?: boolean } | undefined {
+  // husky 9's dispatcher runs the project's hook with `sh -e` (`husky`), whatever its first line says.
+  let hook: { path: string; text: string; husky?: boolean } = { path, text };
   if (stubs.has(text.replace(/\n$/, ''))) {
     const dispatcher = read(`${parent(path)}/h`);
     if (dispatcher !== undefined && dispatchers.has(dispatcher)) {
       const own = `${parent(parent(path))}/${path.slice(path.lastIndexOf('/') + 1)}`;
       const ownText = read(own);
       if (ownText === undefined) return undefined;
-      hook = { path: own, text: ownText };
+      hook = { path: own, text: ownText, husky: true };
     }
   }
   const header = sourcesHelper.exec(hook.text);
   if (!header) return hook;
   const helper = read(`${parent(hook.path)}/_/husky.sh`);
   if (helper === undefined || !helpers.has(helper)) return hook;
-  return { path: hook.path, text: `${header[1]}${hook.text.slice(header[0].length)}` };
+  return { ...hook, text: `${header[1]}${hook.text.slice(header[0].length)}` };
 }

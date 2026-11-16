@@ -805,3 +805,55 @@ describe('recommended policy, with a filesystem', () => {
   for (const [source, decision, what] of filesystemCases)
     test(`${what}: ${JSON.stringify(source)} → ${decision}`, () => expectDecision(source, decision, withFiles));
 });
+
+/**
+ * An absolute project with a symlink leading out of it, hooks and scripts in other shells, and a repository far above
+ * a deep directory: where writes land, and what runs.
+ */
+const deep = `/r/${Array.from({ length: 17 }, (_, i) => `d${i}`).join('/')}`;
+const placed: Record<string, string> = {
+  '/w/p/.git/HEAD': 'ref: refs/heads/main\n',
+  '/w/p/.git/config': '[core]\n\tbare = false\n',
+  '/w/p/package.json': JSON.stringify({ scripts: { test: "alias ls='rm -rf /'\nls" } }),
+  '/w/py/.git/HEAD': 'ref: refs/heads/main\n',
+  '/w/py/.git/config': '[core]\n\tbare = false\n',
+  '/w/py/.git/hooks/pre-commit': '#!/usr/bin/env python3\ntrue\n',
+  '/w/sh/.git/HEAD': 'ref: refs/heads/main\n',
+  '/w/sh/.git/config': '[core]\n\tbare = false\n',
+  '/w/sh/.git/hooks/pre-commit': "#!/bin/sh\nalias ls='rm -rf /'\nls\n",
+  '/r/.git/HEAD': 'ref: refs/heads/main\n',
+  '/r/.git/config': '[core]\n\tfsmonitor = rm -rf /\n',
+};
+const linked: Environment = {
+  cwd: '/w/p',
+  env: { HOME: '/home/me' },
+  fs: {
+    readFile: (path) => placed[path] ?? null,
+    realpath: (path) => (path === '/w/p/link' || path.startsWith('/w/p/link/') ? `/etc/sub${path.slice('/w/p/link'.length)}` : path),
+  },
+};
+const linkedCases: [source: string, decision: Decision, what: string, cwd?: string][] = [
+  ['echo x > link/../passwd', 'ask', 'a .. after a symlink, which leads up from where the symlink does'],
+  ['echo x | tee ./link/./../passwd', 'ask', 'the same, through tee'],
+  ['echo hi > .GIT/hooks/pre-commit', 'ask', '.git spelled in another case, the same directory where case is ignored'],
+  ['echo x > .Git/config', 'ask', 'the same, for the config'],
+  ['cp -r /tmp/evil/.git .', 'ask', 'a .git copied into the project under its own name'],
+  ['cp -r /tmp/evil/. .', 'ask', "a directory's contents copied into the project, under names only known at run time"],
+  ['cp -t . /tmp/evil/.git', 'ask', 'the same, with -t'],
+  ['cp -l /home/me/.bashrc notes', 'ask', 'a hard link, which is the file outside'],
+  ['cp a b && cp -r src dist', 'allow', 'copies inside the project'],
+  ['git commit -m x', 'ask', "a hook in another language, which the analysis doesn't read", '/w/py'],
+  ['git commit -m x', 'deny', 'a sh hook, which expands aliases', '/w/sh'],
+  ['npm test', 'deny', 'a package script, which sh runs with aliases expanded'],
+  ['git status', 'ask', 'a repository further up than the analysis looks', deep],
+  ['git mv x ../.bashrc', 'ask', 'git mv writing outside the working directory'],
+  ['git restore ../.bashrc', 'ask', 'git restore writing outside it'],
+  ['git checkout -- ../.bashrc', 'ask', 'git checkout writing outside it'],
+  ['git checkout main', 'allow', 'git checkout of a branch'],
+  ['git checkout HEAD -- a', 'allow', 'git checkout of a file inside'],
+];
+
+describe('recommended policy, with symlinks, hooks and a deep repository', () => {
+  for (const [source, decision, what, cwd] of linkedCases)
+    test(`${what}: ${JSON.stringify(source)} → ${decision}`, () => expectDecision(source, decision, { ...linked, cwd: cwd ?? linked.cwd }));
+});

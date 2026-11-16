@@ -515,10 +515,12 @@ class Walker {
     const sets = this.recorded.flatMap((written) => (kind === 'links' ? [written.contents, written.links] : [written.contents]));
     for (const arg of writes) {
       const path = arg.kind === 'static' ? resolvePath(call.cwd, arg.value, call.home) : undefined;
-      // Through a symlink that's already there, a write lands somewhere else.
-      const real = path?.startsWith('/') ? this.files.physical(path) : undefined;
+      // Through a symlink that's already there, a write lands somewhere else, and so does a `..` after one.
+      const opened = arg.kind === 'static' ? this.openedPath(call.cwd, arg.value, call.home) : undefined;
+      const real = opened?.startsWith('/') ? this.files.physical(opened) : undefined;
       for (const changes of sets) {
         changes.add(path);
+        changes.add(opened);
         changes.add(real);
       }
     }
@@ -637,9 +639,14 @@ class Walker {
     if (!call.cwd?.startsWith('/')) return realpaths;
     for (const arg of args) {
       const resolved = arg.kind === 'static' ? resolvePath(call.cwd, arg.value, call.home) : undefined;
-      if (!resolved?.startsWith('/') || Object.hasOwn(realpaths, resolved)) continue;
+      if (!resolved?.startsWith('/')) continue;
+      // A `..` after a symlink leads up from where the symlink does (`link/../x`), not back to where it is.
+      const opened = this.openedPath(call.cwd, (arg as Extract<Arg, { kind: 'static' }>).value, call.home);
       // A symlink project code may have put on the way is no more than what it could write itself.
-      realpaths[resolved] = this.changed(resolved, ctx, 'links') === true ? null : (this.files!.physical(resolved) ?? null);
+      const unsure = opened === undefined || this.changed(resolved, ctx, 'links') === true || this.changed(opened, ctx, 'links') === true;
+      const real = unsure ? null : (this.files!.physical(opened) ?? null);
+      // Two words resolving alike may lead to different places: then neither is known.
+      realpaths[resolved] = Object.hasOwn(realpaths, resolved) && realpaths[resolved] !== real ? null : real;
     }
     return realpaths;
   }
@@ -2381,7 +2388,8 @@ class Walker {
       for (const config of parsed.configs) this.gitConfigEntry(config, state, ctx, call);
       followed = this.gitProject(cwd, parsed, state, ctx, call);
     } else if (scripts) {
-      for (const [name, script] of scripts.run) this.code(script, childState(state, cwd), ctx, call, `${program} ${name}`);
+      // Run with `sh -c`, which expands aliases.
+      for (const [name, script] of scripts.run) this.code(script, shellState(state, cwd, 'sh'), ctx, call, `${program} ${name}`);
       followed = scripts.followed;
     } else if (program === 'ssh') {
       for (const value of parsed.options['-o'] ?? []) {
@@ -2656,7 +2664,14 @@ class Walker {
         const script = readFile(path);
         // husky's stub runs the project's hook in `.husky`, which is what's walked.
         const hook = script === undefined ? undefined : huskyHook(path, script, readFile);
-        if (hook) this.code(hook.text, childState(state, workTree ?? root), ctx, call, `git hook ${name}`);
+        if (!hook) continue;
+        // Git runs it with what its first line names, and with `sh` when there's none; husky's with `sh`.
+        const shell = hook.husky ? 'sh' : interpreter(hook.text);
+        if (shell === undefined) {
+          this.finding(ctx, 'loads-code', `git hook ${name} runs with a program the analysis doesn't read`, call.span);
+          continue;
+        }
+        this.code(hook.text, shellState(state, workTree ?? root, shell), ctx, call, `git hook ${name}`);
       }
     };
 
@@ -2698,6 +2713,7 @@ class Walker {
       if (!parent || parent === dir) return followed.size > 0;
       dir = parent;
     }
+    this.finding(ctx, 'exec-config', 'The repository git finds may be further up than the analysis looks', call.span);
     return false;
   }
 
@@ -3599,6 +3615,30 @@ function exportAll(state: State, name: string, exported: Set<string>, maybe: Set
 /** `undefined` when either may be: on when either is. */
 function either(a: boolean | undefined, b: boolean | undefined): boolean | undefined {
   return a === true || b === true ? true : a === false && b === false ? false : undefined;
+}
+
+/**
+ * The shell a script's first line names (`#!/bin/sh`, `#!/usr/bin/env bash`): `sh` with none, as git and the kernel
+ * fall back to, and `undefined` for another program.
+ */
+function interpreter(text: string): 'sh' | 'bash' | undefined {
+  const line = /^#!\s*(\S+)(.*)/.exec(text);
+  if (!line) return 'sh';
+  const words = line[2]!.trim().split(/\s+/);
+  const named = line[1]!.split('/').pop()!;
+  const program = named === 'env' ? (words.find((word) => !word.startsWith('-')) ?? '') : named;
+  if (program === 'bash') return 'bash';
+  return ['sh', 'dash', 'ash', 'ksh'].includes(program) ? 'sh' : undefined;
+}
+
+/** A shell started to run a script: `sh` (dash, or Bash in POSIX mode) expands aliases. */
+function shellState(state: State, cwd: string | undefined, shell: 'sh' | 'bash'): State {
+  const child = childState(state, cwd);
+  if (shell === 'sh') {
+    child.expandAliases = true;
+    child.posix = true;
+  }
+  return child;
 }
 
 /**
