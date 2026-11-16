@@ -197,6 +197,9 @@ core:changelogs:
   - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Writes to the user's configuration are caught however they're spelled\n\n- `~` globs also match a write's real path and where HOME really is (`Analysis.realhome`): a symlink to `~/.bashrc`, or\n  HOME given by a path that leads to the start.\n- A rule that may match is tried on the path in lower case too: `~/.BASHRC`, `~/.SSH/…` on a filesystem that ignores case.\n- A `cwd` that isn't a POSIX absolute path (`C:/w/p`, `p`) places nothing, as no `cwd` doesn't.\n- `cp`/`mv` with `-b` write the backup too, under `-S`'s suffix, or a name only known at run time without one.\n- `recommended` asks about `~/.ssh` and `~/.config/git` themselves (a whole directory copied in), `~/.config`,\n  `~/.bash_aliases`, `~/.bash_logout`, `~/.zlogin`, `~/.zlogout`, `~/.local/bin`, `~/.npmrc`, `~/.bunfig.toml` and\n  cargo's user config.\n"
     filename: policy-round-32.md
     v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### The user's configuration is matched by HOME as it started, by `~/bin`, and by Windows short names\n\n- `~` globs also match from HOME as the script started (`Analysis.home`): `declare -a HOME`, which leaves HOME as it\n  was but unknown to the analysis, no longer hides `~/.bashrc`.\n- `recommended` asks about `~/bin`, which Ubuntu's `.profile` puts on PATH.\n- A path with a Windows 8.3 short name (`BASHRC~1`, `SSH~1/…`) may be any file it shortens: path rules may match it.\n"
+    filename: policy-round-40.md
+    v: 0.0.0
   - content: "---\npackages:\n  bash-gate:\n    type: minor\n---\n\n### `recommended` in a project under HOME, an `outputs` rule field, and more destructive git forms\n\n- A project under `HOME`, as most are, is judged as one anywhere else: `recommended` no longer names `~` among the\n  places outside the working directory, since `..` from an absolute `cwd` covers it, and a path that can't be placed\n  may be outside. `~/.bashrc` still asks.\n- Rules take `outputs`: globs for the files an invocation's own arguments name (`sort -o`, `sed`'s `w`), without its\n  redirections. `Invocation.outputs` holds them. `recommended` uses it for `sed`, `awk`, `uniq`, `xxd` and `tree`, so\n  `sed -n 1,5p a > out.txt` runs.\n- Deny and ask rules match `head` in any case as `HEAD`, and `GIT~1` as `.git`.\n- `recommended` asks about `git checkout -B`, `switch -C`, `checkout -f`, `switch --discard-changes`, `checkout --ours`\n  or `--theirs`, paths checked out from a commit, `restore` of the work tree, and `fetch --prune` into local branches or\n  tags; it denies `git push --prune`.\n- `GIT_TRACE2*` and other git variables with a digit are sensitive. `cp -s`, and copies that keep symlinks (`-P`, `-d`,\n  `-a`, `-r` without `-L`), count their sources as written. `cargo fmt -- file` rewrites that file.\n"
     filename: policy-round-7.md
     v: 0.0.0
@@ -241,6 +244,9 @@ core:changelogs:
     v: 0.0.0
   - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Writes to `/dev/stdin` and `/dev/fd/N`\n\nLinux opens `/dev/stdin` and `/dev/fd/N` again as the file that descriptor is on, which may be one opened for reading:\n`{ … >>/dev/stdin; } < .git/config` writes `.git/config`. A write redirection to either is to a file only known at\nrun time, and so is one to `/dev/stdout` or `/dev/stderr` in code that may open those for reading.\n"
     filename: reopened-descriptors.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: minor\n---\n\n### `secrets:read`: reading the environment, credentials files and secret variables\n\nA new effect, which `recommended` asks about, for what reads a likely secret:\n\n- the environment as a whole: `printenv`, `env` with no command, `export` or `export -p`, `declare -p`, `set` alone,\n  `ps e`;\n- a file that holds credentials, read, sourced, redirected or matched by a glob: `.env` and its variants (but\n  templates like `.env.example`), `.envrc`, SSH private keys, `*.pem`, `*.key`, `.netrc`, `.npmrc`,\n  `~/.aws/credentials`, `~/.kube/config`, gcloud and Azure credentials, `*.tfstate`, `/proc/*/environ`, in any case;\n- a variable named like one, expanded in a command's words, redirections or here-documents (`echo $GITHUB_TOKEN`,\n  `curl -H \"Authorization: $API_KEY\"`), but not one only tested with `test`;\n- what kubectl, helm and terraform print of their own (below).\n\n### Specs for kubectl, helm and terraform\n\n- kubectl and helm read the cluster and chart repositories their config names as `network:read`, change them as\n  `network`, and run commands in containers as `exec:remote` (`kubectl exec`, `run`, `debug`, `cp`). A word they\n  don't know runs a plugin (`exec:arbitrary`); so do an editor (`kubectl edit`), a post-renderer, a getter plugin's\n  scheme and kustomize's plugins and helm. A kubeconfig of their own may run a credential plugin (`exec:file`), and a\n  server, kubeconfig or chart URL of their own is `network`. A `--dry-run` only reads.\n- Printing a Secret (`kubectl get secret -o yaml`, `config view --raw`, `create token`, `helm get values`, `helm env`)\n  is `secrets:read`. Changing the user's kubeconfig or helm configuration (`kubectl config use-context`, `helm repo\n  add`, `helm registry login`) writes it, in HOME unless an option names another.\n- terraform: `-chdir`, `-version` and `-help` before the command, options with one dash or two. `init`, `validate`,\n  `plan` and `fmt` run the project's providers as project code (`exec:project`) and only read; `apply`, `destroy`,\n  `import`, `test` and state changes are `network`; `output -json`, `output NAME`, `show -json`, `state pull`,\n  `state show` and `console` are `secrets:read`. `TF_CLI_ARGS`, `KUBECONFIG`, `HELM_*` and the like are sensitive\n  variables.\n- `recommended` allows what only reads, plans or renders, and asks about the rest.\n"
+    filename: secrets-and-cloud-specs.md
     v: 0.0.0
   - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Cargo, rustc, bun and less variables are sensitive\n\n`CARGO_*` (a runner, a rustc wrapper, `CARGO_HOME`'s config, a target directory), `RUSTC`, `RUSTC_WRAPPER`,\n`RUSTC_WORKSPACE_WRAPPER`, `RUSTDOC`, `RUSTFLAGS`, `RUSTDOCFLAGS`, `RUSTUP_TOOLCHAIN`, `RUSTUP_HOME`, `BUN_OPTIONS`\n(`--preload`), `LESS` (a `+!` command git's pager runs) and `LESSKEY*` make the programs they're given to run code or\nwrite elsewhere, as their options do.\n"
     filename: sensitive-build-variables.md
@@ -433,6 +439,7 @@ core:packages:
       - parse-disagreements.md
       - policy-round-16.md
       - policy-round-32.md
+      - policy-round-40.md
       - policy-round-7.md
       - posix-backquote-aliases.md
       - posix-mode-state.md
@@ -448,6 +455,7 @@ core:packages:
       - recommended-readers.md
       - redirection-target-join.md
       - reopened-descriptors.md
+      - secrets-and-cloud-specs.md
       - sensitive-build-variables.md
       - set-options.md
       - sh-code-and-env-split.md
