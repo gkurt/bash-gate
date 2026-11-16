@@ -818,6 +818,28 @@ function finishTreePaths(parsed: Parsed): void {
   for (const arg of parsed.positionals) if (!/^(?:[A-Z_]*HEAD|@)(?:[~^]\d*)*$/.test(staticValue(arg) ?? '')) parsed.writes.push(arg);
 }
 
+const force = (parsed: Parsed) => (parsed.options['--force'] ??= []).push(true);
+
+/**
+ * `git checkout` forces what it overwrites: `-B` resets a branch that's there, and `--ours`, `--theirs` or paths after
+ * a commit (`git checkout HEAD~3 -- .`) overwrite uncommitted changes. One word alone may be a branch or a path.
+ */
+function finishCheckout(parsed: Parsed): void {
+  finishTreePaths(parsed);
+  if (parsed.options['-B'] || parsed.options['--ours'] || parsed.options['--theirs'] || parsed.positionals.length > 1) force(parsed);
+}
+
+/** `git switch -C` resets a branch that's there. */
+function finishSwitch(parsed: Parsed): void {
+  if (parsed.options['--force-create']) force(parsed);
+}
+
+/** `git restore` writes the work tree unless only `--staged` says where. */
+function finishRestore(parsed: Parsed): void {
+  finishTreePaths(parsed);
+  if (!parsed.options['--staged']) (parsed.options['--worktree'] ??= []).push(true);
+}
+
 /** `git mv a b` writes `b`, or `b/a` when `b` is a directory, and removes `a`. */
 function finishGitMove(parsed: Parsed): void {
   const target = parsed.positionals.at(-1);
@@ -855,6 +877,11 @@ function finishRemoteRead(parsed: Parsed): void {
     const value = staticValue(refspec);
     if (value === undefined) parsed.maybeOptions = true;
     else if (value.startsWith('+')) (parsed.options['--force'] ??= []).push(refspec);
+    // With --prune, a refspec into local branches or tags (`refs/heads/*:refs/heads/*`) deletes the ones the remote
+    // doesn't have, as --prune-tags does for tags.
+    const destination = value?.split(':')[1];
+    if (parsed.options['--prune'] && destination !== undefined && !destination.startsWith('refs/remotes/'))
+      (parsed.options['--force'] ??= []).push(refspec);
   }
   const named = repositories.every((arg) => arg.kind === 'static' && remoteName.test(arg.value));
   const elsewhere =
@@ -1122,18 +1149,19 @@ const git: CommandSpec = {
         '-m --merge',
         '-q --quiet',
       ),
-      finish: finishTreePaths,
+      finish: finishCheckout,
     },
     switch: {
       abbreviations: true,
       effects: hooks,
       options: opts('-c= --create=', '-C= --force-create=', '-f --force --discard-changes', '-d --detach', '--orphan=', '-t --track=?'),
+      finish: finishSwitch,
     },
     restore: {
       abbreviations: true,
       effects: ['fs:write'],
       options: opts('-s= --source=', '-S --staged', '-W --worktree', '-p --patch'),
-      finish: finishTreePaths,
+      finish: finishRestore,
     },
     reset: {
       abbreviations: true,
@@ -2783,8 +2811,11 @@ const copy = (all: boolean): CommandSpec => ({
     const directories = parsed.options['--target-directory']?.filter((value) => value !== true) ?? [];
     const targets = directories.length > 0 ? [] : parsed.positionals.slice(-1);
     const sources = directories.length > 0 ? parsed.positionals : parsed.positionals.slice(0, -1);
-    // A hard link (`cp -l`) is the source itself: what's later written to the copy is written to it.
-    parsed.writes.push(...targets, ...(all || parsed.options['--link'] ? sources : []));
+    // A hard link (`cp -l`) is the source itself, and a symbolic one (`-s`) leads to it: what's later written to the
+    // copy is written to it. So is what a symlink copied as one (`-P`, `-d`, `-a`, or `-r` without `-L`) leads to.
+    const links = ['--link', '--symbolic-link', '--no-dereference', '-d', '--archive'].some((name) => parsed.options[name]);
+    const keeps = links || (parsed.options['--recursive'] && !parsed.options['--dereference']);
+    parsed.writes.push(...targets, ...(all || keeps ? sources : []));
     parsed.reads.push(...sources);
     // Into a directory, each source lands under its own name (`cp -r x/.git .` writes `./.git`), and a directory's
     // contents (`x/.`) under names only known at run time.
@@ -3657,7 +3688,9 @@ const programs: Record<string, CommandSpec> = {
         'build|b check|c test|t run|r bench doc|d rustc rustdoc clippy metadata tree pkgid locate-project verify-project read-manifest report config version help generate-lockfile',
         { options: cargoOptions },
       ),
-      ...each('fix fmt', { options: cargoOptions, effects: ['fs:write'] }),
+      fix: { options: cargoOptions, effects: ['fs:write'] },
+      // The words after `--` go to rustfmt: files it rewrites in place, wherever they are.
+      fmt: { options: cargoOptions, effects: ['fs:write'], finish: (parsed) => parsed.writes.push(...parsed.positionals) },
       clean: { options: cargoOptions, effects: ['fs:delete'] },
       ...each('new init', { options: cargoNew, effects: ['fs:write'], positionals: 'write' }),
       ...each('add remove|rm update fetch vendor package', { options: cargoOptions, effects: ['network', 'fs:write'] }),

@@ -12,22 +12,27 @@ const scripts = {
   format: 'prettier --write .',
   dev: 'vite',
 };
-const files: Record<string, string> = {
-  '/repo/package.json': JSON.stringify({ name: 'app', scripts }),
-  '/repo/.git/HEAD': 'ref: refs/heads/main\n',
-  '/repo/.git/config': '[core]\n\trepositoryformatversion = 0\n\tbare = false\n[remote "origin"]\n\turl = git@example.com:a/app.git\n',
-  '/repo/Cargo.toml': '[package]\nname = "app"\n',
-  '/repo/src/index.ts': 'export {};\n',
-  '/repo/README.md': '# app\n',
-};
-export const everydayEnvironment = {
-  cwd: '/repo',
-  env: { HOME: '/home/me', PATH: '/usr/bin:/bin' },
-  fs: {
-    readFile: (path: string) => files[path] ?? null,
-    realpath: (path: string) => (path === '/repo' || path.startsWith('/repo/') || path === '/home/me' ? path : null),
-  },
-};
+/** The project at `root`, with `HOME` at `/home/me`: beside it (`/repo`), or around it (`/home/me/repo`), as most are. */
+function environmentAt(root: string) {
+  const files: Record<string, string> = {
+    [`${root}/package.json`]: JSON.stringify({ name: 'app', scripts }),
+    [`${root}/.git/HEAD`]: 'ref: refs/heads/main\n',
+    [`${root}/.git/config`]:
+      '[core]\n\trepositoryformatversion = 0\n\tbare = false\n[remote "origin"]\n\turl = git@example.com:a/app.git\n',
+    [`${root}/Cargo.toml`]: '[package]\nname = "app"\n',
+    [`${root}/src/index.ts`]: 'export {};\n',
+    [`${root}/README.md`]: '# app\n',
+  };
+  return {
+    cwd: root,
+    env: { HOME: '/home/me', PATH: '/usr/bin:/bin' },
+    fs: {
+      readFile: (path: string) => files[path] ?? null,
+      realpath: (path: string) => (path === root || path.startsWith(`${root}/`) || path === '/home/me' ? path : null),
+    },
+  };
+}
+export const everydayEnvironment = environmentAt('/repo');
 
 export const everyday: [string, Decision][] = [
   // Reading
@@ -99,6 +104,15 @@ describe('everyday commands keep their verdicts', () => {
   for (const [source, decision] of everyday) {
     test(source, () => {
       expect(check(source, recommended, everydayEnvironment).decision).toBe(decision);
+    });
+  }
+});
+
+describe('everyday commands keep their verdicts in a project under HOME', () => {
+  const underHome = environmentAt('/home/me/repo');
+  for (const [source, decision] of everyday) {
+    test(source, () => {
+      expect(check(source, recommended, underHome).decision).toBe(decision);
     });
   }
 });

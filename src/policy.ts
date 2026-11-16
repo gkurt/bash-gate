@@ -30,6 +30,8 @@ export interface Rule {
   args?: string[];
   /** Like `args`, for the files it writes, redirections included. */
   writes?: string[];
+  /** Like `writes`, for the files its own arguments name: not its redirections, which the shell opens. */
+  outputs?: string[];
   /** Deny and ask: it has any of these effects. Allow: it has no others. */
   effects?: Effect[];
   reason?: string;
@@ -176,6 +178,7 @@ export function matchRule(rule: Rule, invocation: Invocation, start: Start = {})
   if (rule.options && result > 0) and(matchOptions(rule.options, invocation, all));
   if (rule.args && result > 0) and(matchPaths(rule.args, invocation.positionals, invocation, all, start));
   if (rule.writes && result > 0) and(matchPaths(rule.writes, invocation.writes, invocation, all, start));
+  if (rule.outputs && result > 0) and(matchPaths(rule.outputs, invocation.outputs, invocation, all, start));
   if (rule.effects && result > 0) and(matchEffects(rule.effects, invocation, all));
   return result;
 }
@@ -266,7 +269,8 @@ function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: b
     ].filter((form) => typeof form === 'string');
     // On a filesystem that ignores case (Windows, macOS), `.GIT/config` is `.git/config`: a rule that may match is
     // tried on that spelling too. A rule that must match every path isn't.
-    if (!all) forms.push(...forms.map((form) => form.replaceAll(/(^|\/)\.git(?=\/|$)/gi, '$1.git')));
+    // Windows also names `.git` by its short name, `GIT~1`.
+    if (!all) forms.push(...forms.map(foldCase));
     const matches = patterns.some((pattern) => forms.some((form) => pattern.test(form)));
     const realMatches = patterns.some((pattern) => real.some((form) => pattern.test(form)));
     if (all && (!matches || (realpaths !== undefined && !realMatches))) return 0;
@@ -280,6 +284,11 @@ function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: b
     if (!all && ((outside && absolute) || (unplaced && relative))) result = 1;
   }
   return result;
+}
+
+/** `path` with the names git looks for spelled as git does: `.GIT`, `git~1` and `Head` are `.git` and `HEAD`. */
+function foldCase(path: string): string {
+  return path.replaceAll(/(^|\/)(?:\.git|git~\d+)(?=\/|$)/gi, '$1.git').replaceAll(/(^|\/)head(?=\/|$)/gi, '$1HEAD');
 }
 
 /** `**` crosses directories, `*` and `?` don't; everything else is literal. */
@@ -306,6 +315,7 @@ function describe(rule: Rule): string {
   if (rule.options) parts.push(rule.options.join('|'));
   if (rule.args) parts.push(`args ${rule.args.join('|')}`);
   if (rule.writes) parts.push(`writes ${rule.writes.join('|')}`);
+  if (rule.outputs) parts.push(`outputs ${rule.outputs.join('|')}`);
   if (rule.effects) parts.push(`effects ${rule.effects.join('|')}`);
   return `\`${parts.join(' ')}\``;
 }

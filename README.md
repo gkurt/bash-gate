@@ -98,14 +98,15 @@ const policy: Policy = {
     deny('git push', { options: ['-f', '--force-with-lease'], reason: 'No force pushes' }),
     deny('rm', { options: ['-r'], args: ['/', '/*', '~', '~/*'] }),
     ask({ effects: ['network', 'exec:arbitrary'] }),
-    ask({ writes: ['..', '../**', '~/**'] }),
+    ask({ writes: ['..', '../**'] }),
   ],
 };
 ```
 
 - `command`: the program, then subcommands, alternatives after `|`, and `*` for any.
 - `options`: any of these options is given, spelled however the spec allows.
-- `args` and `writes`: globs matched against paths as written, as resolved against the tracked working directory, and
+- `args`, `writes` and `outputs`: globs matched against paths (`writes`: every file it writes, its redirections included;
+  `outputs`: only those its own arguments name, as `sort -o x` does), as written, as resolved against the tracked working directory, and
   as their real path when the analysis had a filesystem (see below). Deny and ask rules match any path form, and may
   match a path whose real path isn't known. Allow rules must match a known path form and, with a filesystem, the real
   path, so they never match a path whose real path can't be known. They don't match a path as written, since after a
@@ -114,7 +115,8 @@ const policy: Policy = {
   in `env`), `~` globs match absolute paths under it, and the other way round. Another user's home (`~root`) may be
   anywhere. Relative globs (`src/**`, `../**`) also match paths from where the script starts, when `cwd` was given as
   an absolute path (and from its real path, with a filesystem). Without it, an absolute path may be anywhere against
-  the start, so it may match a deny or ask rule's relative glob.
+  the start, so it may match a deny or ask rule's relative glob. Deny and ask rules also match `.git` and `HEAD` in any
+  case, and `.git`'s Windows short name `GIT~1`, as a filesystem that ignores case takes them.
 - `effects`: `fs:read`, `fs:write`, `fs:delete`, `network`, `network:read`, `privilege`, `exec:arbitrary`,
   `exec:project`, `exec:file`, `exec:remote`, `shell-state`. `network:read` only reads, from a host already set up:
   `git fetch` and `git ls-remote` from a remote given by its name (or none), and the `gh` commands that look
@@ -129,9 +131,11 @@ const policy: Policy = {
 
 `recommended` (`src/recommended.ts`) is a starting point. It allows reading and everyday git, denies force pushes and
 deleting top-level directories, and asks about deleting, network, privilege, code it can't see, writes outside the
-working directory (`..`, `../**`, `~/**`: an absolute path counts as outside unless `cwd` shows it's inside), writes
+working directory (`..` and `../**`, `~` among them: a path counts as outside unless an absolute `cwd` shows it's inside, so a project under `~` is still the project), writes
 inside a `.git`, and writes to a file named `HEAD` (with `objects` and `refs` beside it, git takes any directory as a
-repository). `sed` and `awk` run when their script only edits what they read
+repository). It asks about git forms that discard uncommitted work or move a ref (`reset --hard`, `branch -f`,
+`checkout -B`, `switch -C`, `checkout -f`, `restore` of the work tree) and denies those that rewrite or delete remote
+history (`push --force`, `--delete`, `--mirror`, `--prune`). `sed` and `awk` run when their script only edits what they read
 (`sed -n '1,40p'`, `awk '{print $1}'`): one that runs a command, writes a file, edits in place or isn't followed asks.
 Of the network, `network:read` runs: `git fetch`, `git ls-remote`, and gh's commands that look at pull requests,
 issues, runs, releases, repositories and search. A fetch that forces or deletes local refs asks, and so do `git pull`,

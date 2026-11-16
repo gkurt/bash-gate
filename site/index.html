@@ -161,7 +161,7 @@ const policy: Policy = {
     deny('git push', { options: ['-f', '--force-with-lease'], reason: 'No force pushes' }),
     deny('rm', { options: ['-r'], args: ['/', '/*', '~', '~/*'] }),
     ask({ effects: ['network', 'exec:arbitrary'] }),
-    ask({ writes: ['..', '../**', '~/**'] }),
+    ask({ writes: ['..', '../**'] }),
   ],
 };</pre>
       </section>

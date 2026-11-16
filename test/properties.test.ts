@@ -72,6 +72,7 @@ const invocation: fc.Arbitrary<Invocation> = fc
     effects: r.effects,
     reads: [],
     writes: r.writes,
+    outputs: r.writes.slice(0, 1),
     cwd: r.cwd,
     via: [],
     nesting: [],

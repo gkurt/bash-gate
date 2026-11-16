@@ -22,12 +22,14 @@ export const recommended: Policy = {
     allow('git add|commit|switch|checkout|restore|stash|merge|rebase|cherry-pick|revert|branch|tag|mv|rm|fetch|pull|push|remote|config'),
     allow('git worktree list'),
     deny('git push', {
-      options: ['--force', '--force-with-lease', '--force-if-includes', '--mirror', '--delete'],
+      options: ['--force', '--force-with-lease', '--force-if-includes', '--mirror', '--delete', '--prune'],
       reason: 'Rewrites or deletes remote history',
     }),
     ask('git reset', { options: ['--hard', '--keep', '--merge'], reason: 'Discards uncommitted work' }),
     ask('git clean', { options: ['--force'], reason: 'Deletes untracked files' }),
     ask('git branch|tag', { options: ['--delete', '--force'], reason: 'Deletes or moves a ref' }),
+    // `checkout -B` and `switch -C` reset a branch that's there; `-f`, `--ours`, `--theirs` and paths overwrite changes.
+    ask('git checkout|switch|restore', { options: ['--force', '--worktree'], reason: 'Discards uncommitted work or moves a ref' }),
     ask('git stash drop|clear', { reason: 'Deletes stashed work' }),
     ask('git fetch', { options: ['--force', '--update-head-ok', '--refmap', '--prune-tags'], reason: 'Deletes or moves a local ref' }),
     // Package scripts, tests and builds: project code, as git hooks are, with the dependencies cargo and bun fetch as
@@ -47,10 +49,12 @@ export const recommended: Policy = {
     }),
     deny('rm', { options: ['--no-preserve-root'], reason: 'Lets rm delete /' }),
     ask({ effects: ['exec:arbitrary', 'exec:file', 'exec:remote', 'privilege', 'network', 'fs:delete'] }),
-    // Relative globs match from where the script starts: an absolute path may be outside it when that isn't given.
-    ask({ writes: ['..', '../**', '~', '~/**'], reason: 'Writes outside the working directory' }),
-    ask('uniq|xxd|tree', { writes: ['**'], reason: 'Writes through an output-file argument' }),
-    ask('sed|awk|gawk|mawk|nawk', { writes: ['**'], reason: 'Writes files its script names, or edits them in place' }),
+    // Relative globs match from where the script starts, so `..` is anything outside it, `~` included. A path that can't
+    // be placed against the start (no absolute `cwd`, or `~` with no `HOME`) may be outside it. Home itself isn't
+    // named: most projects are in it.
+    ask({ writes: ['..', '../**'], reason: 'Writes outside the working directory' }),
+    ask('uniq|xxd|tree', { outputs: ['**'], reason: 'Writes through an output-file argument' }),
+    ask('sed|awk|gawk|mawk|nawk', { outputs: ['**'], reason: 'Writes files its script names, or edits them in place' }),
     ask({
       writes: ['.git', '**/.git', '.git/**', '**/.git/**'],
       reason: 'Changes Git configuration or hooks that can run code later',

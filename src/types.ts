@@ -61,6 +61,8 @@ export interface Invocation {
   effects: Effect[];
   reads: Arg[];
   writes: Arg[];
+  /** Of `writes`, those its own arguments name (`sort -o`, `sed`'s `w`), not its redirections'. */
+  outputs: Arg[];
   /** The working directory it runs in, relative to where the script starts unless that was given; `undefined` when unknown. */
   cwd: string | undefined;
   /** The directory `~` stands for where it runs: `$HOME`, when that's known and absolute. */

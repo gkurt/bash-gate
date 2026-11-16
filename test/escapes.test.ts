@@ -777,6 +777,27 @@ const startedCases: [source: string, decision: Decision, what: string][] = [
   ['RIPGREP_CONFIG_PATH=/tmp/x rg foo', 'ask', 'a ripgrep config, which may name a program to run'],
   ['sort -T /home/me/t big', 'ask', 'sort writing temporary files outside the project'],
   ['tree -Lo 2 /home/me/x', 'ask', 'tree reading each letter of a cluster on its own'],
+  // The policy.
+  ['GIT_TRACE2_EVENT=/home/me/.bashrc git status', 'ask', 'a git variable with a digit in its name, which writes a trace'],
+  ['mkdir -p r/objects r/refs && echo "ref: refs/heads/main" > r/head', 'ask', 'head in any case, which is HEAD where case is ignored'],
+  ['echo x > GIT~1/hooks/pre-commit', 'ask', "Windows's short name for .git"],
+  ['cp -s /home/me/.bashrc l && echo x >> l', 'ask', 'a symbolic link cp makes, written through'],
+  ['cp -a /proc/self/root r && echo x > r/home/me/.bashrc', 'ask', 'a symlink cp copies as one, written through'],
+  ['cp -r /home/me d', 'ask', 'a directory copied with its symlinks kept'],
+  ['cargo fmt -- /home/me/x.rs', 'ask', 'cargo fmt rewriting a file outside the project'],
+  ["git fetch --prune origin 'refs/heads/*:refs/heads/*'", 'ask', 'fetch --prune into local branches, which deletes them'],
+  ['git fetch --prune origin', 'allow', 'fetch --prune of remote-tracking branches'],
+  ['git checkout -B main HEAD~5', 'ask', 'checkout -B, which resets a branch that is there'],
+  ['git switch -C main HEAD~5', 'ask', 'switch -C, the same'],
+  ['git checkout -f other', 'ask', 'checkout -f, which throws away local changes'],
+  ['git switch --discard-changes other', 'ask', 'switch --discard-changes, the same'],
+  ['git checkout HEAD~3 -- .', 'ask', 'checkout of paths from a commit, over local changes'],
+  ['git checkout --theirs .', 'ask', 'checkout --theirs, the same'],
+  ['git restore .', 'ask', 'restore, which overwrites local changes'],
+  ['git restore --staged src/a.ts', 'allow', 'restore of the index only'],
+  ['git push --prune origin', 'deny', 'push --prune, which deletes remote branches'],
+  ["sed -n '1,5p' a > out.txt && sort a | uniq > out2.txt", 'allow', 'a redirection, which is no output-file argument'],
+  ['sort a | uniq - /home/me/x', 'ask', 'uniq writing its output-file argument'],
   ['cd ~ && pushd /repo && pushd +1 && echo x >> .bashrc', 'ask', 'pushd +N, which rotates the directory stack'],
   ['rm -rf /repo', 'deny', 'deleting the project by its absolute path'],
   ['cd .. && rm -rf repo', 'deny', 'deleting the project from above'],
@@ -850,10 +871,35 @@ const linkedCases: [source: string, decision: Decision, what: string, cwd?: stri
   ['git restore ../.bashrc', 'ask', 'git restore writing outside it'],
   ['git checkout -- ../.bashrc', 'ask', 'git checkout writing outside it'],
   ['git checkout main', 'allow', 'git checkout of a branch'],
-  ['git checkout HEAD -- a', 'allow', 'git checkout of a file inside'],
+  ['git checkout HEAD -- a', 'ask', 'git checkout of a file, over its local changes'],
 ];
 
 describe('recommended policy, with symlinks, hooks and a deep repository', () => {
   for (const [source, decision, what, cwd] of linkedCases)
     test(`${what}: ${JSON.stringify(source)} → ${decision}`, () => expectDecision(source, decision, { ...linked, cwd: cwd ?? linked.cwd }));
+});
+
+/** A project under HOME, as most are: writes in it are the project's, writes beside it in HOME still ask. */
+const homed: Environment = { cwd: '/home/me/repo', env: { HOME: '/home/me' } };
+const homedCases: [source: string, decision: Decision, what: string][] = [
+  ['echo hi > out.txt && mkdir -p src/lib && cp a b', 'allow', 'writes inside a project under HOME'],
+  ['echo hi > ~/.bashrc', 'ask', 'writing HOME, outside the project'],
+  ['echo hi > /home/me/.bashrc', 'ask', 'the same, by its absolute path'],
+  ['echo hi > ../other/x', 'ask', 'writing beside the project'],
+  ['echo hi > ~', 'ask', 'writing HOME itself'],
+  ['cd ~ && touch x', 'ask', 'writing after going home'],
+  ['echo hi > ~/repo/src/a.ts', 'allow', 'writing the project by way of ~'],
+  ['rm -rf ~', 'deny', 'deleting HOME'],
+];
+const nowhere: Environment = { env: { HOME: '/home/me' } };
+const nowhereCases: [source: string, decision: Decision, what: string][] = [
+  ['echo hi > ~/.bashrc', 'ask', 'writing HOME from a working directory not given'],
+  ['echo hi > /etc/x', 'ask', 'writing an absolute path from one not given'],
+];
+
+describe('recommended policy, in a project under HOME', () => {
+  for (const [source, decision, what] of homedCases)
+    test(`${what}: ${JSON.stringify(source)} → ${decision}`, () => expectDecision(source, decision, homed));
+  for (const [source, decision, what] of nowhereCases)
+    test(`${what}: ${JSON.stringify(source)} → ${decision}`, () => expectDecision(source, decision, nowhere));
 });
