@@ -2869,52 +2869,77 @@ const copy = (all: boolean): CommandSpec => ({
     '--context=?',
   ),
   finish(parsed) {
-    // An option it doesn't know may have taken the next word, so any of them may be the target.
-    if (parsed.unknownOptions.length > 0) parsed.writes.push(...parsed.positionals);
-    const directories = parsed.options['--target-directory']?.filter((value) => value !== true) ?? [];
-    const targets = directories.length > 0 ? [] : parsed.positionals.slice(-1);
-    const sources = directories.length > 0 ? parsed.positionals : parsed.positionals.slice(0, -1);
-    // A hard link (`cp -l`) is the source itself, and a symbolic one (`-s`) leads to it: what's later written to the
-    // copy is written to it. So is what a symlink copied as one (`-P`, `-d`, `-a`, or `-r` without `-L`) leads to.
-    const links = ['--link', '--symbolic-link', '--no-dereference', '-d', '--archive'].some((name) => parsed.options[name]);
-    const keeps = links || (parsed.options['--recursive'] && !parsed.options['--dereference']);
-    parsed.writes.push(...targets, ...(all || keeps ? sources : []));
-    parsed.reads.push(...sources);
-    // Into a directory, each source lands under its own name (`cp -r x/.git .` writes `./.git`), and a directory's
-    // contents (`x/.`) under names only known at run time.
-    // With -T, the target is the copy: a directory's contents land in it under names only known at run time.
-    if (parsed.options['--no-target-directory']) {
-      for (const target of targets) {
-        const base = staticValue(target)?.replace(/\/+$/, '');
-        parsed.writes.push(dynamicArg(`${base ?? '…'}/…`, 'placeholder', false, base === undefined ? '' : `${base}/`));
-      }
-      return;
-    }
-    for (const directory of [...directories, ...targets]) {
-      const into = staticValue(directory);
-      for (const source of sources) {
-        // --parents puts each under its whole path as given: `d/../../x` is outside `d`.
-        if (parsed.options['--parents']) {
-          const path = staticValue(source);
-          parsed.writes.push(
-            into !== undefined && path !== undefined
-              ? { kind: 'static', value: `${into.replace(/\/+$/, '')}/${path}` }
-              : dynamicArg(`${into ?? '…'}/…`, 'placeholder', false, ''),
-          );
-          continue;
-        }
-        const name = staticValue(source)?.replace(/\/+$/, '').split('/').pop();
-        const base = into?.replace(/\/+$/, '');
-        const known = base !== undefined && name !== undefined && name !== '' && name !== '.' && name !== '..';
-        parsed.writes.push(
-          known
-            ? { kind: 'static', value: `${base}/${name}` }
-            : dynamicArg(`${into ?? '…'}/…`, 'placeholder', false, base === undefined ? '' : `${base}/`),
-        );
-      }
-    }
+    placeCopies(parsed, all);
+    backups(parsed);
   },
 });
+
+/**
+ * `-b` keeps what a write replaces under its name and a suffix (`-S`, else `SIMPLE_BACKUP_SUFFIX`, or `~`), which may
+ * make a name of its own (`.bash` and `rc`): one only known at run time without `-S`.
+ */
+function backups(parsed: Parsed): void {
+  const backup = parsed.options['--backup']?.at(-1);
+  if (backup === undefined || (backup !== true && backup.kind === 'static' && /^(none|off)$/.test(backup.value))) return;
+  const suffix = staticValue(parsed.options['--suffix']?.filter((value) => value !== true).at(-1));
+  const written = [...parsed.writes];
+  for (const write of written) {
+    const path = staticValue(write);
+    parsed.writes.push(
+      suffix === undefined || path === undefined
+        ? dynamicArg('…', 'placeholder', false, '')
+        : { kind: 'static', value: path.replace(/\/+$/, '') + suffix },
+    );
+  }
+}
+
+/** Where `cp` and `mv` write: see `copy`. */
+function placeCopies(parsed: Parsed, all: boolean): void {
+  // An option it doesn't know may have taken the next word, so any of them may be the target.
+  if (parsed.unknownOptions.length > 0) parsed.writes.push(...parsed.positionals);
+  const directories = parsed.options['--target-directory']?.filter((value) => value !== true) ?? [];
+  const targets = directories.length > 0 ? [] : parsed.positionals.slice(-1);
+  const sources = directories.length > 0 ? parsed.positionals : parsed.positionals.slice(0, -1);
+  // A hard link (`cp -l`) is the source itself, and a symbolic one (`-s`) leads to it: what's later written to the
+  // copy is written to it. So is what a symlink copied as one (`-P`, `-d`, `-a`, or `-r` without `-L`) leads to.
+  const links = ['--link', '--symbolic-link', '--no-dereference', '-d', '--archive'].some((name) => parsed.options[name]);
+  const keeps = links || (parsed.options['--recursive'] && !parsed.options['--dereference']);
+  parsed.writes.push(...targets, ...(all || keeps ? sources : []));
+  parsed.reads.push(...sources);
+  // Into a directory, each source lands under its own name (`cp -r x/.git .` writes `./.git`), and a directory's
+  // contents (`x/.`) under names only known at run time.
+  // With -T, the target is the copy: a directory's contents land in it under names only known at run time.
+  if (parsed.options['--no-target-directory']) {
+    for (const target of targets) {
+      const base = staticValue(target)?.replace(/\/+$/, '');
+      parsed.writes.push(dynamicArg(`${base ?? '…'}/…`, 'placeholder', false, base === undefined ? '' : `${base}/`));
+    }
+    return;
+  }
+  for (const directory of [...directories, ...targets]) {
+    const into = staticValue(directory);
+    for (const source of sources) {
+      // --parents puts each under its whole path as given: `d/../../x` is outside `d`.
+      if (parsed.options['--parents']) {
+        const path = staticValue(source);
+        parsed.writes.push(
+          into !== undefined && path !== undefined
+            ? { kind: 'static', value: `${into.replace(/\/+$/, '')}/${path}` }
+            : dynamicArg(`${into ?? '…'}/…`, 'placeholder', false, ''),
+        );
+        continue;
+      }
+      const name = staticValue(source)?.replace(/\/+$/, '').split('/').pop();
+      const base = into?.replace(/\/+$/, '');
+      const known = base !== undefined && name !== undefined && name !== '' && name !== '.' && name !== '..';
+      parsed.writes.push(
+        known
+          ? { kind: 'static', value: `${base}/${name}` }
+          : dynamicArg(`${into ?? '…'}/…`, 'placeholder', false, base === undefined ? '' : `${base}/`),
+      );
+    }
+  }
+}
 
 /** `chmod mode file…`: the first positional isn't a path. */
 const ownership: CommandSpec = {

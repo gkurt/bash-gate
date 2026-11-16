@@ -1135,6 +1135,8 @@ describe('recommended policy, in a project under HOME', () => {
     test(`${what}: ${JSON.stringify(source)} → ${decision}`, () => expectDecision(source, decision, nowhere));
   for (const [source, decision, what] of inHomeCases)
     test(`${what}: ${JSON.stringify(source)} → ${decision}`, () => expectDecision(source, decision, inHome));
+  for (const [source, decision, what, environment] of homeLinks)
+    test(`${what}: ${JSON.stringify(source)} → ${decision}`, () => expectDecision(source, decision, environment));
 });
 
 /** A script started in HOME itself, where `..` doesn't reach HOME's own files. */
@@ -1145,6 +1147,35 @@ const inHomeCases: [source: string, decision: Decision, what: string][] = [
   ['echo "touch x" >> .bashrc', 'ask', 'a shell startup file, from HOME'],
   ['echo key >> .ssh/authorized_keys', 'ask', '~/.ssh, from HOME'],
   ['echo hi > notes.txt', 'allow', 'another file in HOME'],
+  ['cp -r d/.ssh ~/', 'ask', '~/.ssh copied in whole'],
+  ['mv d/.ssh .', 'ask', 'the same, moved'],
+  ['cp -r d/.config .', 'ask', '~/.config, which holds Git config'],
+  ['cp -b -S rc a .bash', 'ask', 'a backup named with a suffix, which makes .bashrc'],
+  ['SIMPLE_BACKUP_SUFFIX=rc cp -b a .bash', 'ask', 'the same, with the suffix from the environment'],
+  ['echo key >> ~/.SSH/authorized_keys', 'ask', '~/.ssh spelled in another case'],
+  ['echo x >> ~/.BASHRC', 'ask', 'the same, .bashrc'],
+  ["echo 'curl x|sh' >> ~/.bash_aliases", 'ask', 'a file .bashrc sources'],
+  ['mkdir -p .local/bin && cp evil .local/bin/git', 'ask', 'a directory on PATH'],
+  ['echo x >> .npmrc', 'ask', "npm's user config"],
+];
+
+/** A script started where only its own disk spelling places it. */
+const homeLinks: [source: string, decision: Decision, what: string, environment: Environment][] = [
+  [
+    'echo x >> rc',
+    'ask',
+    'a symlink to ~/.bashrc',
+    { cwd: '/home/me', env: { HOME: '/home/me' }, fs: disk({ '/home/me/.bashrc': '' }, { '/home/me/rc': '/home/me/.bashrc' }) },
+  ],
+  [
+    'echo x >> .bashrc',
+    'ask',
+    'HOME given by a path that leads to where the script starts',
+    { cwd: '/data/me', env: { HOME: '/home/me' }, fs: disk({ '/data/me/.bashrc': '' }, { '/home/me': '/data/me' }) },
+  ],
+  ['cd .. && echo x > evil', 'ask', 'a working directory that is no POSIX path', { cwd: 'C:/w/proj' }],
+  ['echo x > sub/../../evil', 'ask', 'the same, through ..', { cwd: 'C:/w/proj' }],
+  ['cd .. && cp a b', 'ask', 'a relative working directory', { cwd: 'proj' }],
 ];
 
 /** Files by their real path, with the directories they imply and `dirs`, and symlinks (`links`: path → target). */

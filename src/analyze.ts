@@ -343,6 +343,8 @@ const appended = dynamicArg('…', 'stdin', true, '');
 export function analyze(source: string, environment: Environment = {}): Analysis {
   const script = parse(source);
   const files = environment.fs ? new Probe(environment.fs) : undefined;
+  // Only a POSIX absolute directory places the script: another (`C:/w/p`, `p`) is where it starts, unknown.
+  const given = environment.cwd?.startsWith('/') ? environment.cwd : '.';
   const walk = (silent: boolean, everything?: Written, members?: Map<object, Written>): Walker => {
     const state: State = {
       vars: new Map(Object.entries(environment.env ?? {}).map(([name, value]) => [name, { kind: 'static', value }])),
@@ -365,7 +367,7 @@ export function analyze(source: string, environment: Environment = {}): Analysis
       maybeIntegers: new Set(),
       frames: [],
       cases: new Map(),
-      cwd: environment.cwd ?? '.',
+      cwd: given,
       failedCwd: undefined,
       later: new Map(),
     };
@@ -386,8 +388,7 @@ export function analyze(source: string, environment: Environment = {}): Analysis
       concurrent: false,
     };
     const walker = new Walker({ source, invocations: [], findings: [], needs: [] }, environment.maxDepth ?? 12, files, everything, members);
-    const start = environment.cwd ?? '.';
-    walker.start = start.startsWith('/') ? (resolvePath('/', start) ?? start) : start;
+    walker.start = given === '.' ? given : (resolvePath('/', given) ?? given);
     walker.outputsRead = opensOutputs.test(source);
     walker.script(script, state, context);
     return walker;
@@ -399,6 +400,8 @@ export function analyze(source: string, environment: Environment = {}): Analysis
   const start = environment.cwd?.startsWith('/') ? resolvePath('/', environment.cwd) : undefined;
   if (start !== undefined) analysis.cwd = start;
   if (start !== undefined && files) analysis.realcwd = files.physical(start) ?? null;
+  const home = environment.env?.HOME;
+  if (home?.startsWith('/') && files) analysis.realhome = files.physical(resolvePath('/', home) ?? home) ?? null;
   if (files) analysis.needs = [...files.needs.values()];
   return analysis;
 }

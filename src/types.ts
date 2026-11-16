@@ -117,6 +117,8 @@ export interface Analysis {
   cwd?: string;
   /** With a filesystem, where `cwd` really is; `null` when that isn't known. */
   realcwd?: string | null;
+  /** With a filesystem and HOME, where HOME really is; `null` when that isn't known. `~` globs match from it too. */
+  realhome?: string | null;
   invocations: Invocation[];
   findings: Finding[];
   /** What to fetch before analysing again (see `checkAsync`). Empty without a filesystem, or when it knew everything. */

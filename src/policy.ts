@@ -176,7 +176,7 @@ function decide(invocation: Invocation, policy: Policy, start: Start): Reason {
 }
 
 /** Where the script starts, which relative globs are matched from (see `Analysis`). */
-type Start = Pick<Analysis, 'cwd' | 'realcwd'>;
+type Start = Pick<Analysis, 'cwd' | 'realcwd' | 'realhome'>;
 
 /** How `rule` matches `invocation`: 0 no, 1 maybe, 2 yes. Exported for the property tests. */
 export function matchRule(rule: Rule, invocation: Invocation, start: Start = {}): Tri {
@@ -271,17 +271,20 @@ function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: b
     const local = resolved?.startsWith('/') && start.cwd !== undefined ? relativePath(resolved, start.cwd) : undefined;
     const realLocal = typeof physical === 'string' && typeof start.realcwd === 'string' ? relativePath(physical, start.realcwd) : undefined;
     const real = [physical, realLocal].filter((form) => typeof form === 'string');
+    // `~` globs match where HOME really is too: a symlink to `~/.bashrc`, or HOME given by a path that leads there.
+    const homes = [invocation.home, typeof start.realhome === 'string' ? start.realhome : undefined];
     const forms = [
       all ? undefined : arg.value,
       resolved,
-      resolved === undefined ? undefined : tildePath(resolved, invocation.home),
+      ...homes.flatMap((home) => [resolved, ...real].map((path) => (path === undefined ? undefined : tildePath(path, home)))),
       local,
       ...real,
     ].filter((form) => typeof form === 'string');
     // On a filesystem that ignores case (Windows, macOS), `.GIT/config` is `.git/config`: a rule that may match is
     // tried on that spelling too. A rule that must match every path isn't.
     // Windows also names `.git` by its short name, `GIT~1`.
-    if (!all) forms.push(...forms.map(foldCase));
+    // So does every other name there (`~/.BASHRC`), for the globs spelled in lower case.
+    if (!all) forms.push(...forms.flatMap((form) => [foldCase(form), foldCase(form.toLowerCase())]));
     const matches = patterns.some((pattern) => forms.some((form) => pattern.test(form)));
     const realMatches = patterns.some((pattern) => real.some((form) => pattern.test(form)));
     if (all && (!matches || (realpaths !== undefined && !realMatches))) return 0;
