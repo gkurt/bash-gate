@@ -720,6 +720,7 @@ const tree: Record<string, string> = {
   'watched/.git/hooks/reference-transaction': 'rm -rf /',
   'hooked/.git/HEAD': 'ref: refs/heads/main\n',
   'hooked/.git/hooks/pre-commit': 'rm -rf /',
+  'hooked/.git/hooks/pre-push': 'rm -rf /',
 };
 const withFiles: Environment = { fs: { readFile: (path) => tree[path] ?? null, realpath: (path) => path } };
 const filesystemCases: [source: string, decision: Decision, what: string][] = [
@@ -752,6 +753,7 @@ const filesystemCases: [source: string, decision: Decision, what: string][] = [
   ['cd hooked && git commit -n -m x', 'allow', 'a hook --no-verify skips'],
   ['cd hooked && git commit -Sn -m x', 'deny', '-S taking the rest of its word as the key, not -n'],
   ['cd hooked && git commit -n --verify -m x', 'deny', '--verify after --no-verify'],
+  ['cd hooked && git push --no-verify --veri origin main', 'deny', '--verify abbreviated after --no-verify, on push'],
 ];
 
 /** The same, starting in a known absolute directory: relative globs match from it. */
@@ -986,6 +988,19 @@ const startedCases: [source: string, decision: Decision, what: string][] = [
   ['rm -rf /repo', 'deny', 'deleting the project by its absolute path'],
   ['cd .. && rm -rf repo', 'deny', 'deleting the project from above'],
   ["declare -n r='a[$(rm -rf /)]'; echo $r", 'deny', "a nameref's subscript, which each read of it runs"],
+  ['pnpm -C --config.script-shell=/tmp/evil test', 'ask', "pnpm's string option, which leaves a word starting with - as an option"],
+  ['pnpm --reporter=default --reporter --config.script-shell=/tmp/evil test', 'ask', 'the same, given twice'],
+  [
+    'tsdown --config-loader auto --config-loader --on-success "rm -rf ~"',
+    'deny',
+    "cac's array option given twice, which leaves the next as an option",
+  ],
+  ['vitest run --exclude a --exclude --config /tmp/evil.mjs', 'ask', 'the same, in vitest'],
+  ['vite -m development -m --host', 'ask', 'the same, short, in vite'],
+  ['prettier --tab-width --plugin=../outside/evil.mjs a.js', 'ask', 'minimist, which leaves a value starting with - as an option'],
+  ['tsc --noEmit false ../other/a.ts', 'ask', "tsc's flag followed by false, which turns it off"],
+  ['cargo clippy -- -C linker=/tmp/evil', 'ask', "words after -- that clippy's rustc reads as a linker"],
+  ['cargo clippy -- -D warnings -Aclippy::all --cap-lints=warn', 'allow', 'lint levels after --'],
   ["f() { local -n r='a[$(rm -rf /)]'; echo $r; }; f", 'deny', 'the same, with local -n'],
   ['read x < in.txt; declare -n r=$x; echo $r', 'ask', 'a nameref to a name only known at run time'],
   ["printf '%s\\n' -C -m sub/m | xargs file", 'ask', 'file with options from its input, which may compile magic into a file'],

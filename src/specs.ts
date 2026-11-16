@@ -726,8 +726,6 @@ const biomeOptions = opts(
   '--verbose',
   '--skip-parse-errors',
   '--threads=',
-  '--log-level=',
-  '--log-kind=',
   o('--log-file=', { role: 'write' }),
   '-h --help',
   '-V --version',
@@ -1059,7 +1057,6 @@ const git: CommandSpec = {
         '-n --dry-run',
         '--no-verify',
         '--verify --no-no-verify',
-        '--verify',
         '-o= --push-option=',
         o('--receive-pack= --exec=', { effects: ['exec:arbitrary'] }),
         '--repo=',
@@ -2345,8 +2342,10 @@ const gh: CommandSpec = {
               ...json,
             ),
           },
-          'read-dir': { options: opts('--ref=', ...json) },
-          'read-file': { options: opts('--allow-escape-sequences', '--clobber', o('-o= --output=', { role: 'write' }), '--ref=', ...json) },
+          'read-dir': { options: opts('-R= --repo=', '--ref=', ...json) },
+          'read-file': {
+            options: opts('-R= --repo=', '--allow-escape-sequences', '--clobber', o('-o= --output=', { role: 'write' }), '--ref=', ...json),
+          },
           rename: { effects: ['fs:write'], options: opts('-y --yes') },
           'set-default': { effects: ['fs:write'], options: opts('-u --unset', '-v --view') },
           sync: { effects: hooks, options: opts('-b= --branch=', '--force', '-s= --source=') },
@@ -3312,7 +3311,6 @@ const programs: Record<string, CommandSpec> = {
       '-x --strings-in-hex',
       '-xx --strings-in-hex-all',
       '-y --decode-fds',
-      '-yy --decode-fds',
       o('-e=', { role: 'read' }),
       o('-o= --output=', { role: 'write' }),
       '-p= --attach=',
@@ -3556,6 +3554,7 @@ const programs: Record<string, CommandSpec> = {
   pnpm: {
     posix: true,
     nopt: true,
+    dashless: true,
     options: pnpmOptions,
     subcommands: {
       // pnpm's own options come before the script's name; every word after it is the script's.
@@ -3787,7 +3786,7 @@ const programs: Record<string, CommandSpec> = {
     options: cargoOptions,
     subcommands: {
       ...each(
-        'build|b check|c run|r doc|d clippy metadata tree pkgid locate-project verify-project read-manifest report config version generate-lockfile',
+        'build|b check|c run|r doc|d metadata tree pkgid locate-project verify-project read-manifest report config version generate-lockfile',
         { options: cargoOptions },
       ),
       fix: { options: cargoOptions, effects: ['fs:write'] },
@@ -3816,6 +3815,32 @@ const programs: Record<string, CommandSpec> = {
           if (parsed.writes.length > 0) parsed.effects.add('fs:write');
         },
       }),
+      // The words after `--` go to clippy's rustc: lint levels, or a linker (`-C linker=`), an output file, plugins.
+      clippy: {
+        options: cargoOptions,
+        finish: (parsed) => {
+          const levels = /^(-[DWAF]|--(deny|warn|allow|forbid|force-warn|cap-lints))$/;
+          const attached = /^(-[DWAF][\w:-]+|--(deny|warn|allow|forbid|force-warn|cap-lints)=[\w:-]+)$/;
+          const words = parsed.positionals;
+          for (let i = 0; i < words.length; i++) {
+            const word = words[i]!;
+            const next = words[i + 1];
+            if (
+              word.kind === 'static' &&
+              levels.test(word.value) &&
+              next?.kind === 'static' &&
+              /^[\w:-]+$/.test(next.value) &&
+              !next.value.startsWith('-')
+            ) {
+              i++;
+              continue;
+            }
+            if (word.kind === 'static' && attached.test(word.value)) continue;
+            parsed.effects.add('exec:arbitrary');
+          }
+          if (parsed.maybeOptions) parsed.effects.add('exec:arbitrary');
+        },
+      },
       // The words after `--` go to rustc or rustdoc: a linker (`-C linker=`), an output file, plugins.
       ...each('rustc rustdoc', {
         options: cargoOptions,
@@ -3840,6 +3865,8 @@ const programs: Record<string, CommandSpec> = {
   // TypeScript 7, native: its configuration is JSON, and it writes only what it emits.
   'tsc|tsgo': {
     edits: tscEmits,
+    // A flag takes a `true` or `false` after it: `--noEmit false` emits.
+    nopt: true,
     options: opts(
       '-b --build',
       '-w --watch',
@@ -3890,11 +3917,11 @@ const programs: Record<string, CommandSpec> = {
       '-v --version',
     ),
     finish(parsed) {
-      if (given(parsed, '--init')) {
+      if (flag(parsed, '--init')) {
         writesFile(parsed, 'tsconfig.json');
         return;
       }
-      if (given(parsed, '--noEmit', '--listFilesOnly', '--showConfig', '--help', '--version')) return;
+      if (['--noEmit', '--listFilesOnly', '--showConfig', '--help', '--version'].some((name) => flag(parsed, name))) return;
       parsed.effects.add(given(parsed, '--clean') ? 'fs:delete' : 'fs:write');
       // It emits beside the sources it's given, and into the project -p names.
       parsed.writes.push(...parsed.positionals, ...parsed.reads);
@@ -4078,6 +4105,7 @@ const programs: Record<string, CommandSpec> = {
   },
   prettier: {
     effects: ['exec:project'],
+    dashless: true,
     options: opts(
       '-w --write',
       '-c --check',
@@ -4136,6 +4164,7 @@ const programs: Record<string, CommandSpec> = {
   // cac and yargs take an option they don't know as configuration, which may load code (`--globalSetup`).
   vitest: {
     effects: ['exec:project'],
+    dashless: true,
     options: vitestOptions,
     subcommands: {
       ...each('run watch dev related bench list', { options: vitestOptions }),
@@ -4149,6 +4178,7 @@ const programs: Record<string, CommandSpec> = {
   },
   jest: {
     effects: ['exec:project'],
+    dashless: true,
     options: [...jestOptions, ...opts(...jestModules)],
     finish(parsed) {
       loadsModules(
@@ -4170,6 +4200,7 @@ const programs: Record<string, CommandSpec> = {
   },
   tsdown: {
     effects: ['exec:project'],
+    dashless: true,
     options: opts(
       ...camel(
         '-c= --config=',
@@ -4218,6 +4249,7 @@ const programs: Record<string, CommandSpec> = {
   },
   vite: {
     effects: ['exec:project'],
+    dashless: true,
     options: viteServer,
     subcommands: {
       ...each('serve dev', { options: viteServer }),
@@ -4257,7 +4289,7 @@ const programs: Record<string, CommandSpec> = {
       o('--to-command=', { effects: ['exec:arbitrary'] }),
       o('--checkpoint-action=', { effects: ['exec:arbitrary'] }),
       o('-F= --info-script=', { effects: ['exec:arbitrary'] }),
-      o('--info-script=', { effects: ['exec:arbitrary'] }),
+      o('--new-volume-script=', { effects: ['exec:arbitrary'] }),
       o('--transform=', { effects: ['exec:arbitrary'] }),
       o('--exclude-from=', { role: 'read' }),
       o('-T= --files-from=', { role: 'read' }),
@@ -4296,7 +4328,7 @@ const programs: Record<string, CommandSpec> = {
       o('--include-from=', { role: 'read' }),
       o('--backup-dir=', { role: 'write' }),
       o('--log-file=', { role: 'write' }),
-      ...'-a --archive -r --recursive -v --verbose -n --dry-run -d --dirs -l --links -t --times -p --perms -g --group -o --owner -D --devices -z --compress -e --rsh -P --partial'
+      ...'-a --archive -r --recursive -v --verbose -n --dry-run -d --dirs -l --links -t --times -p --perms -g --group -o --owner -D --devices -z --compress -P --partial'
         .split(' ')
         .map((name) => o(name)),
     ),
