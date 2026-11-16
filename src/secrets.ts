@@ -233,9 +233,7 @@ export function printsEnvironment(program: string | null, argv: Arg[], runs: boo
     case 'gojq':
     case 'jaq': {
       const filter = jqFilter(args);
-      // `env`, `$ENV`, or a file loaded as data (`import "f" as $x`); `{env: …}` is a key.
-      const reads = /\$ENV\b|(^|[^\w$.])env\b(?!\s*:)|\b(import|include)\b/;
-      return filter === 'file' || filter?.kind === 'dynamic' || (filter !== undefined && reads.test(filter.value));
+      return filter === 'file' || filter?.kind === 'dynamic' || (filter !== undefined && jqReadsEnvironment(filter.value));
     }
     case 'yq': {
       // `env()`, `strenv()`, `envsubst`, `$ENV`, and files loaded by name (`load_str`, `load_props`).
@@ -250,6 +248,11 @@ export function printsEnvironment(program: string | null, argv: Arg[], runs: boo
     default:
       return false;
   }
+}
+
+/** Whether a jq filter reads the environment (`env`, `$ENV`) or a file as data (`import "f" as $x`); `{env: …}` is a key. */
+export function jqReadsEnvironment(filter: string): boolean {
+  return /\$ENV\b|(^|[^\w$.])env\b(?!\s*:)|\b(import|include)\b/.test(filter);
 }
 
 /**

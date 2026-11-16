@@ -612,3 +612,18 @@ Confirmed and fixed:
 Rejected (no verdict change): `git cherry-pick|revert -s` read as a strategy (it's `--signoff`, an over-read that asks); `git pull|merge --ff` read as `--ff-only` and `branch --set-upstream` as `--set-upstream-to`; GNU abbreviation differences on `sort --version`, `tr --d`, `diff --f` and `chmod --n`; `git -c remote.origin.mirror=true push` (push asks already; it would only lower a deny to ask).
 Costs: `bun --<valued option> <bun command> …` asks. No everyday verdict moved.
 Needs a decision: none.
+
+## Round 52: src/specs.ts (sixth pass), 2026-11-17, see commit
+The reviewer compared specs against the programs and their docs, and ran git 2.54, diffutils 3.10, util-linux 2.39, gawk, mawk and bun 1.4.4 in WSL under `env -i`, with no network. I re-ran the main claims the same way. 15 new escapes cases fail on 8f6a877.
+Confirmed and fixed (main root cause: a file named by an option's value went unseen):
+- `git blame --contents=.env a` (printed the file), `git -c blame.ignoreRevsFile=.env blame a`, `git add|commit|stash push --pathspec-from-file=.env`, `wc|du|sort --files0-from=.env` (their errors print the file's lines) → allow → unknown options' values and git `-c` values are checked against secret names (before git's name-only exemption); blame and annotate know `--contents` and `--ignore-revs-file`.
+- `diff -d .env /dev/null`, `diff --from-file=.env`, `column -d .env`, `file -f .env` → allow, as diff's `-d`/`-f` and column's `-d`/`-L` were given values, and file's `-f`/`-m` weren't reads → diff and column get their own specs; those options are reads.
+- `git log -L1,1:.env` → read as a cluster → `-L=` is a read on log.
+- `git show :0:.env` → the stage form was missed → `:N:` is stripped before the path.
+- `awk 'BEGIN{ARGV[1]=".env"; ARGC=2} {print}'`, `gawk 'BEGIN{e="ENVI" "RON"; print SYMTAB[e]["X"]}'` → allow, both printed the secret → `ARGV`, `ARGC`, `SYMTAB` and `PROCINFO` count as reading secrets.
+- `gh pr list --json title -q 'env'` → allow; gh runs gojq with its environment (cli/cli pkg/jq/jq.go; gh isn't installed, not run) → a `--jq` that reads the environment is `secrets:read`/`secrets:print`.
+- `bun --cpu-prof --cpu-prof-name ~/.bashrc index` → allow, fs:write with no path, and it overwrote the file → the profile options are writes.
+- `git -c core.protectNTFS=false checkout …` → allow (not run: needs NTFS) → `core.protectntfs`/`protecthfs` join git's keys that run code.
+Rejected or not verified: `echo :.env | git cat-file --batch` (the object is named on standard input: the documented limit for words only known at run time); `cargo build --target ../x.json` and `--lockfile-path` (cargo isn't installed; nightly-gated in current toolchains); `git -c remote.origin.mirror=true push` (asks already; it only lowers a deny to ask). Known limits left: recursive reads, pathspec globs.
+Costs: an unknown option whose value names a secret file, gh `--jq env`, awk programs using `ARGV`, `SYMTAB` or `PROCINFO`, and bun profile paths outside the project ask. No everyday verdict moved.
+Needs a decision: none.

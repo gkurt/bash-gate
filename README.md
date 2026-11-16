@@ -121,7 +121,7 @@ const policy: Policy = {
 - `effects`: `fs:read`, `fs:write`, `fs:delete`, `network`, `network:read`, `privilege`, `exec:arbitrary`,
   `exec:project`, `exec:file`, `exec:remote`, `shell-state`, `secrets:read`, `secrets:print`. `secrets:read` reads what is likely a
   secret: the environment as a whole (`printenv`, `env` or `export -p` alone, `declare -p`, `local -p`, `set` alone,
-  `ps e` anywhere in its arguments, `ps -E`, awk's `ENVIRON`, jq's `env`, `$ENV` and `import`, yq's `env()`,
+  `ps e` anywhere in its arguments, `ps -E`, awk's `ENVIRON` (gawk's `SYMTAB` and `PROCINFO` too, and `ARGV`, which may name any file), jq's `env`, `$ENV` and `import` (in gh's `--jq` too), yq's `env()`,
   `strenv()` and `load…()`), a file that holds credentials, read, sourced, redirected, renamed (`mv`, `ln`), matched by
   a glob (`.e?v`, `~/.aws/*`, `~/*/credentials` under `dotglob` or `GLOBIGNORE`), listed by `git config --file` or at
   a git revision (`git show HEAD:.env`), but not only named (`git ls-files .env`, `git status .env`) or written (`cp

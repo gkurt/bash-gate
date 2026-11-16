@@ -3814,7 +3814,9 @@ class Walker {
       }
       const resolved = resolvePath(call.cwd, arg.value, call.home);
       const real = resolved && realpaths?.[resolved];
-      const revised = program === 'git' && arg.value.includes(':') ? arg.value.slice(arg.value.indexOf(':') + 1) : undefined;
+      // `HEAD:.env`, `:.env`, and a stage of the index, `:0:.env`.
+      const revision = arg.value.replace(/^:[0-3]:/, ':');
+      const revised = program === 'git' && revision.includes(':') ? revision.slice(revision.indexOf(':') + 1) : undefined;
       return [arg.value, resolved, real, revised].some((path) => typeof path === 'string' && secretFile(path, short));
     };
     if (redirected.some((arg) => secret(arg))) return true;
@@ -3822,8 +3824,18 @@ class Walker {
     // git's words are revisions as often as paths: `HEAD~1` is no short name. Some of its commands only name files
     // (`git ls-files .env`), and `config --file` reads the file it names as well as writing it.
     const command = parsed.subcommands[0];
-    if (program === 'git' && /^(add|check-attr|check-ignore|ls-files|restore|rm|status)$/.test(command ?? '')) return false;
     const config = program === 'git' && command === 'config' ? parsed.writes : [];
+    // An option the spec doesn't know may name a file the program reads (`git blame --contents=.env`), and so may a
+    // config value git is given (`git -c blame.ignoreRevsFile=.env blame`).
+    const unknownValues = parsed.unknownOptions.flatMap((name) => parsed.options[name] ?? []).filter((value) => value !== true);
+    const configValues =
+      program === 'git'
+        ? (parsed.options['-c'] ?? []).flatMap((value): Arg[] =>
+            value !== true && value.kind === 'static' ? [{ kind: 'static', value: value.value.slice(value.value.indexOf('=') + 1) }] : [],
+          )
+        : [];
+    if ([...unknownValues, ...configValues].some((arg) => secret(arg, program !== 'git'))) return true;
+    if (program === 'git' && /^(add|check-attr|check-ignore|ls-files|restore|rm|status)$/.test(command ?? '')) return false;
     // cp reads its sources, not where it copies them to (`cp .env.example .env`).
     const copied = (arg: Arg) =>
       program === 'cp' && arg.kind === 'static' && parsed.writes.some((write) => write.kind === 'static' && write.value === arg.value);

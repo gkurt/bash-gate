@@ -1,4 +1,5 @@
 import { anyWords, flag, isOption, normalize, readCobra, type CommandSpec, type DryRunSpec, type OptionSpec, type Parsed } from './argv.ts';
+import { jqReadsEnvironment } from './secrets.ts';
 import type { Arg, Effect } from './types.ts';
 import { dynamicArg, resolveWords } from './words.ts';
 
@@ -260,7 +261,7 @@ const bunOptions = opts(
   o('-r= --preload= --require= --import=', { role: 'read', effects: ['exec:file'] }),
   o('--inspect=? --inspect-wait=? --inspect-brk=?', { effects: ['network'] }),
   '--cpu-prof',
-  o('--cpu-prof-name= --cpu-prof-dir= --heap-prof-name= --heap-prof-dir=', { effects: ['fs:write'] }),
+  o('--cpu-prof-name= --cpu-prof-dir= --heap-prof-name= --heap-prof-dir=', { role: 'write', effects: ['fs:write'] }),
   '--cpu-prof-md',
   '--cpu-prof-interval=',
   '--heap-prof',
@@ -783,7 +784,7 @@ function finishPush(parsed: Parsed): void {
 
 /** Git config keys whose values git runs, or that change what or where it runs. */
 const gitExecKeys =
-  /^(alias\..*|core\.(pager|editor|sshcommand|fsmonitor|hookspath|askpass|gitproxy|worktree)|sequence\.editor|pager\..*|diff\.external|diff\..*\.(command|textconv)|merge\..*\.driver|filter\..*\.(clean|smudge|process)|credential\.helper|credential\..*\.helper|gpg\.program|gpg\..*\.program|interactive\.difffilter|uploadpack\.packobjectshook|remote\..*\.(uploadpack|receivepack|vcs)|protocol\.(.*\.)?allow|http\.(.*\.)?cookiefile|mergetool\..*\.path|difftool\..*\.path|branch\..*\.mergeoptions|pull\.(twohead|octopus)|sendemail\.smtpserver|url\..*|include\.path|includeif\..*|submodule\..*\.update|ssh\.variant|core\.sshcommand|http\..*proxy|web\.browser|browser\..*\.(cmd|path)|man\..*\.(cmd|path)|sendemail\..*cmd|mergetool\..*\.cmd|difftool\..*\.cmd|hook\..*\.command|gpg\.ssh\.defaultkeycommand|trailer\..*\.(command|cmd)|core\.alternaterefscommand|gc\.recentobjectshook|gc\.(.*\.)?(reflogexpire|reflogexpireunreachable|pruneexpire|worktreepruneexpire|rerereresolved|rerereunresolved)|maintenance\..*|help\.(format|browser|htmlpath)|man\.viewer)$/;
+  /^(alias\..*|core\.(pager|editor|sshcommand|fsmonitor|hookspath|askpass|gitproxy|worktree|protectntfs|protecthfs)|sequence\.editor|pager\..*|diff\.external|diff\..*\.(command|textconv)|merge\..*\.driver|filter\..*\.(clean|smudge|process)|credential\.helper|credential\..*\.helper|gpg\.program|gpg\..*\.program|interactive\.difffilter|uploadpack\.packobjectshook|remote\..*\.(uploadpack|receivepack|vcs)|protocol\.(.*\.)?allow|http\.(.*\.)?cookiefile|mergetool\..*\.path|difftool\..*\.path|branch\..*\.mergeoptions|pull\.(twohead|octopus)|sendemail\.smtpserver|url\..*|include\.path|includeif\..*|submodule\..*\.update|ssh\.variant|core\.sshcommand|http\..*proxy|web\.browser|browser\..*\.(cmd|path)|man\..*\.(cmd|path)|sendemail\..*cmd|mergetool\..*\.cmd|difftool\..*\.cmd|hook\..*\.command|gpg\.ssh\.defaultkeycommand|trailer\..*\.(command|cmd)|core\.alternaterefscommand|gc\.recentobjectshook|gc\.(.*\.)?(reflogexpire|reflogexpireunreachable|pruneexpire|worktreepruneexpire|rerereresolved|rerereunresolved)|maintenance\..*|help\.(format|browser|htmlpath)|man\.viewer)$/;
 
 /** Keys whose value is a command git runs with the shell. */
 const gitShellKeys =
@@ -988,6 +989,8 @@ const git: CommandSpec = {
       abbreviations: true,
       options: opts(
         '-n= --max-count=',
+        // `-L1,1:file` traces lines of a file, which it prints.
+        o('-L=', { role: 'read' }),
         '--format=?',
         '--pretty=?',
         '--author=',
@@ -1012,7 +1015,12 @@ const git: CommandSpec = {
       ),
     },
     // Those that take the diff and log options write `--output`.
-    ...each('blame annotate shortlog rev-list whatchanged', { abbreviations: true, options: opts(o('--output=', { role: 'write' })) }),
+    ...each('shortlog rev-list whatchanged', { abbreviations: true, options: opts(o('--output=', { role: 'write' })) }),
+    // `--contents` blames a file's text, which it prints; a bad revision in `--ignore-revs-file` is printed in the error.
+    ...each('blame annotate', {
+      abbreviations: true,
+      options: opts(o('--output=', { role: 'write' }), o('--contents=', { role: 'read' }), o('--ignore-revs-file=', { role: 'read' })),
+    }),
     // `expire`, `delete` and `drop` remove entries (a stash is one), and `show` (by default) writes `--output`.
     reflog: { abbreviations: true, options: opts(o('--output=', { role: 'write' })), finish: finishReflog },
     ...each(
@@ -1566,6 +1574,9 @@ function sshRuns(options: Parsed['options'], command: Arg[], parsed: Parsed): vo
 /** A word gh doesn't know is an alias (a shell one, with `!`) or an extension: code of its own. */
 function finishGh(parsed: Parsed): void {
   if (parsed.subcommands.length === 0 && parsed.unknownSubcommand) parsed.effects.add('exec:arbitrary');
+  // `--jq` runs gojq with gh's environment (`env`, `$ENV.GH_TOKEN`), as jq itself would.
+  if ((parsed.options['--jq'] ?? []).some((filter) => filter === true || filter.kind === 'dynamic' || jqReadsEnvironment(filter.value)))
+    parsed.effects.add('secrets:read').add('secrets:print');
   if (!ghReads.has(parsed.subcommands.join(' ')) || ghGoesElsewhere(parsed)) return;
   parsed.effects.delete('network');
   parsed.effects.add('network:read');
@@ -4575,12 +4586,14 @@ function scanSed(script: string): SedScript | undefined {
 /**
  * An awk program's effects, by the tokens it can't have them without: `system`, a pipe and `getline` run commands or
  * read files the program names, `@` calls a function named at run time or loads code, a `>` after a `print` writes a
- * file, and `ENVIRON` reads the environment, secrets and all. The text is searched as written, strings and regular expressions included, so it finds more than is
- * there and never less. A line continuation could split a token, so one counts as code unseen.
+ * file, and `ENVIRON` reads the environment, secrets and all, as does gawk's `SYMTAB` (`SYMTAB["ENVI" "RON"]`) and
+ * `PROCINFO`. Setting `ARGV` makes it read files it names itself (`ARGV[1]=".env"`). The text is searched as written,
+ * strings and regular expressions included, so it finds more than is there and never less. A line continuation could
+ * split a token, so one counts as code unseen.
  */
 function scanAwk(code: string, parsed: Parsed): void {
   if (/system|getline|@|\\\r?\n/.test(code) || code.replaceAll('||', '').includes('|')) parsed.effects.add('exec:arbitrary');
-  if (code.includes('ENVIRON')) parsed.effects.add('secrets:read');
+  if (/ENVIRON|SYMTAB|PROCINFO|ARGV|ARGC/.test(code)) parsed.effects.add('secrets:read');
   const print = code.indexOf('print');
   if (print === -1 || !/>(?!=)/.test(code.slice(print))) return;
   parsed.writes.push(dynamicArg('awk output', 'variable', false, ''));
@@ -6269,7 +6282,15 @@ const programs: Record<string, CommandSpec> = {
     copies: true,
   },
   file: {
-    ...reader('-m= --magic-file=', '-f= --files-from=', '-F= --separator=', '-e= --exclude=', '-P= --parameter=', '-C --compile'),
+    // The magic file and the list of files are read, and a bad line of either is printed in the error.
+    ...reader(
+      o('-m= --magic-file=', { role: 'read' }),
+      o('-f= --files-from=', { role: 'read' }),
+      '-F= --separator=',
+      '-e= --exclude=',
+      '-P= --parameter=',
+      '-C --compile',
+    ),
     finish(parsed) {
       // -C compiles the magic file into one named after it, in the working directory. An argument only known at run time
       // may be it (`xargs file`).
@@ -6388,14 +6409,13 @@ const programs: Record<string, CommandSpec> = {
       o('--compress-program=', { effects: ['exec:arbitrary'] }),
     ),
   },
-  'cut|tr|fold|fmt|column|jq|du|realpath|readlink|basename|dirname': reader(
-    '-d= --delimiter=',
-    '-f= --fields=',
-    '-c --count',
-    '-L= --level=',
-  ),
+  // util-linux's column takes no value with -d (`--table-noheadings`) or -L (`--keep-empty-lines`).
+  column: reader('-s= --separator=', '-o= --output-separator=', '-c= --output-width=', '-N= --table-columns='),
+  'cut|tr|fold|fmt|jq|du|realpath|readlink|basename|dirname': reader('-d= --delimiter=', '-f= --fields=', '-c --count', '-L= --level='),
   // Each line they read reaches their output whole (`diff` and `comm` with a marker before it), or every byte does.
-  'paste|join|expand|unexpand|diff|comm': { ...reader('-d= --delimiter=', '-f= --fields=', '-c --count'), copies: true },
+  'paste|join|expand|unexpand|comm': { ...reader('-d= --delimiter=', '-f= --fields=', '-c --count'), copies: true },
+  // GNU diff's -d is `--minimal` and -f `--forward-ed`; `--from-file` and `--to-file` name files it compares.
+  diff: { ...reader(o('--from-file= --to-file=', { role: 'read' })), copies: true },
   'hexdump|hd|rev|look|pr|zcat|gzcat': {
     ...reader('-n= --length=', '-s= --skip=', '-e= --format=', o('-f= --format-file=', { role: 'read' })),
     copies: true,
