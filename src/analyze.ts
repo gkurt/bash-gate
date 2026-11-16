@@ -313,6 +313,15 @@ const setOptions = new Set(
 const sensitive =
   /^(PATH|PWD|POSIXLY_CORRECT|RIPGREP_CONFIG_PATH|BASH_FUNC_.+|EXECIGNORE|BASH_ENV|ENV|IFS|SHELLOPTS|BASHOPTS|BASH_LOADABLES_PATH|TEXTDOMAIN|TEXTDOMAINDIR|CDPATH|HOME|ZDOTDIR|TMPDIR|XDG_CONFIG_HOME|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_[A-Z0-9_]+|GH_(PAGER|EDITOR|BROWSER|CONFIG_DIR|PATH|HOST|REPO)|(HTTPS?|ALL)_PROXY|(https?|all)_proxy|BROWSER|PAGER|MANPAGER|MANOPT|SHELL|GCONV_PATH|GNUPGHOME|SSLKEYLOGFILE|GNUTLS_KEYLOGFILE|BUN_INSPECT\w*|BIOME_LOG_PATH|(HOST_|TARGET_)?(CC|CXX|CPP|AR|LD|RANLIB)(_\w+)?|(HOST_|TARGET_)?(C|CXX|CPP|LD)FLAGS(_\w+)?|pnpm_config_\w+|PNPM_CONFIG_\w+|EDITOR|VISUAL|LESS|LESSOPEN|LESSCLOSE|LESSKEY\w*|NODE_OPTIONS|BUN_OPTIONS|CARGO_[A-Z0-9_]+|RUSTC(_WRAPPER|_WORKSPACE_WRAPPER)?|RUSTDOC|RUSTFLAGS|RUSTDOCFLAGS|RUSTUP_TOOLCHAIN|RUSTUP_HOME|NODE_PATH|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|SSH_ASKPASS|SUDO_ASKPASS|npm_config_\w+|NPM_CONFIG_\w+)$/;
 
+/** Redirections that may leave the shell's output or errors on a file opened for reading: `1<f`, `<>`, `1>&3`. */
+const opensOutputs = /\d<(?![<(])|<>|>&\s*[3-9]/;
+
+/** Whether writing `path` writes the file a descriptor is open on, which may have been opened for reading. */
+function reopens(path: string, outputsRead: boolean): boolean {
+  const device = /^\/dev\/(stdin|stdout|stderr|fd\/\d+)$/.exec(path.replace(/\/+/g, '/'))?.[1];
+  return device !== undefined && (outputsRead || (device !== 'stdout' && device !== 'stderr'));
+}
+
 /** Files a redirection may name without touching the file system. */
 const devices = /^\/dev\/(null|stdin|stdout|stderr|tty|fd\/\d+)$/;
 /** The words a run adds after a command's own (`xargs` appends its input's). */
@@ -367,6 +376,7 @@ export function analyze(source: string, environment: Environment = {}): Analysis
     const walker = new Walker({ source, invocations: [], findings: [], needs: [] }, environment.maxDepth ?? 12, files, everything, members);
     const start = environment.cwd ?? '.';
     walker.start = start.startsWith('/') ? (resolvePath('/', start) ?? start) : start;
+    walker.outputsRead = opensOutputs.test(source);
     walker.script(script, state, context);
     return walker;
   };
@@ -497,6 +507,8 @@ class Walker {
   /** What code that runs later emitted, which walking it in another state doesn't emit again. */
   emitted = new Set<string>();
   files: Probe | undefined;
+  /** Whether code walked may open the shell's output or errors for reading (`1<f`, `<>`): see `redirections`. */
+  outputsRead = false;
   /**
    * What the script may have written so far, in the order of the walk. The filesystem is shared by every shell the
    * script starts, so this isn't part of a shell's state, and it only grows: a branch's writes count after it.
@@ -854,7 +866,7 @@ class Walker {
         return;
       case 'Redirected': {
         this.substitutions(node.redirects, state, ctx);
-        const files = redirections(node.redirects, lookupIn(state));
+        const files = redirections(node.redirects, lookupIn(state), this.outputsRead);
         // Bash opens the files before it runs what's in the group, and runs none of it when one can't be opened.
         const call = { ...this.at(ctx, state, node), writes: files.writes, reads: files.reads };
         this.wrote(files.writes, call, 'contents');
@@ -1438,7 +1450,7 @@ class Walker {
     this.substitutions([command], state, ctx);
     const lookup = lookupIn(state);
     const assignments = command.prefix.filter((item): item is Assignment => item.type === 'Assignment');
-    const files = redirections(command.redirects, lookup);
+    const files = redirections(command.redirects, lookup, this.outputsRead);
     const span = this.span(ctx, command.pos, command.end);
     const argv = command.name ? [...resolveWord(command.name, lookup), ...command.suffix.flatMap((item) => argument(item, lookup))] : [];
     const call: Call = {
@@ -3110,6 +3122,7 @@ class Walker {
   code(text: string, state: State, ctx: Context, call: Call, label: string, open = false, late = false): void {
     if (ctx.depth >= this.maxDepth)
       return this.finding(ctx, 'too-deep', `Code nests deeper than the analysis follows (${label})`, call.span);
+    if (opensOutputs.test(text)) this.outputsRead = true;
     this.script(this.parse(text), state, {
       ...ctx,
       source: text,
@@ -3594,13 +3607,20 @@ function socket(path: string, partial: boolean): boolean {
 }
 
 /** The files redirections read and write, devices left out. A redirection to an fd (`2>&1`) names no file. */
-function redirections(list: readonly Redirection[], lookup: Lookup): { reads: Arg[]; writes: Arg[] } {
+function redirections(list: readonly Redirection[], lookup: Lookup, outputsRead = false): { reads: Arg[]; writes: Arg[] } {
   const reads: Arg[] = [];
   const writes: Arg[] = [];
   for (const redirection of list) {
     if (redirection.type !== 'Redirect' || !redirection.target) continue;
-    const targets = resolveWord(redirection.target, lookup).filter((arg) => arg.kind === 'dynamic' || !devices.test(arg.value));
     const operator = redirection.operator;
+    const writing = operator !== '<' && operator !== '<&';
+    const resolved = resolveWord(redirection.target, lookup);
+    // Linux opens `/dev/stdin` and `/dev/fd/N` again as the file that descriptor is on, which may be one opened for
+    // reading (`{ … >>/dev/stdin; } < .git/config`): a write there is to a file only known at run time. So are
+    // `/dev/stdout` and `/dev/stderr` when the script may open those for reading.
+    if (writing && resolved.some((arg) => arg.kind === 'static' && reopens(arg.value, outputsRead)))
+      writes.push(dynamicArg('…', 'placeholder', false, ''));
+    const targets = resolved.filter((arg) => arg.kind === 'dynamic' || !devices.test(arg.value.replace(/\/+/g, '/')));
     if ((operator === '>&' || operator === '<&') && targets.every((arg) => arg.kind === 'static' && /^(\d+-?|-)$/.test(arg.value)))
       continue;
     if (operator === '<' || operator === '<&' || operator === '<>') reads.push(...targets);
