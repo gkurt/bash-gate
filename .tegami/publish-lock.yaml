@@ -1,30 +1,474 @@
 core:changelogs:
-  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Allow rules no longer match a path as written\n\n`allow({ writes: ['src/**'] })` allowed `cd /tmp && echo x > src/a`: the path as written matched, though it's `/tmp/src/a`. Allow rules now match only forms that say where a path is: resolved, from where the script starts, and real.\n"
-    filename: allow-as-written.md
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### `$'…'` in arithmetic is decoded before it's expanded, and a `#` inside a word starts no comment\n\nBash decodes ANSI-C quoting in arithmetic and subscripts, then expands what it holds: `$(( $'\\x24(rm -rf /)' ))` runs\n`rm`, which went unseen. And `x=<(cat a)#; rm -rf /` is one word and a command to Bash, where the parser read\n`#; rm -rf /` as a comment: a `#` right after a word the parser ended is a parse error.\n"
+    filename: arithmetic-ansi-c.md
     v: 0.0.0
-  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Files the script changes before reading them are unknown\n\nGit config and hooks, npm scripts and SSH config the script may write first (`cp -r hooks .git/ && git commit`), or write while they're read (`&`, a pipeline), are an `unknown-file` finding rather than their old contents. So is the real path of anything under a symlink the script may create (`ln -s /etc e && rm e/passwd`).\n"
-    filename: stale-reads.md
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### nopt's `true` and `false`, find's `-` and `,`, `uniq +N`, and bun's timings file\n\n- npm and pnpm read a `true` or `false` after a flag as its value (`pnpm --color false exec …`), as nopt does; a\n  `CommandSpec` says so with `nopt`. A word only known at run time there may be one.\n- find takes `-` alone, and `)` or `,` first, as paths, which `-delete` deletes.\n- `uniq +N in out` writes `out`: `+N` is the old spelling of `-s N`.\n- `bun test --timings <file>` takes the next word, and with `--update-timings` rewrites that file.\n"
+    filename: argv-round-21.md
     v: 0.0.0
-  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Relative globs match from the starting `cwd`, so `recommended` allows writes inside it\n\nWith `cwd: '/repo'`, `echo hi > out.txt` was asked about as a write outside the working directory. Relative globs now match paths from an absolute starting `cwd` (and its real path), and `recommended` asks about `..`, `../**` and `~/**` instead of `/**`. Without a starting `cwd`, an absolute path may match a deny or ask rule's relative glob.\n"
-    filename: relative-globs.md
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### More git config keys and build tools' deletes are caught\n\n- `protocol.allow` (which lets an `ext::` remote run a command), `http.cookieFile` (which git writes cookies to),\n  `mergetool.*.path`, `difftool.*.path` and `sendemail.smtpServer` are git config keys that change what git runs or\n  writes: in a repository's config or given with `-c`.\n- `vite build --outDir` (or `--emptyOutDir`) empties the directory first, and `tsdown -d` cleans its out-dir:\n  both are `fs:delete`.\n"
+    filename: specs-round-30.md
     v: 0.0.0
-  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Traps set in a subshell or a child shell see what's defined after them\n\nA trap runs when the shell that set it exits, so it's also walked with that shell's state at its end: `( trap 'f' EXIT; f() { rm -rf /; } )` is denied.\n"
-    filename: subshell-traps.md
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A process substitution's aliases in POSIX mode, at parse time and at run time\n\nIn POSIX mode Bash expands a process substitution's aliases as its line is parsed, then again as it runs, so either\nmay be what runs: `alias ls=\"rm -rf /\"; { alias ls=cat; cat <(ls); }` on separate lines runs `rm`.\n"
+    filename: posix-procsub-both-aliases.md
     v: 0.0.0
-  - content: "---\npackages:\n  bash-gate:\n    type: minor\n---\n\n### `analyze` and `check` take one `Environment`, with a `FileSystem` that may not know\n\nThe `readFile` and `realpath` options are replaced by `fs: { readFile, realpath }`, where `null` is absent and `undefined` is unknown; `evaluate` takes no options. What it didn't know is an `unknown-file` finding and an entry in `analysis.needs`. `snapshot()` builds a `FileSystem` from records, and `checkAsync()` fetches the needs from an `AsyncFileSystem` over a few rounds.\n"
-    filename: environment.md
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A blank-ending alias stops at an unquoted expansion, and a backslash in a default's inner quotes\n\nAfter an alias whose text ends in a blank, Bash checks the next words for aliases past quoted ones, but not past one\nwith an unquoted expansion (`$x`, `$(…)`, `<(…)`). And in a default's inner quotes, Bash drops a backslash before what\nit doesn't escape in double quotes: `\"${v:-\"$\\(rm -rf /)\"}\"` runs `rm`.\n"
+    filename: alias-chain-expansion.md
     v: 0.0.0
-  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### `recommended` asks about writes to `.git` and `.git/hooks` as a whole\n"
-    filename: recommended-git-dirs.md
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Code `sh` runs, and `env -S`'s other separators\n\n- Code other programs hand to `sh` (`watch '…'`, `git rebase -x`, `tsdown --on-success`) was read as Bash with\n  aliases off. Where `sh` is dash, `&>` runs in the background, `((` opens two subshells and `$'…'` is no string, so\n  `watch 'ls &>/dev/null rm -rf y'` was allowed. Such code, and hooks and package scripts that `sh` runs, is read as\n  Bash in POSIX mode with aliases on, and Bash's own syntax in it is a finding.\n- `env -S` also splits at `\\v`, `\\f` and `\\r`, and expands no braces: a string with one is only known at run time.\n"
+    filename: sh-code-and-env-split.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### An alias whose text is only known at run time counts as unseen code\n\n`covers` accounted for one program with one word in its place, but such an alias can run anything: arguments, other\ncommands, wrappers.\n"
+    filename: unknown-alias-unseen.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: minor\n---\n\n### `recommended` allows package scripts, tests and builds\n\nThe README said `recommended` didn't ask about project code (`exec:project`), but no rule allowed `npm test`. It now\nallows what `npm`, `pnpm`, `bun` and `cargo` run of the project (`npm test`, `pnpm lint`, `bun typecheck`,\n`cargo build`), as it does git hooks, and still asks when they install, publish, delete, or run code the analysis\ncan't place.\n\n### Specs for pnpm, bun and cargo\n\n- pnpm and `bun run` run a command from PATH when no script has the name (`pnpm node -e …`): that command is\n  walked like a wrapper's, unless the filesystem shows the script is there. `bun lint` runs `lint.ts` when no script\n  is named `lint`.\n- Inline code (`bun -e`), preloaded modules, a debugger, `bunx`, `pnpm dlx` and cargo's `--config` and `-Z` are\n  `exec:arbitrary`, `exec:file` or `network`. A word cargo doesn't know runs the program `cargo-<word>`.\n- With `fs`, the package.json scripts pnpm and bun run are walked as npm's are, `pre` and `post` scripts included.\n  A workspace's scripts (`--filter`, `-r`) aren't followed. Without a package.json where the command runs, one above\n  it may be used: an `exec-config` finding.\n\n### npm reads more like npm\n\n- A word npm doesn't know is the start of one of its commands' names (`npm exe` runs `npm exec`), and an option it\n  doesn't know is configuration that may name the shell scripts run in (`--script-shell`): both are\n  `exec:arbitrary`. So is `npm config set`.\n- `npm pkg set` and `npm version` write the package.json, so scripts read after them are unknown. `npm version` and\n  `npm pack` run scripts, and npm's other commands have their effects (`edit`, `explore`, `docs`, `cache`…).\n- A package.json without `scripts` runs none, where it used to be an `exec-config` finding.\n"
+    filename: package-managers.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Hooks, shebangs, symlinked directories and case are read as git and the kernel read them\n\n- A git command's hooks are read again once they've all been walked: a hook that writes another (`pre-commit` writing\n  `reference-transaction`, which git runs after it) or the dispatcher husky's stubs source is a finding.\n- A hook's first line counts only when it names a system shell, with no options but `set`'s (`#!/bin/sh -e`), or the\n  shell `env` finds with nothing else: `env -S …`, `bash -i` or a shell elsewhere is a finding.\n- `git -C`, `--git-dir`, `--work-tree` and `env -C` resolve `link/..` as the kernel does, from where the symlink leads.\n- A write in another case (`.HUSKY/pre-commit`, `PACKAGE.JSON`) counts as a write to the file git or npm reads later.\n- A `~` path with HOME unknown is never asked of the `FileSystem`: it's a finding.\n"
+    filename: files-round-31.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### `$'…'` in a quoted default or a here-document, and a variable's name across a line continuation\n\nIn a double-quoted `\"${y:-$'…'}\"` Bash decodes the `$'…'` and expands what it holds, so `\"${y:-$'\\x24(rm -rf /)'}\"`\nruns `rm`; in a here-document `$'` is no quoting at all, and the substitution after it runs. A subscript expanded again\ndecodes `$'…'` too. And a line continuation is gone before Bash reads a word, so `$x\\` then a newline and `r` is `$xr`.\n"
+    filename: ansi-c-defaults-name-continuation.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### `$'\\U…'` past Unicode, and variables Bash sets as it starts, are read as Bash reads them\n\n- A `\\U` escape from 0x80000000 is dropped, as Bash drops it (`$'\\UFFFFFFFF'rm` is `rm`); one from 0x110000 makes the\n  word only known at run time, as Bash writes bytes of its own for it. The parser kept the escape's text.\n- `IFS`, `SHLVL`, `BASH`, `BASH_VERSION`, `OPTERR`, `PS2`, `PS4` and the other variables Bash sets as it starts are\n  only known at run time, whatever `environment.env` gives: Bash ignores an imported `IFS` and counts `SHLVL` up.\n"
+    filename: words-round-34.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Substitutions inside single quotes in arithmetic and here-documents run\n\nBash expands `$(( ))`, `(( ))`, subscripts and slice offsets as if double-quoted, where single quotes are only text:\n`x=$(( '$(rm -rf /)' ))` runs `rm`, and was read as no command at all. So does `${y:-'$(rm -rf /)'}` in an unquoted\nhere-document, which was allowed.\n"
+    filename: arithmetic-quotes.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### unbash 6.0.3\n\nAn empty `$''` and a here-string that is a process substitution (`cat <<< <(f)`) parse, so they're analysed rather\nthan asked about as parse errors.\n"
+    filename: unbash-6-0-3.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Trap actions and prompt strings are walked between every two commands\n\nOnce set, they're walked at each point they may run, with the state there, and what they change carries on: `f() { :; }; trap f ERR; f() { rm -rf /; }; false; f() { :; }` and `x=ls; trap 'x=rm' DEBUG; $x -rf /` no longer hide `rm`. `trap -- 'action' SIG` is walked, and `trap - SIG` resets it.\n"
+    filename: traps-between-commands.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### `flock`'s lock file is a write\n\n`flock FILE cmd` and `flock FILE -c CODE` create `FILE` when it's missing, so the lock file counts as written.\n"
+    filename: flock-lock-file.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Where writes land, and what hooks and scripts run\n\nEach of these was allowed while the command wrote outside the project, into `.git`, or ran something else:\n\n- `echo x > link/../passwd`, with `link` a symlink out of the project: a `..` after a symlink leads up from where it\n  points, as the kernel resolves it.\n- `echo hi > .GIT/hooks/pre-commit`: a rule's `.git` matches any case, as on a filesystem that ignores it.\n- `cp -r /tmp/x/.git .` and `cp -t . /tmp/x/.git` write `./.git`: into a directory, each source lands under its own\n  name, and a directory's contents (`x/.`) under names only known at run time. `cp -l` makes the source itself\n  writable through the copy, so it counts as written.\n- A git hook is read as the shell its first line names, `sh` when there's none, and a hook in another language is a\n  finding. Hooks and package scripts run by `sh` expand aliases.\n- A repository further up than 16 directories is a finding, not none at all.\n- `git mv`, `git restore` and `git checkout` write the paths they're given, which may be outside the working directory.\n"
+    filename: files-and-project-code.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A shell option only known at run time may be `-c`\n\n`bash $x 'rm -rf /'` runs `rm` when `$x` is `-c`: each of the shell's arguments is walked as code it may run, and one\nonly known at run time is a finding.\n"
+    filename: shell-dynamic-options.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### `$'…'` in a default inside `\"$(…)\"`, and an empty variable named across a line continuation\n\nIn a command substitution inside double quotes, Bash decodes a `$'…'` in a `${…}` operand and expands what it holds, so\n`\"$(echo ${y:-$'\\x24(rm -rf /)'})\"` runs `rm`. And an empty variable whose name runs across a line continuation is no\nword, where it was read as an empty one.\n"
+    filename: quoted-substitution-ansi-c.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Enforcement checks where a program is and the name it's started under\n\n- `bash-gate/trace` held an exec to the program's file name only. Now the file must be where the invocation says (the\n  path it was given, or a directory of the run's `PATH` for a name), so a `./ls` in the project isn't taken for `ls`,\n  and the name it's started under (`argv[0]`) must be predicted too.\n- `exec -a name` and `exec -l` start a program under another name, which some act on (`pgrep` as `pkill`, `git` as\n  `git-branch`): the analysis gives it a `loads-code` finding.\n- `find -exec … {} +` passes as many paths as fit, so its last `{}` may be several words: such runs are no longer\n  refused.\n"
+    filename: trace-name-and-place.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: minor\n---\n\n### Hooks husky wrote are followed to the project's own\n\nhusky's stub sources its dispatcher by a computed path (`. \"$(dirname \"$0\")/h\"`), so with a filesystem every git\ncommand that runs a hook asked in a husky repository. A stub and dispatcher that are exactly what husky 9.0 or 9.1\nwrites are now followed to `.husky/<hook>`, and the line husky 7 and 8 put at a hook's top (`. \"$(dirname -- \"$0\")/_/husky.sh\"`)\nis left out when its helper is husky's. `git commit` is judged by `.husky/pre-commit`, and runs nothing when there's\nnone. A husky file changed by hand is walked as it is, which asks.\n"
+    filename: husky-hooks.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Aborts, `stash export`, `git config edit`, `cp -T`, `cargo rustc --` and more options that load code\n\n- `recommended` asks about `git merge`, `rebase`, `cherry-pick` and `revert` with `--abort` or `--skip`, which put the\n  work tree back over a resolution and what's staged, and about `git stash export --to-ref`, which moves a ref.\n- `git config edit` runs an editor on the file it names, as `-e` does.\n- `cp -T` copies a directory onto its target, under names only known at run time.\n- The words after `cargo rustc --` or `cargo rustdoc --` (a linker, an output file) run as `exec:arbitrary`.\n- `bun --tsconfig-override` and `--jsx-import-source`, and `jest --env`, load code. `MANOPT` is sensitive.\n"
+    filename: specs-round-14.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### POSIX mode is followed as Bash follows it\n\n`set` applies its options one at a time, as Bash does: `set -o[ posix` turns POSIX mode on before it fails at `[`.\nEntering POSIX mode turns `expand_aliases` on and leaving turns it off, but `set -o posix` when it's already on\nchanges nothing; assigning `POSIXLY_CORRECT` always enters it, and unsetting it always leaves. In POSIX mode a\nsubstitution Bash only parses as it runs, in a here-document or in text it expands again, gets no aliases.\n"
+    filename: posix-mode-state.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Files a program may write without naming them are unknown to later reads\n\nWith `fs`, a git command that rewrites the work tree (`checkout`, `stash`, `reset`, `merge`…) makes everything in it but `.git` unknown, and a program without a spec, one running code the analysis doesn't follow (`make`, `npm install`, `python3 -c`), or one whose spec writes without saying where makes every later read unknown: `git checkout evil && npm test` no longer trusts the `package.json` read before the checkout.\n"
+    filename: unspecified-writes.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### An array literal's subscript is expanded again once its quotes are gone\n\nIn `a=([subscript]=value)`, Bash removes the subscript's quotes and expands what's left: `a=(['$'('rm -rf /)']=1)` runs\n`rm`, and was allowed.\n"
+    filename: array-subscript-unquoted.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### `hash` reads its options as Bash does\n\nThey end at the first name (`hash x -p /bin/true rm` gives `rm` no path), `-p` gives its path to every name, and a\nname without `-p` is looked up on `PATH` again, forgetting the path it had. A name only known at run time is a\nfinding.\n"
+    filename: hash-options.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A function name with quotes defines nothing, and double quotes in arithmetic\n\nBash refuses to define `'r'm() { :; }` or `\\rm() { :; }`: `rm` still runs the program, where it was read as the\nfunction. And arithmetic is also walked with its double quotes gone, as a subscript Bash expands again has them gone.\n"
+    filename: function-names-arithmetic-quotes.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: minor\n---\n\n### `network:read`: `recommended` allows `git fetch`, `git ls-remote` and the `gh` commands that only read\n\nA new effect for reading from a host already set up. `git fetch` and `git ls-remote` have it when the remote is given by its name or not at all, and so do gh's commands that look (`gh pr view`, `gh pr checks`, `gh run view`, `gh issue list`, `gh search`, `gh repo view` and the like). They keep `network` once the command line may say where to go: a URL or a path, `git -c`, `--git-dir`, `gh -R HOST/OWNER/REPO`, `--web`, an argument only known at run time, or an option the spec doesn't know.\n\n**Breaking:** these commands no longer have `network`, so a rule naming `network` no longer matches them. Name `network:read` too to keep asking.\n\n### A forced fetch asks\n\n`git fetch --force`, `--refmap`, `--update-head-ok`, `--prune-tags` and a `+` refspec move or delete local refs.\n\n### `git remote add`, `set-url`, `rename`, `remove`, `set-head` and `set-branches` write `.git/config`\n\n`git remote set-url origin https://example.com/x.git` was allowed by `recommended`, and decides where a later fetch or push goes.\n\n### `git ls-remote --upload-pack` is `exec:arbitrary`\n\nIt had no options in its spec, so the program it runs was an unknown option.\n\n### `GH_HOST`, `GH_REPO` and proxy variables are sensitive\n\n`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` (and lowercase) send a program's requests through a host the command line chooses.\n"
+    filename: network-read.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Inner quotes in a here-document's default\n\nAs in a double-quoted string, Bash removes the inner quotes in a here-document's `${u:-\"$\"(\"cmd)\"}` before expanding\nit, so `cmd` runs; so does arithmetic, which is expanded the same way.\n"
+    filename: heredoc-inner-quotes.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### `/dev/tcp`, `checkout -p`, cargo's `--logfile`, workspace selectors, and project code after git rewrote the tree\n\n- A redirection to Bash's `/dev/tcp/host/port` or `/dev/udp/…` is `network`, and so is one only known at run time.\n- `git checkout -p` discards the hunks it's told to, and asks as `restore -p` does.\n- `cargo test -- --logfile <file>` (and `bench`) writes that file.\n- `npm -w`, `pnpm --filter` and `-w`, `bun --filter`, and cargo's `-p`, `--workspace` and `--exclude` run another\n  package's code: `exec:file`, unless the value is a path inside the project.\n- Without a filesystem, project code run after git rewrote the work tree is `exec:file`, as with one.\n"
+    filename: policy-round-16.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Subscripts in names Bash reads, and prompt strings `${x@P}` expands\n\nBash expands the subscript in a name that `read`, `printf -v`, `wait -p`, `unset`, `test -v`, `[[ -v ]]`, `declare` or\n`${!x}` reads, and in a variable's value used as arithmetic: `read 'a[$(rm -rf ~)]'` runs `rm`, and was allowed. So\ndoes `${x@P}`, which expands x's value as a prompt string, after decoding octal escapes (`\\044` is `$`, in `PS4` too).\nA name only known at run time, and an arithmetic value only known at run time, now count as code unseen.\n"
+    filename: name-subscripts-prompts.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### While an exec is checked, the rest of the supervised tree is stopped\n\nNothing in the tree can change the exec's arguments between the check and the kernel's copy of them.\n\n### A clone with `CLONE_UNTRACED` fails under the supervisor\n\nIts child would be no tracee: the supervisor couldn't stop it, and the run could end while it still ran.\n"
+    filename: exec-freeze.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### unbash 6.0.2\n\n`$'…'` stops at its first NUL escape, as in Bash, and `<<` inside `${…}` no longer starts a here-document.\n"
+    filename: unbash-6-0-2.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### ANSI-C `\\x{…}`, signed and zero-padded brace sequences, `~+` after `PWD`, env's escapes, words that split into options, and exported temporary variables\n\nEach of these was allowed while Bash did something else:\n\n- `$'\\x{2d}exec'` is `-exec`: Bash reads `\\x{…}` as one byte from any number of hex digits, and the parser kept it as\n  text.\n- `-e{x..x..+1}ec` is `-exec`: a brace sequence's ends and step may have a `+` sign. Ends written with a leading zero\n  pad every value (`{01..03}` is `01 02 03`), and a sequence too long to list is only known at run time.\n- `~+` is `$PWD`, not the working directory, so setting `PWD` is a finding, as `HOME` is.\n- `env -S` splits with escapes of its own (`\\_` separates words), so a string with a backslash is only known at run\n  time.\n- A word that may split may hold options after its first field, whatever that starts with:\n  `git log HEAD$(printf ' --output=f')`, and `find -name a$x` or `find -exec echo $x` with `x=' ; -delete'`.\n- `a=rm export a` (and `declare -x`, `declare -r`, `readonly`) keeps `a` after the command. Exported from code `eval`\n  or a function runs, the value is only known at run time: Bash 5.2 and 5.3 differ.\n"
+    filename: words-bash-reads-differently.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: minor\n---\n\n### `matchRule` matches one rule against one invocation\n\nA gate that maps invocations to actions of its own, rather than to allow, ask and deny, can match them with the same three-valued rules a policy uses: `matchRule(deny('gh pr merge'), invocation, analysis)` is 0 (no), 1 (maybe) or 2 (yes). `Tri` and `Start` are exported with it.\n"
+    filename: match-rule.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Shell state follows when Bash expands a tilde, what a function's return puts back, and an alias on a function's name\n\n- An unquoted `~`, `~+` or `~-` in an assignment, `export`/`declare`/`local` and a `for` list is expanded as it's\n  assigned, so `d=~+; cd elsewhere; echo x > $d/f` writes where the assignment ran.\n- A function's return puts a local's variable back to what it was when `local` ran: `f() { d=/tmp; local d=.; }` leaves\n  `d` at `/tmp`.\n- `declare -g` with a value under a temporary assignment of the same name keeps the value after the command.\n- An assignment-only command (`x=/tmp >$x/f`) redirects with the values it just assigned.\n- With aliases on, the name of a `name()` definition is alias-expanded, as Bash does: `alias rm=zz; rm() { …; }` defines\n  `zz`, and `\\rm` is still the program.\n"
+    filename: shell-state-round-27.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### No process under the supervisor holds `CAP_SYS_PTRACE`, root included\n"
+    filename: no-ptrace-capability.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A `$\"…\"` string in arithmetic is unknown syntax\n\nBash translates `$\"…\"` as it parses arithmetic, and what that leaves with the expansions around it, read again as a\nsubscript, can run code (`(( a[$\"$\"$@\"\"(cmd)] = 1 ))`): it's an `unknown-syntax` finding.\n"
+    filename: arithmetic-locale-string.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### An array literal's subscript is expanded twice\n\nBash expands `a=([$k]=1)`'s subscript, then expands what that leaves again, so `k='$(rm -rf /)'` runs `rm`: what a\nknown value leaves is walked, and one only known at run time is a `dynamic-script` finding, as it may be any code.\n"
+    filename: subscript-expanded-twice.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Git's config and hooks are read from the repository git takes\n\nWith a filesystem, only `<root>/.git/config` was read. Git also takes the directory `--git-dir` or `--bare` names, and any directory that has a `HEAD`, `objects` and `refs` itself, so `git --git-dir=r status` and `cd r; git fetch o` ran the `core.fsmonitor` and `core.sshCommand` of a directory made by hand, unseen. A `.git` git doesn't take (one with only a `config`) no longer hides the repository above it. `--work-tree` is where git's rewrites of the work tree count.\n\n### `recommended` asks about any write inside a `.git`, and to a file named `HEAD`\n\nWithout a filesystem that is what stops a repository made by hand. Writes to `.git/info` or a submodule's `.git/modules/*/config` were allowed.\n"
+    filename: git-repository-discovery.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Words the parser reads differently from Bash fail closed\n\nBash closes a brace only after a comma: `{a}s,d}` is `a}s d`, which the parser read as text. A word whose braces Bash\nexpands differently from the parser is now only known at run time. A word with quotes or substitutions the parser\nkept as plain text (`ls[ $(rm -rf /) ]''`, one word to Bash, which runs the substitution) is a parse error.\n`compgen -C` runs its code as a substitution, so in POSIX mode without aliases.\n"
+    filename: brace-disagreements.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### `yq -i` and `file -C` write files\n\n`yq -i '.a = 1' ~/.bashrc` was allowed as a read. `yq -i` writes the files it's given, `yq -s` and `file -C` write files named as they run.\n"
+    filename: yq-file-writes.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### `break`, `continue` and `return` skip the rest of a loop or function\n\nWhat holds at each counts after the loop or call: in `f() { x=rm; return; x=ls; }; f; $x -rf /`, `$x` is `rm`.\n\n### An arithmetic `for` loop's test and update see what the body changed\n\nThey run again after each pass, so a subscript the body assigns is expanded.\n"
+    filename: control-flow-jumps.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Inner quotes in a default, in pairs and in `$\"…\"`\n\nBash removes the inner quotes of a default in pairs, `$\"…\"` ones included, so `\"${u:-$\"\"\"$\"(\"rm -rf /)\"}\"` runs `rm`;\nand it does the same in a `$\"…\"` string as in a double-quoted one.\n"
+    filename: locale-inner-quotes.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A path through a symlink's `..` or `/proc` is never the system program or the file predicted\n\n- `/proc/self/cwd/../../usr/bin/ls` or `link/../../usr/bin/ls` folds to `/usr/bin/ls` as text, while the kernel leaves\n  from where the symlink leads: such a program path is no system path (`exec:file`), and under the supervisor no exec\n  by it is covered, nor is a wrapper's shell started by it.\n"
+    filename: trace-round-33.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: minor\n---\n\n### `recommended` in a project under HOME, an `outputs` rule field, and more destructive git forms\n\n- A project under `HOME`, as most are, is judged as one anywhere else: `recommended` no longer names `~` among the\n  places outside the working directory, since `..` from an absolute `cwd` covers it, and a path that can't be placed\n  may be outside. `~/.bashrc` still asks.\n- Rules take `outputs`: globs for the files an invocation's own arguments name (`sort -o`, `sed`'s `w`), without its\n  redirections. `Invocation.outputs` holds them. `recommended` uses it for `sed`, `awk`, `uniq`, `xxd` and `tree`, so\n  `sed -n 1,5p a > out.txt` runs.\n- Deny and ask rules match `head` in any case as `HEAD`, and `GIT~1` as `.git`.\n- `recommended` asks about `git checkout -B`, `switch -C`, `checkout -f`, `switch --discard-changes`, `checkout --ours`\n  or `--theirs`, paths checked out from a commit, `restore` of the work tree, and `fetch --prune` into local branches or\n  tags; it denies `git push --prune`.\n- `GIT_TRACE2*` and other git variables with a digit are sensitive. `cp -s`, and copies that keep symlinks (`-P`, `-d`,\n  `-a`, `-r` without `-L`), count their sources as written. `cargo fmt -- file` rewrites that file.\n"
+    filename: policy-round-7.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Options are read as the programs' own parsers read them\n\n- `CommandSpec.dashless`: an option's value is never a separate word starting with `-`, which is read as an option\n  instead, as mri, cac, minimist, yargs and nopt's strings do. pnpm, vite, vitest, tsdown, prettier and jest are read\n  so: `pnpm -C --config.script-shell=x test` sets the script shell, `vite -m dev -m --host` listens on the network.\n- tsc's flags take a `true` or `false` after them: `tsc --noEmit false x.ts` emits.\n- `cargo clippy --` passes its words to rustc: anything but lint levels (`-D warnings`) may run a linker or write.\n- `git push --no-verify --veri` turns the hook back on: a duplicate entry kept `--veri` from being read as `--verify`.\n  Duplicates in the tar, rsync, strace and biome specs are gone too, and `gh repo read-file|read-dir` take `-R`.\n"
+    filename: argv-round-29.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### `xargs --process-slot-var`, `nohup.out`, `script`'s log, and variables that load code or write\n\n- `xargs --process-slot-var=NAME` puts `NAME` in what it runs' environment: `PATH` there is sensitive, and a name only\n  known at run time is `exec:arbitrary`.\n- `nohup` writes `nohup.out` where it runs, and `script` without a file writes `typescript`.\n- `GCONV_PATH` (glibc loads code from it), `GNUPGHOME` (its `gpg.conf` names programs), and `SSLKEYLOGFILE` and\n  `GNUTLS_KEYLOGFILE` (TLS writes its secrets there) are sensitive.\n"
+    filename: wrappers-round-20.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### An assignment removes the quotes in a glob, and an unquoted value is a pattern\n\n`x=a['q']` stores `a[q]`, as in Bash, so `x=[';rm -rf /;']; eval \"$x\"` runs `rm`; the quotes were kept. A known\nvalue used unquoted is matched against files as a written glob is: `x='*'; cat $x` is a glob, no longer the word `*`.\n"
+    filename: assignment-glob-quotes.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### The words after a package script are walked with it\n\nnpm, pnpm and bun append the words after a script's name to it, so `npm test -- --config /tmp/x.ts` runs\n`vitest --config /tmp/x.ts`. They were dropped: the script was walked bare, and allowed. Now they're appended, quoted,\nbefore it's walked (bun drops a `--` right after the name; pnpm keeps it). Where it isn't walked (no `fs`, a\nworkspace, a word only known at run time), they're `exec:arbitrary`.\n\n### Project code is the project's where the script starts\n\n`npm --prefix /tmp/x test`, `cd .. && npm test` and `git -C /tmp/x commit` ran another directory's scripts or hooks\nas `exec:project`. Project code run anywhere but under where the script starts is `exec:file` now, and so is a file\ngiven from elsewhere that a tool runs or finds configuration beside: `bun test /tmp/x.test.ts`, `bun build\n../x/entry.ts` (its macros run), `eslint ../other` and `prettier ../other` (configuration beside the files),\n`oxlint` and `oxfmt` likewise. `tsdown -W` and `bun --env-file` are `exec:file`. So is git with another repository\n(`-C`, `--git-dir`, `--work-tree` elsewhere), whatever the command: its config may run code (`core.fsmonitor`). Where is\nwhere it really is: under a symlink to elsewhere (`cd link`), one the script may have made, or a work tree git has\nrewritten, project code is `exec:file`. A relative `-C`, `--prefix` or `--cwd` after another is a place only known at\nrun time (git and make take it from the one before).\n\n### Package managers\n\n- With no package.json where it runs, npm looks in the directories above: the `exec-config` finding for that never\n  fired, so the script went unwalked and allowed.\n- npm's `-C` takes a directory: `npm -C run test` runs `./run`'s test script.\n- `npm pack <spec>` packs another package: a directory's is `exec:file`, and one from the registry or a git host\n  `network` and `exec:arbitrary` (npm installs it and runs its `prepare`).\n- `npm -g run x` runs the local script, and is walked.\n- The scripts `npm pack` and `npm version` run (`prepack`, `prepare`, `postpack`, the version scripts) are walked, and\n  so is the commit `npm version` makes, whose hooks run.\n- A flag that turns something off counts only given bare: npm reads `--ignore-scripts=false` as false, and it was\n  read as `--ignore-scripts`, skipping the scripts.\n- pnpm's `with`, `ci` and `query` (which installs), and bun's `ci`, `r`, `uninstall`, `list`, `getcompletes` and\n  `bun bun` are their own commands, run in place of a script of that name.\n\n### Git rewrites aren't the project's\n\nA file git rewrote in the work tree was walked as it was before, as a `project-file` finding, whatever was checked out:\n`git fetch origin pull/1/head && git checkout FETCH_HEAD -- package.json && npm run x` walked the old scripts. `HEAD`,\nthe index and a stash are no better: an earlier command, or this one, may have committed, staged or stashed anything\n(`git stash apply FETCH_HEAD`, `git mv -f a package.json`). After any rewrite, a read in the work tree is unknown.\n\n### Fetching dependencies\n\n`cargo build` and the commands like it, and bun running code or tests, fetch what they haven't got: `network:read`,\nwhich `recommended` allows for them, unless `--offline` or `--frozen` (cargo) or `--no-install` (bun).\n\n### Others\n\n- A prompt string's `\\\\` is one backslash once decoded, which escapes what follows as it's expanded.\n- git opens `core.hooksPath` and include paths as given, so a `..` after a symlink leads up from where the symlink\n  does. They were resolved as text.\n- With `resolveJsonModule`, tsc copies the JSON its sources import into its output, from wherever it is: every `.json`\n  is unknown after it, a package.json included, so `tsc && npm test` asks with `fs` (`tsc --noEmit` writes nothing).\n- A short option spelled with a capital (`-W`) in a cac or yargs tool was given a bogus long name (`--w`), so tsdown's\n  `-W` wasn't read as `--workspace`.\n"
+    filename: project-code-bounds.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### What children inherit, aliases Bash doesn't expand or names with braces, `local -`, and `cd`\n\n- `export -n`, `declare +x` and `unset` take a variable's export away, and `env -i`, `-u` and `NAME=` change what the\n  command they run, and a shell under it, gets.\n- No alias is expanded after an assignment followed by a redirection (`x=1 >f rm`), and an alias is looked up by the\n  word as written, braces and all (`{ls,.}`).\n- Returning from a function with `local -` puts POSIX mode back as `set` does, turning aliases with it; an\n  `expand_aliases` the function changed may be either after.\n- A logical `cd` whose `..` path isn't there goes where the kernel reads it, up from where a symlink leads; and with a\n  nameref on `PWD` or `OLDPWD`, `cd` may fail after it moved.\n- `enable -p` and `-d` turn no builtin off.\n"
+    filename: shell-state-round-19.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: minor\n---\n\n### A shell's here-document or here-string is walked as code\n\n`bash <<'EOF'`, `sh -s x <<< 'code'`: what the shell reads from its standard input is followed like `bash -c`. A body\nonly known at run time, or other input (a pipe, a file, the caller's), is a `dynamic-script` finding. `-s` reads the\nscript from standard input, not from its first argument, and a lone `-` ends the options: `sh - <<< 'code'` reads it\ntoo.\n"
+    filename: shell-stdin.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: minor\n---\n\n### `recommended` allows the tools project scripts run\n\n`tsc`, `tsgo`, `biome`, `oxlint`, `oxfmt`, `eslint`, `prettier`, `vitest`, `jest`, `tsdown` and `vite` have specs and\nrun, so a script made of them is allowed with a filesystem. They still ask when they write outside the working\ndirectory (`prettier --write ~/x`, `tsc --outDir ../x`, in any case tsc reads), delete (`tsc -b --clean`), or listen\nbeyond this machine (`vite --host`).\n\n### `tsc` and `biome` write only files of their kinds\n\nAfter `tsc`, only what it emits (`.js`, `.d.ts`, `.map`, `.tsbuildinfo`) is unknown, and after `biome` only what it\nformats, so `tsc && git commit` still reads the hooks. The tools that load JavaScript configuration may still write\nanything.\n\n### A pipeline's commands don't change what each other read before them\n\nA read in a pipeline was unknown after anything the script wrote, the reader's own later writes included, so\n`npm test | tail` asked whenever the test script ran something unspecified. Now only the pipeline's other commands\ncount, and with `&` or `<(…)` the rest of the script.\n\n### `git worktree list` runs\n\n`git worktree` has its subcommands: `list` writes nothing, `add` checks out where it says and runs post-checkout.\n"
+    filename: dev-tools.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Declare's bad names, a builtin's temporary environment, and process substitutions in POSIX mode\n\n`declare y!=d` is no name to Bash, which refuses it and leaves `y` as it was. What a builtin or function assigns to a\nvariable it was given for the call (`z=a read z`) is gone after it unless it went global, so it's only known at run\ntime. And in POSIX mode a process substitution has the aliases defined when it runs, unlike a command substitution.\n"
+    filename: declare-names-temp-env-procsub.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Braces in `alias` and `declare` arguments are expanded\n\n`alias l=\"ls -la\"{x,y}` defines `l` twice, the last time as `ls -lay`, and `declare v=a{b,c}` sets `v` to `ac`. The\nanalysis kept the braces in the value.\n"
+    filename: declaration-braces.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A lone `$` keeps a word whole, and a backslash ending the code is a parse error\n\nBash doesn't split a word with a `$` in it that starts no expansion: with `x='a b'`, `$x-$` is the one word `a b-$`.\nA backslash that ends the code is kept by Bash, or dropped after a quoted string over several lines, so it's counted\nas a parse error.\n"
+    filename: lone-dollar-trailing-backslash.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Prompt strings' escapes are decoded as Bash decodes them\n\nBash decodes a prompt string's escapes before it expands it, so `PS4='$(echo a\\nrm -rf /) '` runs `rm -rf /`: `\\n` is\na newline in the substitution. The analysis decoded only octal escapes, and allowed it. It now decodes `\\n`, `\\r`,\n`\\a`, `\\e`, `\\[` and `\\]` too, and an escape whose value is only known at run time (`\\s`, `\\u`, `\\w`, `\\$` and the\nothers) in a prompt string that expands anything is a `dynamic-script` finding.\n\n### `tsc` writes the file it's given, whatever its name\n\n`tsc --outFile package.json` and `--tsBuildInfoFile` write that file, but only files of the kinds tsc emits counted as\nchanged after it, so a later `npm run` read the old scripts. A file named for tsc to write, or one biome's or tsc's\n`--init` creates, now counts as changed; the files and directories they're given to work in still stand for files of\ntheir kinds only.\n"
+    filename: prompt-escapes.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: minor\n---\n\n### `bash-gate/trace` runs a command under a supervisor that checks every exec against the analysis\n\n`run(source, { mode })` runs the command in Bash with every `execve` in its process tree stopped by ptrace and seccomp. In `enforce` mode, one the shell or a wrapper it follows (`xargs`, `env`, `find -exec`) makes that the analysis didn't predict fails with EPERM before it runs; in `trace` mode it runs and is reported. x86_64 Linux, Node, and a C compiler to build the supervisor on first use. The coverage check is in the main entry too, as `covers` and `predicting`.\n"
+    filename: trace-layer.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Shell options that change what runs are followed\n\n`lastpipe` keeps what a pipeline's last command assigns, `localvar_inherit` gives a local its outer value, `allexport`\nexports variables and functions to the shells a script starts, and BASHOPTS or SHELLOPTS, exported, pass options on.\n`set -P`, `cd -P` and `cdable_vars` leave the working directory unknown. A compatibility level, `set -k` and `set +B`\nare `unknown-syntax` findings, and a shell's `+` options (`bash +B -c …`) no longer hide its code. An assignment before\na function or builtin is a variable while it runs, and `unset` in a function may show a caller's hidden value.\n"
+    filename: shell-options.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Words `xargs` appends are read with the command line\n\n`echo 'rm -rf /' | xargs env` was allowed: the words `xargs` adds were counted after the command was read, so a wrapper given no command ran them unseen, and `xargs cp payload` or `xargs tee` wrote files no rule saw. They're now read as the rest are: as the command a wrapper runs, an option, or a file written.\n\n### A word that may be several before a wrapper's command leaves the command unknown\n\n`timeout $(cat list)` and `nice -n $(cat list)` were allowed, though the words may hold the command itself. So is a word that may be an option before `timeout`'s duration.\n"
+    filename: appended-words.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A command after `nice --` that starts with a dash is unknown\n\nuutils' `nice` rewrites `-n N` into `-nN` even after `--`, so `nice -- -n 1 cmd` runs `-n1` there and `-n` in GNU's.\n"
+    filename: nice-dash-command.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### The JavaScript tools load only what the analysis sees\n\n`vitest`, `jest`, `vite` and `tsdown` had no options in their specs, and run, so `vitest --globalSetup=/tmp/x.ts` was\nallowed. Each now knows its options, and one it doesn't know is `exec:arbitrary`: cac and yargs take it as\nconfiguration, which may load a module, in either camelCase or kebab-case. What loads code from the command line is\n`exec:file`: a configuration file named there, jest's setup files, transforms and runners, and a reporter, pool,\nenvironment, formatter, parser or plugin given by its path. `tsdown --on-success` is walked as shell code. Servers\n(`vitest --ui`, `--api`, `--inspect`) are `network`, and `eslint --init` and `--inspect-config`, which fetch and run a\npackage, are `network` and `exec:arbitrary`. `vite`'s root, another project's, is `exec:file`.\n"
+    filename: js-tool-options.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### `local -`, `local -g`, elements, `declare -p` and `cd -P`\n\n- `local -` puts POSIX mode, `expand_aliases` and the other `set` options back when the function returns, so\n  aliases and special builtins after it are read as Bash reads them.\n- `local -g` assigns the global, not a local.\n- `unset 'x[0]'` unsets a plain variable, and an element assigned with `declare`, `local` or `export` (which refuses\n  it) leaves the variable's value only known at run time; so do `declare -a`, `-A` and a quoted `(…)` value, which\n  may be a list.\n- `declare -p` and `-F` assign nothing, and make no local in a function.\n- After `cd -P` (or under `set -P`), the working directory is where symlinks lead, read from the files, or unknown\n  without them; the last of `-L` and `-P` counts.\n- `read -E` (Bash 5.3) assigns its names.\n"
+    filename: shell-state-round-11.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### An alias named across a line continuation, declare's unseen braces, and where a lone `$` stops splitting\n\nA line continuation is gone before Bash looks for an alias, so `l\\` and a newline then `s` runs the alias `ls`. A\n`declare` argument whose braces Bash expands but the parser didn't see (`d=(a){b,c}`) is only known at run time. And a\nlone `$` keeps a word from splitting only when no unquoted expansion comes after it: `$x$/$x` still splits.\n"
+    filename: alias-continuation-split-declare.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Hooks are followed in the directory `core.hooksPath` names\n\nWith a filesystem, a repository whose config sets `core.hooksPath` (husky does) had every git command ask. The hooks there are now read like those in `.git/hooks`, and the finding stays only where the directory isn't certain: a relative path with `--git-dir` or `--work-tree`, `~` without a known `HOME`, or a path set in a conditional include.\n\n### Every git command is checked for the hooks it runs\n\n`git status` runs `post-index-change`, any ref update `reference-transaction`, `git restore` `post-checkout` and `git pull` the hooks of a merge and a rebase: none were read. A command the table doesn't have, or an alias, is checked for every hook.\n\n### A hook defined in git config is code\n\nRecent gits (2.55 does) run `hook.<name>.command` on the event `hook.<name>.event` names, so `git -c hook.x.command=… -c hook.x.event=reference-transaction branch b` ran a command `recommended` allowed. `config.worktree` is read with the repository's config too.\n"
+    filename: git-hooks-path.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### The shell a wrapper starts, relative paths under enforcement, `SHELL`, and `unshare` or `chroot` with no command\n\n- `bash-gate/trace` covers the shell a wrapper runs code through (`flock -c`, `watch`, `dash -c`) only when it's the\n  system's: `SHELL=./bash flock -c …` and a `PATH` set in that code no longer run another file named `bash`.\n- A relative path is covered by the file it reaches from where the process really is, so `cd link && ../tool` through\n  a symlink isn't taken for the `../tool` predicted.\n- `SHELL` is sensitive: `flock -c`, `script -c`, `unshare` and `chroot` run it.\n- `unshare` and `chroot` with no command run a shell on their input or a terminal: `exec:arbitrary`.\n"
+    filename: trace-round-17.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Namerefs, compgen and file follow the code and writes they reach\n\n- `declare -n r='a[$(cmd)]'` (and `local -n`) walks the target's subscript, which every read of `r` runs; a target only\n  known at run time is a finding.\n- `compgen -W` expands its word list, substitutions and all, and `compgen -F f` calls `f` in the shell itself.\n- `file` with an argument only known at run time (`xargs file`, `file $a`) may be `-C`, which writes compiled magic in\n  the working directory.\n"
+    filename: wrappers-round-28.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A command whose redirection may fail may not run\n\nBash runs none of a command, or a `{ …; }` group, when it can't open one of its files, so what it would change may\nstay as it was: `alias rm=true <missing` defines nothing, and `rm -rf /` after it was read as `true -rf /`.\n"
+    filename: failed-redirection.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: minor\n---\n\n### What only project code may have changed is a `project-file` finding, which `recommended` allows\n\nWith a filesystem, a test run or build before a git command (`cargo test; git status`, `bun test && git stash pop`)\nmade git's config and hooks unknown, so the command asked, though the project code that might have changed them was\nallowed to run anything itself. When the only program that may have written files no one can name is project code\nthe analysis doesn't follow (`exec:project`), a read after it is now a `project-file` finding, which `recommended`\nallows. What was there before is still walked, so a hook that denies still denies, and real paths are kept. A policy that asks about `exec:project` still asks about the code. Anything else that\nmay write anything (`python3 -c`, `./build.sh`, `npm install`) still makes later reads `unknown-file`.\n\n### A program's redirection no longer makes every later read unknown\n\n`cat a > out && git commit` asked with a filesystem: the redirection gave `cat` a write its spec didn't name, which\ncounted as a program writing files no one can name. A redirection's writes are named, and now count as only those.\n"
+    filename: project-file.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### An assignment of a process substitution replaces the variable's value\n\n`x=ls; x=<(:); $x` kept `x` as `ls`; it's now only known at run time, as in Bash, where it's a `/dev/fd` path.\n"
+    filename: process-substitution-assignment.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### What a wrapper starts is found on `PATH`, not in the shell's `hash -p` table\n\n`hash -p /bin/true rm; env rm -rf /` was read as `env true -rf /`; `env`, `sudo`, `xargs` and the other wrappers now\nrun `rm`, as they do in Bash. The shell's own lookups, `command` and `exec` still use the table.\n"
+    filename: wrapper-path-lookup.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Options as the programs read them: git's, pflag's `-o=value`, xargs, watch, touch, cp, rg and `POSIXLY_CORRECT`\n\nEach of these was allowed while the program did something else:\n\n- `git --attr-source`, `--shallow-file` and `--super-prefix` take the next word, which isn't the subcommand.\n- `git config set key value` and `git config --comment hi key value` set `key`: the subcommand and the value options\n  of `git config` are read, and unsetting or renaming writes the config file as setting does. `git config -e` runs\n  an editor.\n- `git reflog expire`, `delete` and `drop` delete entries, a stash among them.\n- `git blame`, `annotate`, `shortlog`, `rev-list`, `whatchanged`, `reflog` and `stash show` write `--output`.\n- `git branch -M` and `-C` force, as `-D` does.\n- `git commit -Sn` is `-S` with the key `n`, and `--verify` after `--no-verify` runs the hooks again.\n- A Go program's `-o=value` (cobra's pflag) has the value `value`.\n- `xargs --max-lines` takes a value only after `=`, and `watch -d` takes one attached.\n- `touch -m` is a flag, so the word after it is a file to write.\n- `cp` and `mv` know `--sparse`, `--no-preserve` and their other options. With one they don't know, any operand may\n  be the target.\n- `rg --hostname-bin` runs a program.\n- `POSIXLY_CORRECT` makes GNU programs stop reading options at the first operand: setting it, or a program run with\n  it in its environment, is a finding. Bash starts in POSIX mode with it in the environment.\n"
+    filename: options-as-programs-read-them.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Specs checked against the programs' documentation\n\nEach of these was allowed while the program did more:\n\n- `watch -s` (`--shotsdir`) takes a directory, so the command is the words after it.\n- yq writes a file per document with `--split-exp-file`, and runs programs with `--security-enable-system-operator`.\n- jest writes `--cacheDirectory` and `--coverageDirectory`, and `--clearCache` deletes the cache directory.\n- git runs `gpg.ssh.defaultKeyCommand`, `trailer.<key>.command` and `.cmd`, `core.alternateRefsCommand` and\n  `gc.recentObjectsHook`.\n- `git config --global` writes `~/.gitconfig`, `--system` `/etc/gitconfig` and `--worktree` `.git/config.worktree`.\n- A merge strategy git doesn't have (`git merge -s evil`) is `git-merge-evil` from PATH, for merge, pull, rebase,\n  cherry-pick and revert.\n- `git help -w` opens a browser.\n- Setting `RIPGREP_CONFIG_PATH` is a finding: the file may name a program rg runs.\n- `sort -T` writes its temporary files in that directory.\n- tree reads a cluster's letters one at a time, each taking the next word after it: `tree -Lo 2 x` writes `x`.\n"
+    filename: specs-against-docs.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### More places the parser and Bash disagree are parse errors\n\nA here-document that's never closed, which in a substitution Bash ends elsewhere than the parser does; an array\nassignment with text after it (`v=(…)x`), which Bash expands as a string where the parser sees no substitutions; a\nprocess substitution after digits (`2>(…)`), which Bash runs and the parser read as text; a `${…}` the parser\ncouldn't read, such as `${a[$(f)}]}`, where Bash runs `f`; a `$` before a line continuation, which Bash joins to the\nname after it; and an expansion that's never closed in a here-document or prompt string, which the parser closes\nwithout an error. `cat a 2>(rm -rf /)` was allowed.\n"
+    filename: parse-disagreements.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Backquotes have their run-time aliases in POSIX mode\n\nBash parses backquotes as they run, like a process substitution, so in POSIX mode they get the aliases defined then,\neven inside a `$(…)` that has its line's: `{ alias ls=\"rm -rf /\"; x=$(echo \\`ls\\`); }`on separate lines runs`rm`.\n"
+    filename: posix-backquote-aliases.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A shell that runs its startup files is a finding\n\n`bash -i` reads `~/.bashrc` unless given `--norc`, and a login shell (`-l`, `--login`) reads `/etc/profile` and\n`~/.profile` unless given `--noprofile`: code the analysis doesn't see, so an `exec-config` finding.\n"
+    filename: shell-startup-files.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### `shopt` reads its options as Bash does\n\nA lone `-` ends them and is a name, so `shopt - -s expand_aliases` turns nothing on, and a word with a letter Bash\nrejects (`-s-`) changes nothing. Both were read as `shopt -s expand_aliases`, which made the analysis expand aliases\nBash didn't.\n"
+    filename: shopt-getopt.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### The threat model assumes nothing writes between the analysis and the end of the run\n\nAn integration runs commands one at a time, each once everything the last one started has exited: a background job\nfrom an earlier command could rewrite a hook after the next was checked. `bash-gate/trace` already waits for daemons.\n"
+    filename: one-command-at-a-time.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A function is read in the code it was defined in, wherever it's called from\n\nA function called from a trap or `eval` was read against the caller's code, so `trap f EXIT; f() { x=$(( '$(rm -rf /)'\n)); }` missed `rm`. A `declare` word only known at run time that may be an option leaves the variables it names\nunknown, as Bash may reject it. And braces Bash expands differently from the parser are a parse error, as they may\nmultiply the substitutions in the word.\n"
+    filename: function-source-declare-dynamic.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Text after a process substitution in a redirection belongs to its target\n\n`cat <<< <(f)x -n y` reads from one word, `<(f)x`, where the parser ended the target at the substitution and made `x`\nan argument.\n"
+    filename: redirection-target-join.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### An alias ending in a blank reaches past quoted words\n\nBash doesn't expand a quoted word after it, but still checks the next one: with `alias s='sudo ' r='rm -rf /'`,\n`s \\env r` runs `sudo env rm -rf /`.\n"
+    filename: alias-after-quoted.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Special builtins in POSIX mode, alias and unset options, attributes unset takes away, locals that may not be, PS4 with a temporary environment, pushd's stack, and functions a child shell gets\n\nEach of these was allowed while Bash ran something else:\n\n- In POSIX mode (`set -o posix`, or `POSIXLY_CORRECT` before the command) a special builtin (`eval`, `exec`,\n  `export`…) is found before a function of the same name. `POSIXLY_CORRECT=1` before a special builtin leaves POSIX\n  mode on.\n- `alias` and `unalias` read their options as getopt does: `alias -- -x=…` defines `-x`, `unalias -- -a` removes no\n  alias, and one Bash refuses (`alias /bin/rm=…`) defines nothing. An alias named after a reserved word (`fi`, `{`)\n  is a finding, as Bash expands it where the analysis doesn't. `unalias` with a name only known at run time may\n  remove any.\n- `unset -f -v` unsets nothing, and `unset` takes away the integer and case attributes. `declare +i` takes the\n  integer one away, and an integer attribute given on one way only may not be there.\n- `declare -r` and `readonly` are a finding: later assignments and `unset` leave the variable as it is.\n- `local -I` starts with the value outside. A `local` that may not have run, `declare -g` beside a local, and `unset`\n  of a caller's local leave the variable only known at run time after the call.\n- PS4 is walked between a statement's assignments and with a command's temporary environment in place.\n- `pushd` with no directory, `+N` or `-N` goes to a directory only known at run time, and `pushd -n` stays.\n- `declare -fx` exports a function, and `export -nf`, `declare +x -f` and `unset -f` take it back. A shell that may\n  not be Bash (`sh`, a hook, a package script) may run the program instead of an exported function, and\n  `env BASH_FUNC_name%%=…` is a finding.\n"
+    filename: shell-state-round-2.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: minor\n---\n\n### `recommended` asks about the user's own configuration from HOME too\n\nWrites to `~/.gitconfig`, `~/.config/git/`, `~/.ssh/` and the shell startup files (`~/.bashrc`, `~/.profile`, `~/.zshrc`\nand the like) ask even when the script starts in HOME, where `..` doesn't reach them: git and the shell run what they\nsay later.\n"
+    filename: home-config.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A subcommand only known at run time may match a rule at every level under it\n\n`git $x stash drop` no longer escapes `deny('git stash drop')`: a rule naming two subcommand levels may match, so it asks.\n"
+    filename: dynamic-subcommand-levels.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Substitutions' aliases in POSIX mode, inner quotes in a quoted default, and names running out of braces\n\nIn POSIX mode Bash runs a command substitution as it parsed it with the line around it, so with that line's aliases\nand none it defines itself: `{ alias rm=true; x=$(rm -rf /); }` on separate lines runs `rm`. In\n`\"${u:-\"$\"(\"rm -rf /)\"}\"` Bash removes the inner quotes before expanding, and runs `rm`. And braces expand before any\nexpansion in the word, so `{$,}s` is `$s s`.\n"
+    filename: posix-substitution-aliases.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Wrappers read their options as getopt does\n\nAbbreviated long options take their value from the next word (`env --uns X cmd`, `timeout --sig KILL 5 cmd`), and an\noption a spec doesn't know leaves where the command starts unknown.\n\n### `env -S` splits its string into env's own arguments\n\n`env -S'cmd a' b` runs `cmd a b`, and options and assignments in the string count. A lone `-` is `-i`, and any word\nwith an `=` before the command is an assignment, `PATH=\"$x\"` too.\n\n### A `case` arm after `;&` or `;;&` starts from what the arm before changed\n\n### `xargs -I` and `find -execdir` follow their input\n\nThe replacement string in the command, its name too, is what each input line becomes, and `-execdir` runs the command\nin a directory only known at run time.\n"
+    filename: wrapper-specs.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### `recommended` allows `break` and `continue`\n\nA loop that used either asked, as no rule allowed them, though `exit` and `return` were allowed.\n"
+    filename: recommended-break-continue.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### env's lone `-` is `-i` only right after its options\n\n`env -- X=1 - cmd` runs a program named `-`, as GNU's env reads `-` as `-i` only where its options end. The analysis\ntook it as `-i` after the assignment too, and predicted `cmd`.\n"
+    filename: env-lone-dash.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### An `env -S` string uutils reads differently leaves the command unknown\n\nuutils' env splits only `-S`, `-vS`, `-vvS` and `--split-string` as spelled, before the first word that isn't an option,\nand never again in what it split. Any other `-S`, such as `--split cat` or `-iScat`, it ignores, so the command\ndepends on which env runs it.\n"
+    filename: uutils-env-split.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### `switch -m`, git's gc and help keys, compilers, pnpm and bun variables, and programs that open a browser\n\n- `recommended` asks about `git switch -m` and `--conflict`, which merge local changes into conflicts.\n- Git config that makes maintenance expire reflogs or prune (`gc.reflogExpire`, `gc.pruneExpire`, `maintenance.*`),\n  and that makes `git help` run a browser (`help.format`, `help.browser`, `help.htmlPath`, `man.viewer`), is a finding.\n- `CC`, `CXX`, `CPP`, `AR`, `LD` and their flags (`CFLAGS`, `LDFLAGS`…), with target and host forms, are sensitive: build\n  scripts run them. So are `pnpm_config_*`, `BUN_INSPECT` and `BIOME_LOG_PATH`.\n- `cargo help <word>` may run `cargo-<word>`; `cargo doc --open`, `vite --open` and `npm help` may run a browser.\n- `biome --log-path` names where its daemon writes.\n"
+    filename: specs-round-22.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A compound command's redirection writes even when nothing in it runs\n\n`case a in b) ;; esac > .git/config`, `(( 0 )) > f` and `[[ 0 ]] > f` open the file, as `> f` alone does.\n\n### A `cd` may fail, and the shell stays where it was\n\nAfter `cd sub; cd ..`, the working directory is unknown: if `sub` isn't there, the second `cd` leaves the project. `&&`,\n`||`, `!` and `if` say which way it went.\n\n### An `else` sees what the `elif` clauses before it changed\n\n`x=ls; if false; then :; elif x=rm; false; then :; else $x -rf /; fi` runs `rm`.\n"
+    filename: compound-redirections-cd-elif.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Writes to the user's configuration are caught however they're spelled\n\n- `~` globs also match a write's real path and where HOME really is (`Analysis.realhome`): a symlink to `~/.bashrc`, or\n  HOME given by a path that leads to the start.\n- A rule that may match is tried on the path in lower case too: `~/.BASHRC`, `~/.SSH/…` on a filesystem that ignores case.\n- A `cwd` that isn't a POSIX absolute path (`C:/w/p`, `p`) places nothing, as no `cwd` doesn't.\n- `cp`/`mv` with `-b` write the backup too, under `-S`'s suffix, or a name only known at run time without one.\n- `recommended` asks about `~/.ssh` and `~/.config/git` themselves (a whole directory copied in), `~/.config`,\n  `~/.bash_aliases`, `~/.bash_logout`, `~/.zlogin`, `~/.zlogout`, `~/.local/bin`, `~/.npmrc`, `~/.bunfig.toml` and\n  cargo's user config.\n"
+    filename: policy-round-32.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### More git checkout forms, `fetch --stdin`, `cp --parents` and `sed -i` backups\n\n- `recommended` asks about `git checkout -- <path>`, `-m` and `--conflict` (which check out paths as merged),\n  `-2` and `-3` (git's `--ours` and `--theirs`), and `--pathspec-from-file`, all of which overwrite local changes.\n  `Parsed.separated` says whether `--` ended the options.\n- `git fetch --stdin` reads refspecs that may force or prune local branches, so it counts as `--force`.\n- `cp --parents` writes each source under the target by its whole path, `..` and all.\n- `sed -i`'s backup is written too: the suffix after the file's name, or with a `*`, a path of its own.\n"
+    filename: argv-round-13.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A prompt string only known at run time is code the analysis doesn't see\n\n`PS4` or `PROMPT_COMMAND` set to a value with a substitution in it was a `sensitive-variable` finding, which `covers`\ndoesn't count as unseen code; the substitutions in such a prompt run between commands. It's a `dynamic-script` finding\nnow.\n"
+    filename: dynamic-prompt.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A NUL in `$'…'` ends it past a backslash and newline\n\n`$'/\\c a\\`, a newline, then `b'` is `/` in Bash: `\\c ` is a NUL, which ends the string. The analysis decoded the text\non either side of the backslash and newline apart, so it read `/` with a backslash, a newline and `b`, and\n`rm -rf` with it asked instead of being denied.\n"
+    filename: ansi-c-nul-continuation.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Writes to `/dev/stdin` and `/dev/fd/N`\n\nLinux opens `/dev/stdin` and `/dev/fd/N` again as the file that descriptor is on, which may be one opened for reading:\n`{ … >>/dev/stdin; } < .git/config` writes `.git/config`. A write redirection to either is to a file only known at\nrun time, and so is one to `/dev/stdout` or `/dev/stderr` in code that may open those for reading.\n"
+    filename: reopened-descriptors.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### The trace layer reads relative paths where they're run, and keeps paths meaning what they mean\n\n- The supervisor reads a relative exec path from the process's own working directory, so `cd d && ./s` is `d/s`, and\n  is judged against what the analysis predicted there.\n- The run's Bash is the system's, not one an empty or relative `PATH` entry finds first.\n- A new user or mount namespace, `chroot`, `mount`, `pivot_root`, `setns` and the new mount API fail with EPERM: no\n  process in the tree changes what a path names or gains capabilities over the others (`unshare -r`).\n- A shell a wrapper starts is covered only when it runs the code the wrapper was given; arguments that aren't UTF-8 only\n  by a finding that hides code.\n- `source` of a file the analysis doesn't see, and `mapfile -C`'s callback, leave the working directory unknown.\n"
+    filename: trace-round-25.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### `set` and `shopt` read their options as Bash does\n\n`set -eo posix`, `set -o -o posix` and `shopt -so posix` turn POSIX mode on, and with it aliases, which was missed:\n`ls` defined as `rm -rf /` after any of them was allowed. Options end at the first word that isn't one (`set x -o\nposix` sets positional parameters), and a bad letter or option name anywhere, or `shopt` with both `-s` and `-u`,\nchanges nothing.\n"
+    filename: set-options.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Cargo, rustc, bun and less variables are sensitive\n\n`CARGO_*` (a runner, a rustc wrapper, `CARGO_HOME`'s config, a target directory), `RUSTC`, `RUSTC_WRAPPER`,\n`RUSTC_WORKSPACE_WRAPPER`, `RUSTDOC`, `RUSTFLAGS`, `RUSTDOCFLAGS`, `RUSTUP_TOOLCHAIN`, `RUSTUP_HOME`, `BUN_OPTIONS`\n(`--preload`), `LESS` (a `+!` command git's pager runs) and `LESSKEY*` make the programs they're given to run code or\nwrite elsewhere, as their options do.\n"
+    filename: sensitive-build-variables.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: minor\n---\n\n### `gh` has a spec\n\nIts argv is read as cobra reads it, so `gh -R o/r pr merge` is `pr merge` with `--repo`, and each command gets its options and effects (API calls are `network`; `pr checkout` and `repo sync` run git hooks). Code gh runs is walked: shell aliases (`gh alias set x --shell …`), the editor, pager and browser in `gh config set`, the git flags `gh repo clone` passes to `git clone`, and the command `gh codespace ssh` runs. An unknown first word is an alias or extension, `exec:arbitrary`. `GH_PAGER`, `GH_EDITOR`, `GH_BROWSER`, `BROWSER`, `GH_CONFIG_DIR` and `GH_PATH` are sensitive variables.\n"
+    filename: gh-spec.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: minor\n---\n\n### `recommended` allows `sed` and `awk` scripts that only edit what they read, and more programs that only look\n\n`sed -n '1,40p' file` and `awk '{print $1}' file` run. A sed script is read command by command: `e`, `w`, `r` and the `e` and `w` flags of `s` are found wherever sed reads them, and a script that isn't followed (text for `a`, `i` and `c`, a delimiter in a bracket expression, an option the spec doesn't know) is `exec:arbitrary`. An awk program with `system`, a pipe, `getline`, `@` or a `>` after a `print` is `exec:arbitrary` or a write. Either writing a file asks, in place included.\n\nAlso allowed: `uniq`, `expand`, `unexpand`, `date`, `nproc`, `uptime`, `free`, `df`, `ps`, `pgrep`, `printenv`, `cksum`, `b2sum`, `sha224sum` and `sha384sum`.\n\n### `sed -f` and `awk -f` are `exec:file`\n\nA script file runs commands of its own. `awk -f` was `exec:project`, which `recommended` doesn't ask about, and `sed -f` had no effect at all.\n\n### `date` with a time to set is `privilege`\n\n`date 010100002030` and `date --se=now` set the clock as `date -s` does.\n"
+    filename: recommended-readers.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### An alias that opens a here-document is a parse error\n\nIts body is the lines after the command, which the parser reads as commands, so a `<<` among them hid the rest:\n`alias c='cat <<EOF'`, then `c`, `<<D`, `EOF` and `rm -rf /` on their own lines, was allowed.\n"
+    filename: alias-here-document.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Braces expand before variables\n\nBash expands `$x{a,b}` to `$xa $xb`, so the variable's name runs into each alternative; it was read as `$x` followed\nby `a` or `b`. `x=./build; xr=/; rm -rf $x{r,}` removes `/`.\n"
+    filename: braces-before-variables.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Sequences with whitespace before a number, and steps past 64 bits\n\nBash reads a sequence's numbers past the whitespace before them, which an unquoted word holds as `\\v` or `\\f`:\n`$y{\\v1..1}` is `$y1`. Such a brace, and one whose step is too big to hold, is only known at run time.\n"
+    filename: braces-whitespace.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A carriage return in code is a parse error\n\nGit Bash (Bash on Windows) drops it from code it parses, where Bash on Linux and the parser keep it as part of a word: `cat <<'EOF'`\nwith a line `EOF\\r` in the body, then `rm -rf /`, was allowed, and in Git Bash it runs `rm`.\n"
+    filename: carriage-return.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### `declare -u`, `-l` and `-c` change the case of what a variable is assigned\n\n`declare -l v; v=RM; $v -rf /` runs `rm`, and was read as `RM`. A `declare`, `local`, `export` or `readonly` with an\noption Bash doesn't know changes nothing.\n"
+    filename: declare-case.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A backslash and newline in `$'…'` are kept\n\nThey're no escape there, so Bash keeps both, where the parser dropped them: `$'a\\` and a newline, then `b'`, is three\ncharacters and a newline, not `ab`.\n"
+    filename: ansi-c-line-continuation.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A name `hash -p` gave a path may run from `PATH`\n\nBash looks the name up on `PATH` when the path isn't there, so `hash -p ./missing rm; rm -rf /` runs `rm`.\n"
+    filename: hash-missing-path.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A function's local variables are put back when it returns\n\n`local`, and `declare` or `typeset` without `-g`, in a function kept their value after it: `x=/; f() { local x=./build; }; f; rm -rf $x`\nwas read as `rm -rf ./build`. A new local without a value is unset, and what the function starts sees the exported one\nfrom outside. Options end at the first name, so `declare x -g y=1` is local.\n"
+    filename: function-locals.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### `read`, `mapfile`, `compgen`, `complete` and `enable` read their options as Bash does\n\nLetters may share a word and a value may be attached: `mapfile -tC'rm -rf /' -c1 a` runs `rm` as its callback, which\nwas missed. Options end at the first word that isn't one. An `enable` argument only known at run time may be `-n` or\nany builtin's name, so it's a `dynamic-command` finding.\n"
+    filename: builtin-getopt.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### A dynamic word may split where a known value in it does\n\n`\"$(cmd)\"$x` with `x='a b'` is two words in Bash, but was read as one, so `covers` missed the run that got two.\n"
+    filename: known-value-splits.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### An array literal's subscript closes where Bash closes it\n\nBrackets in a subscript nest: Bash reads `b=([a[1]=1); # $(cmd) ]=2)` as one element, whose subscript runs `cmd`, where\nthe parser ended it at the first `]` and read the rest as a comment. A subscript that doesn't close where the parser\nended it is a parse error, and one that does is read up to its matching `]`.\n"
+    filename: nested-subscript.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Braces that are no list or sequence, and `BASH_VERSINFO`\n\n- `{$x..}` is no sequence, so Bash keeps the braces as text but still expands, unquotes and splits what's between\n  them: `x=' ../outside '; touch {$x..}` writes `../outside`. Such braces around anything but plain text are only\n  known at run time. So is a letter sequence through the characters between `Z` and `a`.\n- `BASH_VERSINFO` is read-only from the start: what's assigned to it isn't what it holds.\n"
+    filename: braces-no-sequence.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Bash's own variables, namerefs and `command_not_found_handle` are followed\n\n`BASH_ALIASES` and `BASH_CMDS` change the alias and `hash` tables, and a nameref (`declare -n`) or a variable named only\nat run time may assign any variable: each was allowed before. Variables Bash sets itself (`RANDOM`, `PWD`,\n`PIPESTATUS`, `_`…) are unknown whatever was assigned. `${x:=v}`, `printf -vNAME`, `wait -p`, `compgen -V`,\n`exec {fd}>`, `coproc` and `select` assign, `unset` may remove a function, and `unset PATH`, `local PATH` and\n`EXECIGNORE` are `sensitive-variable` findings. `command_not_found_handle` is walked for each program, and `fc`,\n`set -H` and `history -w` are followed as running or writing history.\n"
+    filename: special-variables.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Redirections on a function call\n\nThe redirections on a call to a shell function (`f > ../x`, `f >> ~/.bashrc`, `f < /dev/tcp/…`) are judged, as they\nwould be on `:`: the function's body was, command by command, but what the call itself opens wasn't.\n"
+    filename: function-redirections.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### Git's discovery, config and husky as git and husky read them\n\n- A `.git` file is all after `gitdir: ` (spaces included), and it and `commondir` lead where the kernel goes: a `..`\n  after a symlink leads up from its target. A `.git` whose `objects` or `refs` is a file isn't taken, so the\n  repositories above it are followed.\n- Repository discovery also starts from where the working directory really is, as git's `getcwd` does.\n- Git config is parsed as git parses it: a key after its section's header, `;` and `#` comments after a value, single\n  quotes as text, backslash-newline continuations. One git would refuse is an `exec-config` finding. An include under\n  `~` is read from `HOME`.\n- A relative `core.hooksPath` in a repository whose config says it's bare runs from where git started: a finding.\n- The submodules `.gitmodules` names are followed: their config and hooks.\n- A hook husky 7 or 8 runs through its helper is read as `sh`, which the helper runs it with.\n- A `package.json` that gives a key twice is a finding: bun takes the first, npm the last.\n"
+    filename: project-files-round-15.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### An alias's text is read as Bash reads it, a word at a time\n\nAfter an alias whose text ends in a blank, Bash checks the next word for an alias, and keeps checking through that\nalias's own text: its first word is expanded too, and so on. The analysis put the second alias's text in place\nwithout that, so with `alias cat=\"env \"` and `alias l=\"cat rm\"`, `cat l -rf /` was `env cat rm -rf /`, reading files,\nand allowed: Bash runs `env env rm -rf /`.\n\nAn alias also isn't expanded again only while Bash reads its own text. The analysis held it back for the rest of the\ncommand, so in `a a`, with `alias a=\"ls;\"`, the second `a` was a program; Bash expands it again.\n"
+    filename: alias-reading.md
+    v: 0.0.0
+  - content: "---\npackages:\n  bash-gate:\n    type: patch\n---\n\n### git and npm subcommands are named as themselves\n\n`git revert` was `cherry-pick` and `npm unpublish` was `publish`, so rules naming them never matched; only real aliases (`npm i`, `git remote rm`) share a name now. `npm tst`, `npm rum` and `npm restart`'s stop and start scripts are followed, and `git ls-remote` reaches the network.\n"
+    filename: subcommands-as-themselves.md
     v: 0.0.0
 core:packages:
   - changelogIds:
-      - allow-as-written.md
-      - stale-reads.md
-      - relative-globs.md
-      - subshell-traps.md
-      - environment.md
-      - recommended-git-dirs.md
+      - arithmetic-ansi-c.md
+      - argv-round-21.md
+      - specs-round-30.md
+      - posix-procsub-both-aliases.md
+      - alias-chain-expansion.md
+      - sh-code-and-env-split.md
+      - unknown-alias-unseen.md
+      - package-managers.md
+      - files-round-31.md
+      - ansi-c-defaults-name-continuation.md
+      - words-round-34.md
+      - arithmetic-quotes.md
+      - unbash-6-0-3.md
+      - traps-between-commands.md
+      - flock-lock-file.md
+      - files-and-project-code.md
+      - shell-dynamic-options.md
+      - quoted-substitution-ansi-c.md
+      - trace-name-and-place.md
+      - husky-hooks.md
+      - specs-round-14.md
+      - posix-mode-state.md
+      - unspecified-writes.md
+      - array-subscript-unquoted.md
+      - hash-options.md
+      - function-names-arithmetic-quotes.md
+      - network-read.md
+      - heredoc-inner-quotes.md
+      - policy-round-16.md
+      - name-subscripts-prompts.md
+      - exec-freeze.md
+      - unbash-6-0-2.md
+      - words-bash-reads-differently.md
+      - match-rule.md
+      - shell-state-round-27.md
+      - no-ptrace-capability.md
+      - arithmetic-locale-string.md
+      - subscript-expanded-twice.md
+      - git-repository-discovery.md
+      - brace-disagreements.md
+      - yq-file-writes.md
+      - control-flow-jumps.md
+      - locale-inner-quotes.md
+      - trace-round-33.md
+      - policy-round-7.md
+      - argv-round-29.md
+      - wrappers-round-20.md
+      - assignment-glob-quotes.md
+      - project-code-bounds.md
+      - shell-state-round-19.md
+      - shell-stdin.md
+      - dev-tools.md
+      - declare-names-temp-env-procsub.md
+      - declaration-braces.md
+      - lone-dollar-trailing-backslash.md
+      - prompt-escapes.md
+      - trace-layer.md
+      - shell-options.md
+      - appended-words.md
+      - nice-dash-command.md
+      - js-tool-options.md
+      - shell-state-round-11.md
+      - alias-continuation-split-declare.md
+      - git-hooks-path.md
+      - trace-round-17.md
+      - wrappers-round-28.md
+      - failed-redirection.md
+      - project-file.md
+      - process-substitution-assignment.md
+      - wrapper-path-lookup.md
+      - options-as-programs-read-them.md
+      - specs-against-docs.md
+      - parse-disagreements.md
+      - posix-backquote-aliases.md
+      - shell-startup-files.md
+      - shopt-getopt.md
+      - one-command-at-a-time.md
+      - function-source-declare-dynamic.md
+      - redirection-target-join.md
+      - alias-after-quoted.md
+      - shell-state-round-2.md
+      - home-config.md
+      - dynamic-subcommand-levels.md
+      - posix-substitution-aliases.md
+      - wrapper-specs.md
+      - recommended-break-continue.md
+      - env-lone-dash.md
+      - uutils-env-split.md
+      - specs-round-22.md
+      - compound-redirections-cd-elif.md
+      - policy-round-32.md
+      - argv-round-13.md
+      - dynamic-prompt.md
+      - ansi-c-nul-continuation.md
+      - reopened-descriptors.md
+      - trace-round-25.md
+      - set-options.md
+      - sensitive-build-variables.md
+      - gh-spec.md
+      - recommended-readers.md
+      - alias-here-document.md
+      - braces-before-variables.md
+      - braces-whitespace.md
+      - carriage-return.md
+      - declare-case.md
+      - ansi-c-line-continuation.md
+      - hash-missing-path.md
+      - function-locals.md
+      - builtin-getopt.md
+      - known-value-splits.md
+      - nested-subscript.md
+      - braces-no-sequence.md
+      - special-variables.md
+      - function-redirections.md
+      - project-files-round-15.md
+      - alias-reading.md
+      - subcommands-as-themselves.md
     id: npm:bash-gate
     updated: true
 npm:packages:
