@@ -80,6 +80,7 @@ export const scripts = [
   'shopt -s expand_aliases\nalias s="sudo "\nalias l="ls -la"\ns l x',
   'shopt -s expand_aliases\nalias ls=cat\nls() { sort a; }\n\\ls b; cat c',
   "$'\\UFFFFFFFF'cat a; $'\\U80000000'ls b",
+  'x=cat; while x=ls; false; do x=cat; done; $x a; y=sort; until y=ls; true; do :; done; $y b',
   "declare -n r='a[$(ls q)]'; echo $r; f() { cat inside; }; compgen -F f a; compgen -W '$(sort w)' b",
   // An alias's text is read a word at a time: its first word is checked too, and an alias isn't being read past its text.
   'shopt -s expand_aliases\nalias s="sudo "\nalias l="s -la"\ns l x',

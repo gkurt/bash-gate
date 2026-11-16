@@ -323,7 +323,7 @@ const setOptions = new Set(
  * (prompt strings and `PROMPT_COMMAND` are walked as code instead).
  */
 const sensitive =
-  /^(PATH|PWD|POSIXLY_CORRECT|RIPGREP_CONFIG_PATH|BASH_FUNC_.+|EXECIGNORE|BASH_ENV|ENV|IFS|SHELLOPTS|BASHOPTS|BASH_LOADABLES_PATH|TEXTDOMAIN|TEXTDOMAINDIR|CDPATH|HOME|ZDOTDIR|TMPDIR|XDG_CONFIG_HOME|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_[A-Z0-9_]+|GH_(PAGER|EDITOR|BROWSER|CONFIG_DIR|PATH|HOST|REPO)|(HTTPS?|ALL)_PROXY|(https?|all)_proxy|BROWSER|PAGER|MANPAGER|MANOPT|SHELL|GCONV_PATH|GNUPGHOME|SSLKEYLOGFILE|GNUTLS_KEYLOGFILE|BUN_INSPECT\w*|BIOME_LOG_PATH|(HOST_|TARGET_)?(CC|CXX|CPP|AR|LD|RANLIB)(_\w+)?|(HOST_|TARGET_)?(C|CXX|CPP|LD)FLAGS(_\w+)?|pnpm_config_\w+|PNPM_CONFIG_\w+|EDITOR|VISUAL|LESS|LESSOPEN|LESSCLOSE|LESSKEY\w*|NODE_OPTIONS|BUN_OPTIONS|CARGO_[A-Z0-9_]+|RUSTC(_WRAPPER|_WORKSPACE_WRAPPER)?|RUSTDOC|RUSTFLAGS|RUSTDOCFLAGS|RUSTUP_TOOLCHAIN|RUSTUP_HOME|NODE_PATH|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|SSH_ASKPASS|SUDO_ASKPASS|npm_config_\w+|NPM_CONFIG_\w+)$/;
+  /^(PATH|PWD|POSIXLY_CORRECT|RIPGREP_CONFIG_PATH|BASH_FUNC_.+|EXECIGNORE|BASH_ENV|ENV|IFS|SHELLOPTS|BASHOPTS|BASH_LOADABLES_PATH|TEXTDOMAIN|TEXTDOMAINDIR|CDPATH|HOME|ZDOTDIR|TMPDIR|XDG_CONFIG_HOME|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_[A-Z0-9_]+|GH_(PAGER|EDITOR|BROWSER|CONFIG_DIR|PATH|HOST|REPO)|(HTTPS?|ALL)_PROXY|(https?|all)_proxy|BROWSER|PAGER|MANPAGER|MANOPT|SHELL|GCONV_PATH|GNUPGHOME|SSLKEYLOGFILE|GNUTLS_KEYLOGFILE|BUN_INSPECT\w*|BIOME_LOG_PATH|(HOST_|TARGET_)?(CC|CXX|CPP|AR|LD|RANLIB)(_\w+)?|(HOST_|TARGET_)?(C|CXX|CPP|LD)FLAGS(_\w+)?|pnpm_config_\w+|PNPM_CONFIG_\w+|EDITOR|VISUAL|LESS|LESSOPEN|LESSCLOSE|LESSKEY\w*|NODE_OPTIONS|BUN_OPTIONS|CARGO_[A-Z0-9_]+|RUSTC(_WRAPPER|_WORKSPACE_WRAPPER)?|RUSTDOC|RUSTFLAGS|RUSTDOCFLAGS|RUSTUP_TOOLCHAIN|RUSTUP_HOME|NODE_PATH|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|SSH_ASKPASS|SUDO_ASKPASS|npm_config_\w+|NPM_CONFIG_\w+|FUNCNEST)$/;
 
 /** Redirections that may leave the shell's output or errors on a file opened for reading: `1<f`, `<>`, `1>&3`. */
 const opensOutputs = /\d<(?![<(])|<>|>&\s*[3-9]/;
@@ -338,6 +338,17 @@ function reopens(path: string, outputsRead: boolean): boolean {
 const devices = /^\/dev\/(null|stdin|stdout|stderr|tty|fd\/\d+)$/;
 /** The words a run adds after a command's own (`xargs` appends its input's). */
 const appended = dynamicArg('…', 'stdin', true, '');
+
+/**
+ * Whether text between two commands ends a line, which starts a new parse unit for aliases: a backslash before the
+ * newline continues it, outside a comment (where it's text).
+ */
+function newLine(between: string): boolean {
+  return between
+    .replaceAll(/#[^\n]*/g, '')
+    .replaceAll('\\\n', '')
+    .includes('\n');
+}
 
 /** Variables Bash sets as it starts over what the environment gave (`IFS` it ignores, `SHLVL` it counts up). */
 const startupVariables = new Set(
@@ -732,7 +743,7 @@ class Walker {
     let unit = first ? { aliases: first, expanding: ctx.expanding } : undefined;
     let previous: number | undefined;
     for (const statement of script.commands) {
-      if (!unit || (!whole && previous !== undefined && ctx.source.slice(previous, statement.pos).includes('\n')))
+      if (!unit || (!whole && previous !== undefined && newLine(ctx.source.slice(previous, statement.pos))))
         unit = { aliases: snapshot(state, ctx.late), expanding: [] };
       this.between(state, ctx);
       const shell = statement.background ? clone(state) : state;
@@ -870,8 +881,15 @@ class Walker {
           this.list(node.body.commands, s, c);
           for (const expression of [node.update, node.test]) if (expression) this.arithmetic(expression, s, c);
         });
-      case 'While':
-        return this.loop(state, ctx, node, (s, c) => this.list([...node.clause.commands, ...node.body.commands], s, c));
+      case 'While': {
+        this.loop(state, ctx, node, (s, c) => this.list([...node.clause.commands, ...node.body.commands], s, c));
+        // It ends right after a clause that stops it, with what that clause changed (`while x=rm; false`).
+        const silent = { ...ctx, silent: true };
+        return join(
+          state,
+          this.branch(state, silent, (s, c) => this.list(node.clause.commands, s, c)),
+        );
+      }
       case 'Case': {
         this.substitutions([node.word, ...node.items.flatMap((item) => item.pattern)], state, ctx);
         // An arm ending in ;& runs the next one too, and one ending in ;;& tests the patterns after it until one
@@ -1038,6 +1056,13 @@ class Walker {
       [...state.maybeExportedFunctions].sort(),
       [...state.disabled].sort(),
       [...state.integers].sort(),
+      [...state.maybeIntegers].sort(),
+      // What a return puts back: a loop settled in one call isn't settled in another with other values outside.
+      state.frames.map((frame) => [
+        [...frame.locals].sort().map((name) => [name, JSON.stringify(frame.outer.get(name) ?? null)]),
+        [...frame.unknown].sort(),
+        JSON.stringify(frame.saved ? { ...frame.saved, set: [...frame.saved.set] } : null),
+      ]),
       sorted(state.cases).map(([name, how]) => [name, how ?? null]),
       state.cwd ?? null,
       state.failedCwd ? [state.failedCwd.cwd ?? null] : null,
@@ -1984,10 +2009,14 @@ class Walker {
         // that, not the symlink; with cdable_vars, a name that's no directory is a variable holding one.
         const letters = (at === -1 ? values : values.slice(0, at)).join('').replace(/[^LP]/g, '');
         const physical = letters === '' ? option(state, 'physical') : letters.endsWith('P');
+        // A CDPATH, from the environment too, is searched first for a name that isn't absolute or `./`/`../`.
+        const cdpath = state.vars.get('CDPATH');
+        const searched = cdpath !== undefined && !(cdpath.kind === 'static' && cdpath.value === '');
         const elsewhere =
           arg?.kind === 'static' &&
           ((physical !== false && arg.value.split('/').includes('..')) ||
-            (option(state, 'cdable_vars') !== false && /^[A-Za-z_]\w*$/.test(arg.value)));
+            (option(state, 'cdable_vars') !== false && /^[A-Za-z_]\w*$/.test(arg.value)) ||
+            (searched && !/^(\/|\.\.?(\/|$))/.test(arg.value)));
         // It fails on a directory that isn't there, and the shell stays where it was. Through a nameref, setting PWD or
         // OLDPWD may fail after it moved.
         const named = state.refs.has('PWD') || state.refs.has('OLDPWD');

@@ -116,6 +116,17 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['s=/; rm -rf {$,}s', 'deny', "a variable's name running out of a brace, which expands first"],
   ["cat 'a\nb' x\\", 'ask', 'a backslash ending the code, which Bash drops after a quoted string over lines'],
   ['shopt -s expand_aliases\nalias ls="rm -rf /"\nl\\\ns', 'deny', 'an alias named across a line continuation, which is gone first'],
+  ['x=echo; while x=rm; false; do x=echo; done; $x -rf /', 'ask', 'a while loop ends after its clause, with what that changed'],
+  ['x=echo; until x=rm; true; do x=echo; done; $x -rf /', 'ask', 'the same, until'],
+  ['shopt -s expand_aliases\nalias rm=echo; \\\nrm -rf /', 'deny', 'a line continued after an alias, which the same line then reads'],
+  ["shopt -s expand_aliases\nalias ls='rm -rf /'\nunalias ls; \\\nls", 'deny', 'the same, with an unalias the line was read before'],
+  ["shopt -s expand_aliases\nalias ls='rm -rf /' # x \\\nls", 'deny', 'a backslash ending a comment, which continues nothing'],
+  [
+    'f() { local d=.; while false; do :; done; }; d=.; f; d=..; f; echo x >> $d/evil',
+    'ask',
+    'a loop in a function, settled under another call',
+  ],
+  ['x=rm; f() { x=echo; }; g() { f; }; FUNCNEST=1; g\n$x -rf /', 'ask', 'FUNCNEST, past which a function call fails'],
   [
     'shopt -s expand_aliases\nalias rm=zz\nrm() { :; }\n\\rm -rf /',
     'deny',
@@ -1187,6 +1198,12 @@ const homeLinks: [source: string, decision: Decision, what: string, environment:
     'ask',
     'IFS from the environment, which Bash ignores',
     { cwd: '/home/me/p', env: { HOME: '/home/me', IFS: ',' } },
+  ],
+  [
+    'cd .ssh && echo k >> authorized_keys',
+    'ask',
+    'CDPATH from the environment, which cd searches first',
+    { cwd: '/home/me/repo', env: { HOME: '/home/me', CDPATH: '/home/me' } },
   ],
 ];
 
