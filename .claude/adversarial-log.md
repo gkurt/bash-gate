@@ -657,3 +657,36 @@ Needs a decision:
 - `git checkout <path>` (`git checkout README.md`) discards uncommitted changes and is allowed. git takes the word as a branch first, so this can't be told apart statically from `git checkout feature`. With a filesystem, it could ask when the word names an existing file and no such ref exists. That's an everyday-adjacent verdict.
 - `git rebase --onto HEAD~1 HEAD` drops commits (recoverable from the reflog) and is allowed, while `git reset --keep` and `branch -f` ask. Asking about `rebase --onto` would be consistent.
 - Writes to system paths from `cwd: /` (`/usr/local/bin/git`), which `isSystemPath` then trusts.
+
+## Round 55: src/cover.ts matching (sixth pass, narrow brief), 2026-11-17, see commit
+The brief covered only `covers` and `predicting`, with no supervisor internals. Unlike round 47, the reviewer finished. It built analyses with the real `analyze` and exec records by hand, in-process. It confirmed in WSL under `env -i` that Bash runs a planted `./cat` after `PATH=.:$PATH`. 7 new analyze cases fail on 13edb8e.
+Confirmed and fixed:
+- `bash -c '(exec -a pkill pgrep x); cat notes.txt'` (also under `eval` and `trap`, and in a function `eval` defined) covered `rm notes.txt` and `python3 notes.txt`. `(exec -a myfind find . -exec ls {} +)` and `hash -p "$P" find; find … -exec ls {} +` covered `rm -rf /` under `find`. `(exec -a xenv env FOO=1 ls -la)` covered `rm -la` under `env`. Cause: `predicting` and trace's `judge` treated every invocation sharing a `loads-code` finding's span as any program, with no placement check. Code from a string and a wrapper's command all share that span. → `Invocation.unplaced`, set on the invocation itself: for `exec -a` when it renames, for a `hash -p` name with a path only known at run time, and on git (marked after its hooks are walked) when a hook is in a language it doesn't read or husky's is unplaced. A wrapper's command doesn't inherit it.
+Rejected or left:
+- `exec -a` itself still covers any program with its arguments (the reviewer's second finding). Its file is known, but trace checks the name it's started under against the predictions, so the name needs a match. Tightening it means telling the name and the file apart in `judge`. It's a narrow looseness, logged for a later pass.
+- `covers` never compares cwd or environment. No bypass followed from it, since the analysis already leaves cwd unknown after a `cd` it can't place.
+Costs: none in verdicts (cover only). Trace now refuses more in enforce mode for siblings of an `exec -a`. The full WSL suite, including `test/trace.test.ts` and `test/bash.test.ts`, passes.
+Needs a decision: none.
+
+## Summary: rounds 44–55 (resumed loop), 2026-11-17
+The loop stopped after 12 rounds since the resume, the guide's limit. No two rounds in a row were empty. Round 47 was stopped by a safeguard (req_011Ch7Ci35XNkL9jhVnLSZav) and redone narrowly as round 55. Commits on main, none pushed:
+- 44 kubectl/helm/terraform: e5e0a2c
+- 45 secrets:print: 79878a1
+- 46 dry runs: 157f4f3
+- 47 trace/cover: stopped, no commit
+- 48 words: d0c515f
+- 49 shell state: 04afbd3
+- 50 dispatch and wrappers: 9f25fc4
+- 51 argv: 8f6a877
+- 52 specs: 8564486
+- 53 files and project code: e490245
+- 54 policy and recommended: 13edb8e
+- 55 cover: this commit
+No everyday verdict moved. Open "Needs a decision" items, newest first:
+- Secret files named by a word only known at run time (`cat "$f"`, `xargs cat`), an ask lowered to allow (round 54).
+- `git checkout <file>` and `git rebase --onto` discarding work (round 54).
+- System-path writes from `cwd: /` (round 54).
+- A gitlink nested repository with no `.gitmodules` entry (round 53).
+- `.npmrc` `script-shell` (rounds 39 and 53).
+- grep/sed/awk/jq printing a secret whole versus THREAT_MODEL's "transforms" (round 45).
+- `exec 3< .env; cat <&3` (open).

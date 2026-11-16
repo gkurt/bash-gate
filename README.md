@@ -362,6 +362,9 @@ result.execs; // [{ path: '/usr/bin/ls', argv: ['ls'], via: [], covered: true, r
   the same check.
 - A finding that hides code (`eval "$x"`, a dynamic command, an alias whose text is only known at run time) covers
   anything, as in S1: the policy asked about it.
+- An invocation whose file isn't known (`invocation.unplaced`: `exec -a`, a name `hash -p` gave a path only known at
+  run time, a git hook the analysis can't read) covers any program, from anywhere, with its arguments. That one
+  invocation only: the other commands in the same `bash -c` string or under the same wrapper are checked as usual.
 - While an exec is checked, every other process and thread in the tree is stopped, until the kernel has copied its
   arguments or failed it: nothing in the tree can change what it runs after the check. A clone with `CLONE_UNTRACED`,
   whose child nothing would stop or wait for, fails with EPERM. So do a new user or mount namespace, `chroot`, `mount`

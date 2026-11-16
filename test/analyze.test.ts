@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { huskyFiles } from '#src/husky.ts';
-import { allow, analyze, ask, check, checkAsync, deny, recommended, snapshot, type Arg, type Effect } from '#src/index.ts';
+import { allow, analyze, ask, check, checkAsync, covers, deny, recommended, snapshot, type Arg, type Effect } from '#src/index.ts';
 
 const values = (args: Arg[]) => args.map((arg) => (arg.kind === 'static' ? arg.value : `<${arg.reason}>`));
 const only = (source: string) => {
@@ -1145,4 +1145,20 @@ describe('a tilde in a word shaped like an assignment', () => {
     ['declare x=a:~/b; echo "$x"', ['static', 'dynamic']],
     ['echo core.x=~/a "a=~/b"', ['static', 'static', 'static']],
   ] as const)('%s', (source, kinds) => expect(argv(source)).toEqual([...kinds]));
+});
+
+describe('a program the analysis leaves unknown covers only its own call', () => {
+  test.each([
+    ["bash -c '(exec -a pkill pgrep x); cat notes.txt'", ['rm', 'notes.txt'], []],
+    ["eval '(exec -a pkill pgrep x); cat notes.txt'", ['rm', 'notes.txt'], []],
+    ["trap '(exec -a k pgrep a); cat notes' EXIT", ['rm', 'notes'], []],
+    ["eval 'f() { cat notes; }; g() { (exec -a k pgrep a); }'; f; g", ['rm', 'notes'], []],
+    ['(exec -a myfind find . -exec ls {} +)', ['rm', '-rf', '/'], ['find']],
+    ['hash -p "$P" find; find . -name \'*.log\' -exec ls {} +', ['rm', '-rf', '/home/u'], ['find']],
+    ['(exec -a xenv env FOO=1 ls -la)', ['rm', '-la'], ['env']],
+  ] as const)('%s', (source, argv, via) => expect(covers(analyze(source), [...argv], [...via])).toBe(false));
+  test.each([
+    ['(exec -a pkill pgrep x)', ['pkill', 'x']],
+    ['hash -p "$P" find; find . -name x', ['anything', '.', '-name', 'x']],
+  ] as const)('%s still covers its own call', (source, argv) => expect(covers(analyze(source), [...argv])).toBe(true));
 });

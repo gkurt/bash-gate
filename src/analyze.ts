@@ -268,6 +268,10 @@ interface Call {
   partial?: true;
   /** A glob's wildcards may match a leading dot (`dotglob`). */
   dots?: true;
+  /** The file it runs isn't known: `Invocation.unplaced`. */
+  unplaced?: true;
+  /** The invocation already recorded for it, which what's found after (a git hook) may mark `unplaced`. */
+  recorded?: Invocation;
 }
 
 /**
@@ -2089,8 +2093,14 @@ class Walker {
             (named === undefined || command === undefined || basename(named) !== basename(command)));
         if (renamed && rest < args.length)
           this.finding(ctx, 'loads-code', 'exec starts a program under another name, which it may act on', call.span);
-        if (rest < args.length)
-          return this.dispatch(args.slice(rest), state, { ...ctx, externalOnly: true }, { ...call, command: undefined });
+        if (rest < args.length) {
+          return this.dispatch(
+            args.slice(rest),
+            state,
+            { ...ctx, externalOnly: true },
+            { ...call, command: undefined, ...(renamed ? { unplaced: true as const } : {}) },
+          );
+        }
         break;
       }
       case 'eval': {
@@ -2798,13 +2808,13 @@ class Walker {
       this.finding(ctx, 'sensitive-variable', `POSIXLY_CORRECT changes how \`${name}\` reads its options`, call.span);
     if (!name.includes('/') && state.hashUnknown && !state.hashed.has(name)) {
       this.finding(ctx, 'loads-code', `\`${name}\` may have been given a path through BASH_CMDS`, call.span);
-      return this.run(argv, state, ctx, call, undefined);
+      return this.run(argv, state, ctx, { ...call, unplaced: true }, undefined);
     }
     if (name.includes('/') || !state.hashed.has(name)) return this.run(argv, state, ctx, call, name.includes('/') ? name : undefined);
     const path = state.hashed.get(name);
     if (path === undefined) {
       this.finding(ctx, 'loads-code', `\`${name}\` was given a path only known at run time`, call.span);
-      return this.run(argv, state, ctx, call, undefined);
+      return this.run(argv, state, ctx, { ...call, unplaced: true }, undefined);
     }
     // The path runs only when it's there: otherwise Bash looks the name up on `PATH`.
     settle(state, [
@@ -2874,12 +2884,12 @@ class Walker {
     }
     // Which package.json scripts it runs, known before it's recorded: a name no script has is a file or a command.
     const scripts = packageManagers.has(program) ? this.packageScripts(program, cwd, parsed, ctx, call) : undefined;
-    this.emit(ctx, call, program, 'external', argv, parsed, path);
+    const recorded = this.emit(ctx, call, program, 'external', argv, parsed, path);
     // Whether the project code it runs (hooks, package scripts) was walked, along with what that code writes.
     let followed = false;
     if (program === 'git') {
       for (const config of parsed.configs) this.gitConfigEntry(config, state, ctx, call);
-      followed = this.gitProject(cwd, parsed, state, ctx, call);
+      followed = this.gitProject(cwd, parsed, state, ctx, { ...call, ...(recorded ? { recorded } : {}) });
     } else if (scripts) {
       // Run with `sh -c`, which expands aliases.
       for (const [name, script] of scripts.run) {
@@ -2911,6 +2921,9 @@ class Walker {
       noFunctions: true,
       open: open || call.open,
       cwd,
+      // What a wrapper runs is found as the wrapper finds it, whatever was unknown about the wrapper's own file.
+      unplaced: undefined,
+      recorded: undefined,
     });
     // What a program starts is found on `PATH`: the shell's `hash -p` table isn't passed on.
     const unhashed = () => passed({ ...clone(state), hashed: new Map<string, string | undefined>(), hashUnknown: false });
@@ -3204,6 +3217,7 @@ class Walker {
         // it somewhere other than the folded path.
         if (script !== undefined && huskyStub(script) && hooksPath !== undefined && /(^|\/)\.\.?\/*$/.test(hooksPath)) {
           this.finding(ctx, 'loads-code', `git hook ${name} runs a husky hook the analysis doesn't place`, call.span);
+          if (call.recorded) call.recorded.unplaced = true;
           continue;
         }
         // husky's stub runs the project's hook in `.husky`, which is what's walked.
@@ -3213,6 +3227,7 @@ class Walker {
         const shell = hook.husky ? 'sh' : interpreter(hook.text);
         if (shell === undefined) {
           this.finding(ctx, 'loads-code', `git hook ${name} runs with a program the analysis doesn't read`, call.span);
+          if (call.recorded) call.recorded.unplaced = true;
           continue;
         }
         if (shell === 'sh') this.dashSyntax(hook.text, ctx, call, `git hook ${name}`);
@@ -3689,8 +3704,16 @@ class Walker {
     return (call.open || ctx.open) && args.at(-1) !== appended ? [...args, appended] : args;
   }
 
-  emit(ctx: Context, call: Call, program: string | null, kind: Invocation['kind'], argv: Arg[], parsed: Parsed, path?: string): void {
-    if (ctx.silent) return;
+  emit(
+    ctx: Context,
+    call: Call,
+    program: string | null,
+    kind: Invocation['kind'],
+    argv: Arg[],
+    parsed: Parsed,
+    path?: string,
+  ): Invocation | undefined {
+    if (ctx.silent) return undefined;
     const writes = [...parsed.writes, ...call.writes, ...ctx.writes];
     const reads = [...parsed.reads, ...call.reads, ...ctx.reads];
     // Its redirections' effects are the invocation's, not its spec's: they name where they write.
@@ -3722,6 +3745,7 @@ class Walker {
       positionals: parsed.positionals,
       maybeOptions: parsed.maybeOptions || open,
       open,
+      ...(call.unplaced ? { unplaced: true as const } : {}),
       specified: !!program && !!specFor(program),
       effects: [...effects],
       reads,
@@ -3744,10 +3768,11 @@ class Walker {
     }
     if (this.running.size > 0) {
       const key = JSON.stringify(invocation);
-      if (this.emitted.has(key)) return;
+      if (this.emitted.has(key)) return undefined;
       this.emitted.add(key);
     }
     this.analysis.invocations.push(invocation);
+    return invocation;
   }
 
   /**

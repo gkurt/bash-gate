@@ -67,6 +67,11 @@ export interface Invocation {
   maybeOptions: boolean;
   /** More arguments come at run time: `xargs` appends lines of input, `find -exec … {}` paths. */
   open: boolean;
+  /**
+   * The file it runs isn't known (`hash -p` gave the name a path only known at run time), or it runs code the analysis
+   * doesn't read (a git hook in another language): any program may run, from anywhere, and so may what it starts.
+   */
+  unplaced?: true;
   /** Whether a spec describes the program: without one, options are guessed (`-ab` as `-a -b`). */
   specified: boolean;
   effects: Effect[];

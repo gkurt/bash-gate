@@ -12,8 +12,6 @@ export const unseen = new Set<FindingKind>([
   'dynamic-command',
   'unknown-alias',
 ]);
-/** Findings that leave one call's program unknown: that invocation may be any program. */
-const unsure = new Set<FindingKind>(['loads-code']);
 const shells = new Set(['bash', 'sh']);
 
 /** The wrappers an invocation runs under, outermost first, without the shells between them. */
@@ -28,12 +26,9 @@ export function wrappers(invocation: Invocation): string[] {
  * standing for the words it may become.
  */
 export function predicting(analysis: Analysis, argv: string[], via: string[] = []): Invocation[] {
-  const anyProgram = new Set(analysis.findings.filter((finding) => unsure.has(finding.kind)).map((finding) => finding.span.join()));
   return analysis.invocations.filter(
     (invocation) =>
-      invocation.kind === 'external' &&
-      sameList(wrappers(invocation), via) &&
-      predicts(invocation, argv, anyProgram.has(invocation.span.join())),
+      invocation.kind === 'external' && sameList(wrappers(invocation), via) && predicts(invocation, argv, invocation.unplaced === true),
   );
 }
 

@@ -241,9 +241,8 @@ interface Where {
  */
 function judge(analysis: Analysis, via: string[], argv: string[], at?: Where & { path: string }): { covered: boolean; next: Role } {
   const program = argv[0]!;
-  const anyProgram = new Set(analysis.findings.filter((finding) => finding.kind === 'loads-code').map((finding) => finding.span.join()));
   const found = predicting(analysis, argv, via).filter(
-    (invocation) => at === undefined || invocation.program === null || anyProgram.has(invocation.span.join()) || placed(invocation, at),
+    (invocation) => at === undefined || invocation.program === null || invocation.unplaced || placed(invocation, at),
   );
   if (found.length > 0) return { covered: true, next: after(analysis, via, program, found) };
   // A wrapper that runs its command through a shell (`watch`, `flock -c`): the analysis walked that code under it,
