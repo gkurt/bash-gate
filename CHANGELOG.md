@@ -1,3 +1,67 @@
+## bash-gate@0.4.0
+
+### kubectl, helm and terraform ask when a dry run is off, a Secret is printed, or a host is their own
+
+kubectl, helm and terraform ask in more of the cases that change, print or reach something:
+
+- helm's `--dry-run=false` (or `0`), which Go reads as a real run;
+- `kubectl config view --flatten`;
+- a percent-encoded `kubectl get --raw` path;
+- upper-case output formats, and a Secret printed by any kubectl command with `-o` (`label`, `annotate`, `wait`);
+- `helm status -o json`;
+- helm repositories from `--repository-config`, `--repository-cache` or `XDG_CACHE_HOME`/`XDG_DATA_HOME`;
+- `terraform init -migrate-state`, `-force-copy` or `-backend-config=KEY=VALUE`;
+- `terraform fmt -check=false`, which writes;
+- `terraform providers lock -net-mirror`.
+
+### `secrets:print`: a secret that reaches the script's output whole
+
+A new effect beside `secrets:read`, which stays as it is. An invocation that reads a secret also has `secrets:print`
+when it copies what it reads unchanged, by a new spec property, `copies` (`cat`, `tac`, `head`, `tail`, `less`,
+`more`, `bat`, `nl`, `strings`, `xxd`, `od`, `base64`, `tee`, and `echo` and `printf` of a secret variable), prints the
+environment (`printenv`, `env` with no command, `export -p`, `set`, `declare -p`), or is a tool printing a secret of its
+own (`kubectl get secret -o yaml`, `terraform output -json`, `helm get values`), and its standard output reaches the
+script's: not redirected to a file, not piped into a program that doesn't copy it (`| wc -l`), not captured by `$(…)`
+or `<(…)`. Redirections are replayed in order (`>&2` still reaches the output). Programs that transform what they read
+(`grep`, `cut`, `sed`, `awk`, `jq`) don't print: `cut -d= -f1 .env` lists names.
+
+### Dry runs are lowered the same way everywhere, and say what they rehearse
+
+- A dry run's `effects` are the rehearsal's in every spec that knows one: it still reads and may run project code, but
+  doesn't write, delete or run anything remotely, and `network` becomes `network:read` unless it still reaches a host the
+  command names or may still push. `git push -n`, `git clean -n`, `git add|rm|mv|fetch -n`, `rsync -n`, `npm
+  --dry-run`, `cargo publish --dry-run`, `gh pr create --dry-run`, kubectl's and helm's `--dry-run` and
+  `terraform state mv|rm -dry-run` are; `--dry-run=false`, `=none` or a value only known at run time aren't.
+- `Invocation.dryRun` is the real command a dry run rehearses: `{ text, shape, effects }`, the same command without the
+  option, `git clean -f` for `git clean -n` (git's default `clean.requireForce`), and `terraform apply` with the same
+  arguments, but those only a plan takes, for `terraform plan`.
+- `CommandSpec.dryRun` names a program's dry-run options, which values make one, the real command, and what the
+  rehearsal still does.
+
+### `npm publish` runs its lifecycle scripts
+
+`npm publish` and `pnpm publish` walk the scripts publishing runs (`prepublishOnly`, `prepack`, `prepare`, `postpack`,
+`publish`, `postpublish`) and are `exec:project`, as `npm pack` is; another package's are `exec:file`. `bun publish` is
+`exec:project`. rsync's `-n` is `--dry-run` (and `-a`, `-v` and the rest their long names).
+
+### More ways a secret is copied, printed or reached are `secrets:read`
+
+`secrets:read` catches more ways a secret reaches output: a secret variable copied by an assignment, a loop's words, `${!x}` or a nameref; evaluated as arithmetic or tested as a number, whose error prints it; matched into `BASH_REMATCH`; or tested under `set -x`. It also catches `ps e` anywhere in its arguments and `ps -E`, awk's `ENVIRON`, jq's `env` and `$ENV`, yq's `env()` and `strenv()`, globs that may match a credentials file (`.e?v`, `~/.aws/*`), a secret file renamed with `mv` or `ln`, `git show HEAD:.env`, a redirection through a link, thread environments under `/proc`, and more credentials files and variable names (`PGPASSWORD`, `MYSQL_PWD`, `GITHUB_PAT`). `PASSWORD_STORE_DIR`, `NEXT_PUBLIC_…_KEY`, `${TOKEN:+set}` and source files like `.env.ts` no longer count.
+
+### More ways Bash shows a secret are `secrets:read`
+
+`secrets:read` catches more ways Bash shows a secret:
+
+- `declare -px NAME` and other `-p` clusters, and `local -p`;
+- a prompt string that expands one (`PS4` under `set -x`, `${x@P}`);
+- names evaluated as arithmetic: subscripts, offsets, `[[ X -eq 0 ]]`, integer variables, and a variable whose value names a secret;
+- `[ … ]` forms whose error prints their words, and `test`, which leaves its last word in `$_`;
+- globs under `dotglob` or `GLOBIGNORE`;
+- `git config --file`;
+- yq's `load…()` and jq's `import`.
+
+`git ls-files .env`-style commands that only name a file, `cp .env.example .env`, token counts like `MAX_TOKENS`, and jq's `{env: …}` keys no longer count.
+
 ## bash-gate@0.3.0
 
 ### An alias ending in a blank reaches past quoted words
