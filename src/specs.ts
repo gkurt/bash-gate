@@ -2638,10 +2638,18 @@ const find: CommandSpec = {
           !(staticValue(args[end]) === ';' || (staticValue(args[end]) === '+' && staticValue(args[end - 1]) === '{}'))
         )
           end++;
-        const argv = args.slice(i + 1, end).map((word): Arg => {
+        // Ended by `{} +`, the last `{}` stands for as many paths as fit.
+        const many = staticValue(args[end]) === '+';
+        const argv = args.slice(i + 1, end).map((word, j, words): Arg => {
           const text = staticValue(word);
           return text?.includes('{}')
-            ? { kind: 'dynamic', text, reason: 'placeholder', split: false, prefix: text.slice(0, text.indexOf('{}')) }
+            ? {
+                kind: 'dynamic',
+                text,
+                reason: 'placeholder',
+                split: many && j === words.length - 1,
+                prefix: text.slice(0, text.indexOf('{}')),
+              }
             : word;
         });
         // The command it runs is an invocation of its own, judged on its own; `exec:arbitrary` on the options is

@@ -260,7 +260,9 @@ result.execs; // [{ path: '/usr/bin/ls', argv: ['ls'], via: [], covered: true, r
   directories), and resolves with the exit code, the output, and every exec once every process has exited, daemons
   included (`setsid -f`, `nohup … &`), so nothing it started outlives it. `timeout` kills the whole tree. The analysis defaults to `analyze(source, options)`; pass the one you checked, so the run is
   held to what the policy saw.
-- `mode: 'enforce'` (the default) fails an exec the analysis doesn't cover with EPERM before it runs. `mode: 'trace'`
+- `mode: 'enforce'` (the default) fails an exec the analysis doesn't cover with EPERM before it runs: the program and
+  its arguments, the file it runs (the path the invocation gave, or a directory of the run's `PATH` for a name), and
+  the name it's started under (`exec -a`), which some programs act on. `mode: 'trace'`
   lets it run and marks it `covered: false`: an oracle for tests, fuzzing and red teams.
 - **What's checked** is what the shell starts, and what a wrapper it follows starts (`env`, `xargs`, `find -exec`,
   `timeout`, `nice`…), against the invocations under that wrapper. A program the analysis doesn't follow

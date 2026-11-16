@@ -9,9 +9,10 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { createServer, type Socket } from 'node:net';
 import { constants, homedir, tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, dirname, join, posix } from 'node:path';
 import { analyze, type Environment } from '#src/analyze.ts';
-import { covers, predicting, wrappers } from '#src/cover.ts';
+import { covers, predicting, unseen, wrappers } from '#src/cover.ts';
+import { resolvePath } from '#src/paths.ts';
 import { specFor } from '#src/specs.ts';
 import type { Analysis, Invocation } from '#src/types.ts';
 
@@ -81,7 +82,7 @@ export async function run(source: string, options: RunOptions = {}): Promise<Run
   const server = createServer();
   try {
     await new Promise<void>((resolve, reject) => server.once('error', reject).listen(address, resolve));
-    const session = new Session(analysis, mode);
+    const session = new Session(analysis, mode, cwd, (env.PATH ?? '').split(':'));
     server.on('connection', (socket) => (session.attached ? socket.destroy() : session.attach(socket)));
     const child = spawn(supervisor, [address, 'bash', '--noprofile', '--norc', '-c', source], {
       cwd,
@@ -133,10 +134,16 @@ class Session {
 
   private readonly analysis: Analysis;
   private readonly mode: 'enforce' | 'trace';
+  /** Where the run starts, and the directories its `PATH` names, where a program named without a path is found. */
+  private readonly where: Where;
 
-  constructor(analysis: Analysis, mode: 'enforce' | 'trace') {
+  constructor(analysis: Analysis, mode: 'enforce' | 'trace', cwd: string, path: string[]) {
     this.analysis = analysis;
     this.mode = mode;
+    this.where = {
+      cwd,
+      search: new Set(path.filter((dir) => dir.startsWith('/')).map((dir) => posix.normalize(dir).replace(/(.)\/$/, '$1'))),
+    };
   }
 
   attach(socket: Socket): void {
@@ -206,7 +213,12 @@ class Session {
       this.pending.set(pid, null);
       return 'y';
     }
-    const { covered, next } = judge(this.analysis, via, [basename(path), ...argv.slice(1)]);
+    const file = basename(path);
+    const judged = judge(this.analysis, via, [file, ...argv.slice(1)], { path, ...this.where });
+    // A program may act on the name it's started under (`exec -a pkill pgrep`): that name must be predicted too.
+    const name = basename(argv[0] ?? file);
+    const covered = judged.covered && (name === file || judge(this.analysis, via, [name, ...argv.slice(1)]).covered);
+    const { next } = judged;
     const refused = this.mode === 'enforce' && !covered;
     this.execs.push({ pid, path, argv, via, covered, refused });
     if (!refused) this.pending.set(pid, next);
@@ -214,10 +226,21 @@ class Session {
   }
 }
 
-/** Whether the analysis covers an exec by a checked process, and what the process is after it. */
-function judge(analysis: Analysis, via: string[], argv: string[]): { covered: boolean; next: Role } {
+interface Where {
+  cwd: string;
+  search: Set<string>;
+}
+
+/**
+ * Whether the analysis covers an exec by a checked process, and what the process is after it. With `at`, the file run
+ * must be where the invocation says: the path it was given, or a directory of `PATH` for a name.
+ */
+function judge(analysis: Analysis, via: string[], argv: string[], at?: Where & { path: string }): { covered: boolean; next: Role } {
   const program = argv[0]!;
-  const found = predicting(analysis, argv, via);
+  const anyProgram = new Set(analysis.findings.filter((finding) => finding.kind === 'loads-code').map((finding) => finding.span.join()));
+  const found = predicting(analysis, argv, via).filter(
+    (invocation) => at === undefined || invocation.program === null || anyProgram.has(invocation.span.join()) || placed(invocation, at),
+  );
   if (found.length > 0) return { covered: true, next: after(analysis, via, program, found) };
   // A wrapper that runs its command through a shell (`watch`, `flock -c`): the analysis walked that code under it.
   const wrapper = via.at(-1);
@@ -228,7 +251,18 @@ function judge(analysis: Analysis, via: string[], argv: string[]): { covered: bo
   )
     return { covered: true, next: via };
 
-  return { covered: covers(analysis, argv, via), next: null };
+  // Placed apart, only a finding that leaves code unseen accounts for it.
+  const covered = at === undefined ? covers(analysis, argv, via) : analysis.findings.some((finding) => unseen.has(finding.kind));
+  return { covered, next: null };
+}
+
+/** Whether the file an exec runs is the one the invocation names: its path, or the name found on `PATH`. */
+function placed(invocation: Invocation, at: Where & { path: string }): boolean {
+  const run = at.path.startsWith('/') ? posix.normalize(at.path) : posix.normalize(posix.join(at.cwd, at.path));
+  if (invocation.path === undefined) return at.path.startsWith('/') && at.search.has(dirname(run));
+  const cwd = invocation.cwd?.startsWith('/') ? invocation.cwd : posix.join(at.cwd, invocation.cwd ?? '.');
+  const named = resolvePath(cwd, invocation.path, invocation.home);
+  return at.path === invocation.path || named === run;
 }
 
 /**

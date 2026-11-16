@@ -777,6 +777,10 @@ const startedCases: [source: string, decision: Decision, what: string][] = [
   ['RIPGREP_CONFIG_PATH=/tmp/x rg foo', 'ask', 'a ripgrep config, which may name a program to run'],
   ['sort -T /home/me/t big', 'ask', 'sort writing temporary files outside the project'],
   ['tree -Lo 2 /home/me/x', 'ask', 'tree reading each letter of a cluster on its own'],
+  // A program under another name.
+  ['exec -a pkill pgrep -f x', 'ask', 'exec -a, which starts a program under a name it acts on'],
+  ['exec -a git-branch git log -D feature', 'ask', 'the same, for git'],
+  ['exec -l ls', 'ask', 'exec -l, which starts it as -ls'],
   // The policy.
   ['GIT_TRACE2_EVENT=/home/me/.bashrc git status', 'ask', 'a git variable with a digit in its name, which writes a trace'],
   ['mkdir -p r/objects r/refs && echo "ref: refs/heads/main" > r/head', 'ask', 'head in any case, which is HEAD where case is ignored'],

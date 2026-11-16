@@ -241,6 +241,32 @@ while os.waitpid(sub, os.WNOHANG) == (0, 0):
     expect(result.execs.map(({ refused }) => refused)).toEqual([true]);
   });
 
+  test('a program started under another name than predicted is refused', async () => {
+    const result = await run('exec -a foo sleep 0', options({ analysis: analyze('sleep 0') }));
+    expect(result.execs.map(({ argv, covered, refused }) => [argv[0], covered, refused])).toEqual([['foo', false, true]]);
+    const same = await run('exec -a sleep sleep 0', options({ analysis: analyze('sleep 0') }));
+    expect(same.execs.map(({ covered, refused }) => [covered, refused])).toEqual([[true, false]]);
+  });
+
+  test('a file in another place than the one predicted is refused', async () => {
+    fresh();
+    writeFileSync(join(work, 'true'), '#!/bin/sh\n', { mode: 0o755 });
+    const here = await run('./true', options({ analysis: analyze('true') }));
+    expect(here.execs.map(({ covered, refused }) => [covered, refused])).toEqual([[false, true]]);
+    const there = await run(join(work, 'true'), options({ analysis: analyze('/usr/bin/true') }));
+    expect(there.execs.map(({ covered, refused }) => [covered, refused])).toEqual([[false, true]]);
+    const named = await run('./true', options());
+    expect(named.execs.map(({ covered, refused }) => [covered, refused])).toEqual([[true, false]]);
+  });
+
+  test('find passes as many paths as fit to a command ended by {} +', async () => {
+    fresh();
+    for (const name of ['a', 'b', 'c']) writeFileSync(join(work, name), '');
+    const result = await run('find . -type f -exec ls {} +', options());
+    expect(result.code).toBe(0);
+    expect(result.execs.filter((exec) => exec.refused)).toEqual([]);
+  });
+
   test('the timeout kills the whole tree', async () => {
     const result = await run('sleep 5 & sleep 5', options({ timeout: 300 }));
     expect(result.timedOut).toBe(true);

@@ -119,7 +119,9 @@ The parser version is pinned. Errors thrown by caller-supplied filesystem callba
 **S6. Under enforcement, an exec the analysis doesn't cover doesn't run.** With `bash-gate/trace` in `enforce` mode,
 every exec the shell makes, or a wrapper it follows makes (`env`, `xargs`, `find -exec`: a program without
 subcommands that the analysis predicts commands under, run on this machine), either is covered by the analysis it was
-given, as S1 defines it, or fails with EPERM before the program runs. So does one whose arguments can't be read. From
+given, as S1 defines it, or fails with EPERM before the program runs. Covered means the file run is the one predicted
+(the path given, or one in a directory of the run's `PATH` for a name), and so is the name it's started under (its
+`argv[0]`, which `exec -a` sets and some programs act on). So does one whose arguments can't be read. From
 the moment an exec stops until the kernel has copied its arguments or failed it, every other process and thread in the
 tree is stopped, so nothing in it can change what the exec runs after the check. What a program the analysis doesn't
 follow inside starts (`git`, `make`, a script file) isn't checked: that's its behaviour, out of scope above. The

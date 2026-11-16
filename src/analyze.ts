@@ -1721,15 +1721,21 @@ class Walker {
         break;
       }
       case 'exec': {
-        let i = 0;
-        for (; i < args.length && values[i]?.startsWith('-'); i++) {
-          if (values[i] === '--') {
-            i++;
-            break;
-          }
-          if (values[i] === '-a') i++;
-        }
-        if (i < args.length) return this.dispatch(args.slice(i), state, { ...ctx, externalOnly: true }, { ...call, command: undefined });
+        // `-a name` and `-l` (`-name`) start the program under another name, which some act on (`pgrep` as `pkill`,
+        // `git` as `git-branch`): what it does is then only known at run time.
+        const { options, rest, dynamic, bad } = getopt(values, 'cla:');
+        if (bad) break;
+        const command = values[rest];
+        const named = options.find(([letter]) => letter === 'a')?.[1];
+        const renamed =
+          dynamic ||
+          options.some(([letter]) => letter === 'l') ||
+          (options.some(([letter]) => letter === 'a') &&
+            (named === undefined || command === undefined || basename(named) !== basename(command)));
+        if (renamed && rest < args.length)
+          this.finding(ctx, 'loads-code', 'exec starts a program under another name, which it may act on', call.span);
+        if (rest < args.length)
+          return this.dispatch(args.slice(rest), state, { ...ctx, externalOnly: true }, { ...call, command: undefined });
         break;
       }
       case 'eval': {
