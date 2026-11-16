@@ -750,11 +750,11 @@ function finishPush(parsed: Parsed): void {
 
 /** Git config keys whose values git runs, or that change what or where it runs. */
 const gitExecKeys =
-  /^(alias\..*|core\.(pager|editor|sshcommand|fsmonitor|hookspath|askpass|gitproxy|worktree)|sequence\.editor|pager\..*|diff\.external|diff\..*\.(command|textconv)|merge\..*\.driver|filter\..*\.(clean|smudge|process)|credential\.helper|credential\..*\.helper|gpg\.program|gpg\..*\.program|interactive\.difffilter|uploadpack\.packobjectshook|remote\..*\.(uploadpack|receivepack|vcs)|protocol\..*\.allow|url\..*|include\.path|includeif\..*|submodule\..*\.update|ssh\.variant|core\.sshcommand|http\..*proxy|web\.browser|browser\..*\.(cmd|path)|man\..*\.(cmd|path)|sendemail\..*cmd|mergetool\..*\.cmd|difftool\..*\.cmd|hook\..*\.command)$/;
+  /^(alias\..*|core\.(pager|editor|sshcommand|fsmonitor|hookspath|askpass|gitproxy|worktree)|sequence\.editor|pager\..*|diff\.external|diff\..*\.(command|textconv)|merge\..*\.driver|filter\..*\.(clean|smudge|process)|credential\.helper|credential\..*\.helper|gpg\.program|gpg\..*\.program|interactive\.difffilter|uploadpack\.packobjectshook|remote\..*\.(uploadpack|receivepack|vcs)|protocol\..*\.allow|url\..*|include\.path|includeif\..*|submodule\..*\.update|ssh\.variant|core\.sshcommand|http\..*proxy|web\.browser|browser\..*\.(cmd|path)|man\..*\.(cmd|path)|sendemail\..*cmd|mergetool\..*\.cmd|difftool\..*\.cmd|hook\..*\.command|gpg\.ssh\.defaultkeycommand|trailer\..*\.(command|cmd)|core\.alternaterefscommand|gc\.recentobjectshook)$/;
 
 /** Keys whose value is a command git runs with the shell. */
 const gitShellKeys =
-  /^(hook\..*\.command|core\.(pager|editor|sshcommand|fsmonitor|askpass)|sequence\.editor|pager\..*|diff\.external|diff\..*\.(command|textconv)|merge\..*\.driver|filter\..*\.(clean|smudge|process)|gpg\.program|interactive\.difffilter|uploadpack\.packobjectshook|browser\..*\.cmd|man\..*\.cmd|mergetool\..*\.cmd|difftool\..*\.cmd)$/;
+  /^(hook\..*\.command|trailer\..*\.(command|cmd)|core\.(pager|editor|sshcommand|fsmonitor|askpass|alternaterefscommand)|gc\.recentobjectshook|sequence\.editor|pager\..*|diff\.external|diff\..*\.(command|textconv)|merge\..*\.driver|filter\..*\.(clean|smudge|process)|gpg\.program|interactive\.difffilter|uploadpack\.packobjectshook|browser\..*\.cmd|man\..*\.cmd|mergetool\..*\.cmd|difftool\..*\.cmd)$/;
 
 /**
  * What a git config entry means for running git: `undefined` when it's harmless, `{}` when it changes what git runs
@@ -784,19 +784,21 @@ function finishConfig(parsed: Parsed): void {
   const positionals = subcommand ? parsed.positionals.slice(1) : parsed.positionals;
   const reading = ['--get', '--get-all', '--get-regexp', '--list', '--get-urlmatch', '--get-color', '--get-colorbool'];
   if (subcommand === 'get' || subcommand === 'list' || reading.some((name) => parsed.options[name])) return;
+  // The file it writes: the one named, the user's, the system's, the work tree's, or the repository's.
   const file = parsed.options['--file']?.[0];
-  const local = !parsed.options['--global'] && !parsed.options['--system'] && !parsed.options['--worktree'];
-  const target: Arg = file !== undefined && file !== true ? file : { kind: 'static', value: '.git/config' };
+  const scope = parsed.options['--global'] ? '~/.gitconfig' : parsed.options['--system'] ? '/etc/gitconfig' : undefined;
+  const named: Arg | undefined = file !== undefined && file !== true ? file : undefined;
+  const target: Arg = named ?? { kind: 'static', value: scope ?? (parsed.options['--worktree'] ? '.git/config.worktree' : '.git/config') };
   const removing = ['--unset', '--unset-all', '--remove-section', '--rename-section'];
   if (subcommand === 'unset' || subcommand?.endsWith('-section') || removing.some((name) => parsed.options[name])) {
     parsed.effects.add('fs:write');
-    if (local) parsed.writes.push(target);
+    parsed.writes.push(target);
     return;
   }
   const [key, value] = positionals;
   if (!key || !value) return;
   parsed.effects.add('fs:write');
-  if (local) parsed.writes.push(target);
+  parsed.writes.push(target);
   const k = staticValue(key);
   const v = staticValue(value);
   parsed.configs.push(k !== undefined && v !== undefined ? { kind: 'static', value: `${k}=${v}` } : value);
@@ -806,6 +808,14 @@ function finishConfig(parsed: Parsed): void {
 function finishReflog(parsed: Parsed): void {
   const first = parsed.positionals[0];
   if (first?.kind === 'dynamic' || ['expire', 'delete', 'drop'].includes(first?.value ?? '')) parsed.effects.add('fs:delete');
+}
+
+/** The merge strategies git has: another (`-s evil`) is `git-merge-evil`, found on PATH. */
+const mergeStrategies = new Set(['ort', 'recursive', 'resolve', 'octopus', 'ours', 'subtree']);
+
+function finishStrategy(parsed: Parsed): void {
+  for (const strategy of parsed.options['--strategy'] ?? [])
+    if (strategy === true || strategy.kind === 'dynamic' || !mergeStrategies.has(strategy.value)) parsed.effects.add('exec:arbitrary');
 }
 
 const hooks: Effect[] = ['fs:write', 'exec:project'];
@@ -898,9 +908,14 @@ const git: CommandSpec = {
     // `expire`, `delete` and `drop` remove entries (a stash is one), and `show` (by default) writes `--output`.
     reflog: { abbreviations: true, options: opts(o('--output=', { role: 'write' })), finish: finishReflog },
     ...each(
-      'describe rev-parse ls-files ls-tree show-ref cat-file merge-base name-rev count-objects var check-ignore check-attr for-each-ref help version',
+      'describe rev-parse ls-files ls-tree show-ref cat-file merge-base name-rev count-objects var check-ignore check-attr for-each-ref version',
       { abbreviations: true },
     ),
+    // `-w` opens the page in a browser, found as git's web--browse finds one.
+    help: {
+      abbreviations: true,
+      options: opts(o('-w --web', { effects: ['exec:arbitrary'] }), '-a --all', '-g --guides', '-i --info', '-m --man'),
+    },
     'ls-remote': {
       abbreviations: true,
       options: opts(
@@ -995,6 +1010,7 @@ const git: CommandSpec = {
         '-X= --strategy-option=',
         o('--upload-pack=', { effects: ['exec:arbitrary'] }),
       ),
+      finish: finishStrategy,
     },
     fetch: {
       abbreviations: true,
@@ -1166,6 +1182,7 @@ const git: CommandSpec = {
         '--verify --no-no-verify',
         '--allow-unrelated-histories',
       ),
+      finish: finishStrategy,
     },
     rebase: {
       abbreviations: true,
@@ -1185,11 +1202,23 @@ const git: CommandSpec = {
         '--verify --no-no-verify',
         '--update-refs',
       ),
+      finish: finishStrategy,
     },
     ...each('cherry-pick revert', {
       abbreviations: true,
       effects: hooks,
-      options: opts('-n --no-commit', '-e --edit', '-m= --mainline=', '--continue', '--abort', '-x'),
+      options: opts(
+        '-n --no-commit',
+        '-e --edit',
+        '-m= --mainline=',
+        '--continue',
+        '--abort',
+        '-x',
+        '-s= --strategy=',
+        '-X= --strategy-option=',
+        '-S=? --gpg-sign=?',
+      ),
+      finish: finishStrategy,
     }),
     stash: {
       abbreviations: true,
@@ -3069,6 +3098,10 @@ const programs: Record<string, CommandSpec> = {
       '-p --precise',
       '-w --no-wrap',
       '-q= --equexit=',
+      o('-s= --shotsdir=', { role: 'write' }),
+      '-f --follow',
+      '-C --no-color',
+      '-r --no-rerun',
     ),
     finish(parsed) {
       if (parsed.positionals.length === 0) return;
@@ -3915,6 +3948,10 @@ const programs: Record<string, CommandSpec> = {
         true,
       );
       unknownIsConfig(parsed);
+      // Where it caches and reports coverage, and with --clearCache, a directory it deletes whole.
+      for (const name of ['--cacheDirectory', '--coverageDirectory'])
+        for (const value of parsed.options[name] ?? []) if (value !== true) parsed.writes.push(value);
+      if (parsed.options['--clearCache']) parsed.effects.add('fs:delete');
     },
   },
   tsdown: {
@@ -4222,8 +4259,37 @@ const programs: Record<string, CommandSpec> = {
       '-g --group',
       '-s --size',
       '-D --date',
+      '-P= --pattern=',
+      '-I= --ignore=',
+      '-H=',
+      '-T=',
+      '-R',
+      '--charset=',
+      '--filelimit=',
+      '--timefmt=',
       o('-o= --output=', { role: 'write', effects: ['fs:write'] }),
     ),
+    // tree reads a cluster's letters one at a time, each that takes a value taking the next word (`-Lo 2 x` writes x);
+    // only -L takes digits in its own word.
+    parse(args, parsed) {
+      const spec = { ...programs.tree!, parse: undefined };
+      const taking = new Set(spec.options!.filter((option) => option.value === true).flatMap((option) => option.names));
+      const words: Arg[] = [];
+      for (let i = 0; i < args.length; i++) {
+        const arg = args[i]!;
+        const value = staticValue(arg);
+        if (value === undefined || !/^-[^-]./.test(value) || /^-L\d+$/.test(value)) {
+          words.push(arg);
+          continue;
+        }
+        // Each letter on its own, followed by the value it takes from the words after the cluster.
+        for (const letter of value.slice(1)) {
+          words.push({ kind: 'static', value: `-${letter}` });
+          if (taking.has(`-${letter}`) && i + 1 < args.length) words.push(args[++i]!);
+        }
+      }
+      Object.assign(parsed, normalize(words, spec));
+    },
   },
   date: {
     abbreviations: true,
@@ -4364,12 +4430,20 @@ const programs: Record<string, CommandSpec> = {
     },
   },
   yq: {
-    ...reader('-i --inplace --in-place', '-s= --split-exp='),
+    ...reader(
+      '-i --inplace --in-place',
+      '-s= --split-exp=',
+      o('--split-exp-file=', { role: 'read' }),
+      o('--from-file=', { role: 'read' }),
+      '--security-allow-write-any-path',
+      o('--security-enable-system-operator', { effects: ['exec:arbitrary'] }),
+    ),
     finish(parsed) {
       // In place, the files it's given are rewritten; split, it writes files named by an expression.
+      const split = parsed.options['--split-exp'] || parsed.options['--split-exp-file'];
       if (parsed.options['--inplace']) parsed.writes.push(...parsed.positionals);
-      if (parsed.options['--split-exp']) parsed.writes.push(dynamicArg('split output', 'placeholder', false, ''));
-      if (parsed.options['--inplace'] || parsed.options['--split-exp']) parsed.effects.add('fs:write');
+      if (split) parsed.writes.push(dynamicArg('split output', 'placeholder', false, ''));
+      if (parsed.options['--inplace'] || split) parsed.effects.add('fs:write');
     },
   },
   'head|tail': reader('-n= --lines=', '-c= --bytes=', '-f --follow=?', '-F', '-q --quiet', '-v --verbose', '-z --zero-terminated'),
@@ -4449,7 +4523,7 @@ const programs: Record<string, CommandSpec> = {
     '-k= --key=',
     '-t= --field-separator=',
     '-S= --buffer-size=',
-    '-T= --temporary-directory=',
+    o('-T= --temporary-directory=', { role: 'write' }),
     '-n --numeric-sort',
     '-r --reverse',
     '-u --unique',
