@@ -202,6 +202,14 @@ export function virtualFs(files: Readonly<Record<string, string>>): FileSystem {
   return {
     readFile: (path) => (Object.hasOwn(files, path) ? files[path]! : null),
     realpath: (path) => (Object.hasOwn(files, path) || directories.has(path) ? path : null),
+    readDirectory: (path) => {
+      if (!directories.has(path)) return null;
+      const prefix = path === '/' ? '/' : `${path}/`;
+      const names = new Set<string>();
+      for (const known of [...Object.keys(files), ...directories])
+        if (known.startsWith(prefix) && known.length > prefix.length) names.add(known.slice(prefix.length).split('/')[0]!);
+      return [...names];
+    },
   };
 }
 

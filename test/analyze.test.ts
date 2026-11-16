@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { huskyFiles } from '#src/husky.ts';
 import { allow, analyze, ask, check, checkAsync, covers, deny, recommended, snapshot, type Arg, type Effect } from '#src/index.ts';
+import { listing } from './listing.ts';
 
 const values = (args: Arg[]) => args.map((arg) => (arg.kind === 'static' ? arg.value : `<${arg.reason}>`));
 const only = (source: string) => {
@@ -275,7 +276,11 @@ describe('invocations', () => {
       '/repo/package.json': JSON.stringify({ scripts: { pretest: 'cat before', test: 'cat run', posttest: 'cat after' } }),
       '/repo/ssh.conf': 'Match exec "cat match"\n',
     };
-    const fs = { readFile: (path: string) => files[path] ?? null, realpath: (path: string) => path };
+    const fs = {
+      readFile: (path: string) => files[path] ?? null,
+      realpath: (path: string) => path,
+      readDirectory: listing(Object.keys(files)),
+    };
     const git = analyze('git commit -m x', { cwd: '/repo', fs });
     expect(git.invocations.filter((invocation) => invocation.program === 'cat').map((invocation) => values(invocation.argv))).toEqual([
       ['cat', 'configured'],
@@ -361,7 +366,11 @@ describe('invocations', () => {
       ...more,
     });
     const result = (source: string, files: Record<string, string>, cwd = '/repo', env: Record<string, string> = {}) => {
-      const fs = { readFile: (path: string) => files[path] ?? null, realpath: (path: string) => path };
+      const fs = {
+        readFile: (path: string) => files[path] ?? null,
+        realpath: (path: string) => path,
+        readDirectory: listing(Object.keys(files)),
+      };
       const analysis = analyze(source, { cwd, fs, env });
       const ran = analysis.invocations.some((invocation) => invocation.program === 'cat' && values(invocation.argv).includes('ran'));
       return { ran, asked: analysis.findings.some((finding) => finding.kind === 'exec-config') };
@@ -399,7 +408,11 @@ describe('invocations', () => {
       'post-index-change reference-transaction pre-commit commit-msg post-commit post-checkout post-merge pre-rebase pre-push pre-auto-gc sendemail-validate';
     const files: Record<string, string> = { '/repo/.git/HEAD': 'ref: refs/heads/main\n' };
     for (const name of names.split(' ')) files[`/repo/.git/hooks/${name}`] = `cat ${name}`;
-    const fs = { readFile: (path: string) => files[path] ?? null, realpath: (path: string) => path };
+    const fs = {
+      readFile: (path: string) => files[path] ?? null,
+      realpath: (path: string) => path,
+      readDirectory: listing(Object.keys(files)),
+    };
     const hooks = (source: string) =>
       analyze(source, { cwd: '/repo', fs })
         .invocations.filter((invocation) => invocation.program === 'cat')
@@ -538,6 +551,7 @@ describe('invocations', () => {
     const fs = {
       readFile: (path: string) => files[path] ?? null,
       realpath: (path: string) => (path === '/repo/x' || path.startsWith('/repo/x/') ? `/other/sub${path.slice(7)}` : path),
+      readDirectory: listing(Object.keys(files)),
     };
     const environment = { cwd: '/repo', fs };
     expect(check('git commit -m x', recommended, environment).decision).toBe('deny');
@@ -580,7 +594,11 @@ describe('invocations', () => {
         '/repo/.git/config': `[core]\n\thooksPath = ${hooksPath}\n`,
         ...Object.fromEntries(Object.entries(husky).map(([path, text]) => [`/repo/.husky/${path}`, text])),
       };
-      const fs = { readFile: (path: string) => files[path] ?? null, realpath: (path: string) => path };
+      const fs = {
+        readFile: (path: string) => files[path] ?? null,
+        realpath: (path: string) => path,
+        readDirectory: listing(Object.keys(files)),
+      };
       return (source: string) => check(source, recommended, { cwd: '/repo', fs });
     };
     const own = (lines: string) => `#!/usr/bin/env sh\n. "$(dirname -- "$0")/_/husky.sh"\n\n${lines}\n`;
@@ -618,7 +636,11 @@ describe('invocations', () => {
       '/repo/.git/config': '[include]\n\tpath = /repo/settings.js\n',
       '/repo/settings.js': '',
     };
-    const fs = { readFile: (path: string) => files[path] ?? null, realpath: (path: string) => path };
+    const fs = {
+      readFile: (path: string) => files[path] ?? null,
+      realpath: (path: string) => path,
+      readDirectory: listing(Object.keys(files)),
+    };
     const findings = (source: string) => analyze(source, { cwd: '/repo', fs }).findings.map((finding) => finding.message);
     for (const source of ['biome check --write && npm test', 'biome format --write . && npm test'])
       expect([source, findings(source)]).toEqual([source, []]);
@@ -789,6 +811,7 @@ describe('filesystem', () => {
   const fs = {
     readFile: (path: string) => tree[path] ?? null,
     realpath: (path: string) => links[path] ?? (path in tree || dirs.has(path) ? path : null),
+    readDirectory: listing([...Object.keys(tree), ...dirs]),
   };
   const environment = { cwd: '/repo', fs };
   const unknown = (source: string) => analyze(source, environment).findings.some((finding) => finding.kind === 'unknown-file');
@@ -858,7 +881,11 @@ describe('filesystem', () => {
       '/repo/hooks/pre-commit': 'cat lint',
       '/repo/package.json': '{"scripts":{"test":"cat x"}}',
     };
-    const fs = { readFile: (path: string) => project[path] ?? null, realpath: (path: string) => path };
+    const fs = {
+      readFile: (path: string) => project[path] ?? null,
+      realpath: (path: string) => path,
+      readDirectory: listing(Object.keys(project)),
+    };
     const environment = { cwd: '/repo', fs };
     const kinds = (source: string) => [...new Set(analyze(source, environment).findings.map((finding) => finding.kind))];
     for (const source of ['git commit -m x && npm test', 'git stash list && npm test', 'npm test && git commit -m x'])
@@ -940,9 +967,13 @@ describe('filesystem', () => {
   });
 
   test('checkAsync fetches what each round needs, and decides as the sync check does', async () => {
-    const remote = { readFile: async (path: string) => fs.readFile(path), realpath: async (path: string) => fs.realpath(path) };
+    const remote = {
+      readFile: async (path: string) => fs.readFile(path),
+      realpath: async (path: string) => fs.realpath(path),
+      readDirectory: async (path: string) => fs.readDirectory(path),
+    };
     const hooked: Record<string, string> = { ...tree, '/repo/.git/hooks/pre-commit': 'rm -rf /' };
-    const evil = { readFile: async (path: string) => hooked[path] ?? null, realpath: remote.realpath };
+    const evil = { readFile: async (path: string) => hooked[path] ?? null, realpath: remote.realpath, readDirectory: remote.readDirectory };
     expect((await checkAsync('git commit -m x', recommended, { cwd: '/repo', fs: remote })).decision).toBe('allow');
     expect((await checkAsync('git commit -m x', recommended, { cwd: '/repo', fs: evil })).decision).toBe('deny');
     expect(check('git commit -m x', recommended, environment).decision).toBe('allow');

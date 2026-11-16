@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { check, recommended, type Decision } from '#src/index.ts';
+import { listing } from './listing.ts';
 
 // What a coding agent runs all day, in an ordinary project, and the verdict `recommended` gives it. A soundness fix
 // that changes one of these is a cost: it changes the line here, and says why in its commit.
@@ -29,6 +30,7 @@ function environmentAt(root: string) {
     fs: {
       readFile: (path: string) => files[path] ?? null,
       realpath: (path: string) => (path === root || path.startsWith(`${root}/`) || path === '/home/me' ? path : null),
+      readDirectory: listing(Object.keys(files)),
     },
   };
 }

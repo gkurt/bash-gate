@@ -13,24 +13,34 @@ export interface FileSystem {
    * symlink (its parent is tried instead).
    */
   realpath(path: string): string | null | undefined;
+  /**
+   * The names in a directory (not `.` or `..`); `null` when it isn't one. Optional: git looks into repositories nested
+   * anywhere in its work tree (added as gitlinks, with no `.gitmodules` entry), which are found by listing it. Without
+   * it, a git command run with this filesystem is an `exec-config` finding.
+   */
+  readDirectory?(path: string): string[] | null | undefined;
 }
 
 /** A `FileSystem` only reachable asynchronously (a browser, a remote sandbox), for `checkAsync`. */
 export interface AsyncFileSystem {
   readFile(path: string): Promise<string | null>;
   realpath(path: string): Promise<string | null>;
+  readDirectory?(path: string): Promise<string[] | null>;
 }
 
-/** What's known of a filesystem: a path in neither record isn't known. */
+/** What's known of a filesystem: a path in none of the records isn't known. */
 export interface Snapshot {
   files?: Record<string, string | null>;
   realpaths?: Record<string, string | null>;
+  /** Directories' names, as `readDirectory` gives them. Without it, the snapshot can't list directories. */
+  directories?: Record<string, string[] | null>;
 }
 
-export function snapshot({ files = {}, realpaths = {} }: Snapshot): FileSystem {
+export function snapshot({ files = {}, realpaths = {}, directories }: Snapshot): FileSystem {
   return {
     readFile: (path) => (Object.hasOwn(files, path) ? files[path] : undefined),
     realpath: (path) => (Object.hasOwn(realpaths, path) ? realpaths[path] : undefined),
+    ...(directories ? { readDirectory: (path: string) => (Object.hasOwn(directories, path) ? directories[path] : undefined) } : {}),
   };
 }
 
@@ -40,6 +50,7 @@ export class Probe {
   needs = new Map<string, Need>();
   texts = new Map<string, string | null | undefined>();
   reals = new Map<string, string | null | undefined>();
+  listings = new Map<string, string[] | null | undefined>();
 
   constructor(fs: FileSystem) {
     this.fs = fs;
@@ -50,6 +61,19 @@ export class Probe {
     const text = this.texts.get(path);
     if (text === undefined) this.needs.set(`file\0${path}`, { kind: 'file', path });
     return text;
+  }
+
+  /** Whether the filesystem can list directories at all. */
+  get lists(): boolean {
+    return this.fs.readDirectory !== undefined;
+  }
+
+  readDirectory(path: string): string[] | null | undefined {
+    if (!this.fs.readDirectory) return undefined;
+    if (!this.listings.has(path)) this.listings.set(path, this.fs.readDirectory(path));
+    const names = this.listings.get(path);
+    if (names === undefined) this.needs.set(`directory\0${path}`, { kind: 'directory', path });
+    return names;
   }
 
   realpath(path: string): string | null | undefined {

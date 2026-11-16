@@ -3357,13 +3357,61 @@ class Walker {
           this.finding(ctx, 'exec-config', `Where submodule ${entry.value} is isn't known`, call.span);
           continue;
         }
-        const dotGit = `${sub}/.git`;
-        const pointer = gitfile(readFile(dotGit));
-        if (pointer !== undefined) follow(this.pointedTo(sub, pointer, ctx, call), sub, dotGit, sub);
-        else if (readFile(`${dotGit}/config`) !== undefined || hasHead(dotGit)) follow(dotGit, sub, dotGit, sub);
-        else continue;
         // A submodule's own submodules are looked into as well.
-        submodules(sub);
+        if (followNested(sub)) submodules(sub);
+      }
+    };
+
+    /** A repository in the work tree at `sub` (a submodule, or a gitlink), followed: whether there is one. */
+    const followNested = (sub: string): boolean => {
+      const dotGit = `${sub}/.git`;
+      const pointer = gitfile(readFile(dotGit));
+      if (pointer !== undefined) follow(this.pointedTo(sub, pointer, ctx, call), sub, dotGit, sub);
+      else if (readFile(`${dotGit}/config`) !== undefined || hasHead(dotGit)) follow(dotGit, sub, dotGit, sub);
+      else return false;
+      return true;
+    };
+
+    /**
+     * Repositories nested anywhere in the work tree at `root`, whether `.gitmodules` names them or not: one added as a
+     * gitlink is looked into as a submodule is. Found by listing the tree, without following symlinks, as git doesn't.
+     */
+    const listed = new Set<string>();
+    const nestedRepositories = (root: string): void => {
+      if (listed.has(root)) return;
+      listed.add(root);
+      const files = this.files!;
+      if (!files.lists) {
+        this.finding(ctx, 'exec-config', `Repositories nested in ${root} can't be found without a directory listing`, call.span);
+        return;
+      }
+      const queue: [string, string | undefined][] = [[root, files.physical(root)]];
+      for (let seen = 0; queue.length > 0; seen++) {
+        if (seen >= 50_000) {
+          this.finding(ctx, 'exec-config', `The work tree at ${root} is too large to look for nested repositories in`, call.span);
+          return;
+        }
+        const [dir, real] = queue.shift()!;
+        const names = files.readDirectory(dir);
+        if (names === undefined) {
+          this.finding(ctx, 'unknown-file', `What \`${dir}\` holds isn't known`, call.span);
+          continue;
+        }
+        if (names === null) continue;
+        for (const name of names) {
+          const child = `${dir === '/' ? '' : dir}/${name}`;
+          if (name === '.git') {
+            if (dir !== root) followNested(dir);
+            continue;
+          }
+          // A symlink to a directory is no directory git descends into.
+          const childReal = files.realpath(child);
+          if (childReal === undefined || real === undefined) {
+            queue.push([child, undefined]);
+            continue;
+          }
+          if (childReal !== null && childReal === `${real === '/' ? '' : real}/${name}`) queue.push([child, childReal]);
+        }
       }
     };
 
@@ -3380,11 +3428,13 @@ class Walker {
         // What it reads from the work tree, it reads before it writes there.
         if (pointer !== undefined) {
           submodules(dir);
+          nestedRepositories(dir);
           follow(this.pointedTo(dir, pointer, ctx, call), dir, dotGit, hooksFrom);
           return true;
         }
         if (readFile(`${dotGit}/config`) !== undefined || hasHead(dotGit)) {
           submodules(dir);
+          nestedRepositories(dir);
           follow(dotGit, dir, dotGit, hooksFrom);
           if (valid(dotGit)) return true;
         }

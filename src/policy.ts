@@ -93,12 +93,15 @@ export async function checkAsync(
 ): Promise<Verdict> {
   const files: Record<string, string | null> = Object.create(null);
   const realpaths: Record<string, string | null> = Object.create(null);
+  const lists = environment.fs.readDirectory !== undefined;
+  const directories: Record<string, string[] | null> | undefined = lists ? Object.create(null) : undefined;
   for (let round = 1; ; round++) {
-    const analysis = analyze(source, { ...environment, fs: snapshot({ files, realpaths }) });
+    const analysis = analyze(source, { ...environment, fs: snapshot({ files, realpaths, ...(directories ? { directories } : {}) }) });
     if (analysis.needs.length === 0 || round >= rounds) return evaluate(analysis, policy);
     await Promise.all(
       analysis.needs.map(async ({ kind, path }) => {
         if (kind === 'file') files[path] = await environment.fs.readFile(path);
+        else if (kind === 'directory') directories![path] = await environment.fs.readDirectory!(path);
         else realpaths[path] = await environment.fs.realpath(path);
       }),
     );

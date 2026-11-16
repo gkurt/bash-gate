@@ -183,10 +183,10 @@ check('git status', recommended).decision; // 'allow'</pre>
         <section class="lesson" id="files">
           <h2><span class="num">09</span>With a filesystem</h2>
           <p>
-            Hand the analysis a <code>FileSystem</code> (two callbacks: <code>readFile</code> and <code>realpath</code>) and it reads what
-            the command would run: git hooks, git config and its includes, package.json scripts (npm, pnpm, bun), SSH config. Each is walked
-            as code, under the program that runs it, a script with the words given after its name. Project code is the project's where the
-            command starts: another directory's scripts or hooks ask.
+            Hand the analysis a <code>FileSystem</code> (callbacks: <code>readFile</code>, <code>realpath</code> and
+            <code>readDirectory</code>) and it reads what the command would run: git hooks, git config and its includes, package.json
+            scripts (npm, pnpm, bun), SSH config. Each is walked as code, under the program that runs it, a script with the words given
+            after its name. Project code is the project's where the command starts: another directory's scripts or hooks ask.
           </p>
           <p>
             Below is a small repository at <code>/repo</code>. Its pre-commit hook pipes a download into <code>sh</code>. Change it to

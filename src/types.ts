@@ -129,7 +129,7 @@ export interface Finding {
 
 /** Something the analysis asked the filesystem that it didn't know: answering it may settle an `unknown-file` finding. */
 export interface Need {
-  kind: 'file' | 'realpath';
+  kind: 'file' | 'realpath' | 'directory';
   path: string;
 }
 

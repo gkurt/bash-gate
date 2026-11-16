@@ -720,3 +720,13 @@ Costs: a project under `/usr/local/src` or `/etc` asks on every write. `git chec
 ## Decision round D: a project .npmrc's script-shell, 2026-11-17, see commit
 The user chose "Close both" (round 39's and round 53's trust items). This round covers the first. `scriptShell` reads `<cwd>/.npmrc` for npm and pnpm before their scripts are walked. If it finds `script-shell` (or `script_shell`), quoted or not, that isn't empty or `sh`, the scripts aren't walked: the program is `exec:file` and a read, or `exec:arbitrary` when the value holds `${…}`. The `.npmrc` goes through `read`, so one the script wrote first, or project code may have, is a finding. Checked in WSL under `env -i` with a dead registry: npm 11 ran `prog -c 'echo from-sh'` instead of sh.
 Costs: a snapshot that doesn't say whether `.npmrc` exists now asks on `npm test` (two analyze tests gained `'/repo/.npmrc': null`). After project code (`oxlint --fix && npm test`) there's a second "may be changed" finding, for `.npmrc`. No everyday verdict moved.
+
+## Decision round E: directory listings and nested repositories, 2026-11-17, see commit
+The user chose "Close both" (round 53's gitlink item). Changes:
+- **The API:** `FileSystem.readDirectory?` (and on `AsyncFileSystem`), `Snapshot.directories`, `checkAsync` fetching listings, and `Need.kind` `'directory'`.
+- **The walk:** `nestedRepositories(root)` runs next to `submodules(root)` wherever discovery settles on a repository. It walks the work tree breadth first, skips the root's own `.git`, and doesn't descend into a child whose real path isn't its own (a symlink). Each directory holding a `.git` is followed as a submodule is (`followNested`, now shared with `submodules`).
+- **Fail-closed cases:** no listing is an `exec-config` finding; an unknown directory is `unknown-file`; more than 50,000 directories is a finding.
+- **The site:** `virtualFs` lists its directories.
+- **Tests:** test fixtures got listings from their paths (`test/listing.ts`); the `disk()` helper lists its files and dirs.
+Two new escapes cases fail on 0d8f185: a gitlink repository's fsmonitor, and a filesystem with no listing.
+Costs: a host whose `FileSystem` has no `readDirectory` now asks on every git command (semver minor, in the changelog). Large work trees cost a listing per directory, and `checkAsync` a round per level, so a deep `node_modules` may run out of rounds and ask. No everyday verdict moved (everyday's fixture lists its files).

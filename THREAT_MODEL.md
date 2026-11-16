@@ -67,7 +67,10 @@ Out of scope:
   `getcwd`), a `.git` or the directory itself, that has a `HEAD` and the directories `objects` and `refs`. One that may
   lack them is followed, and so are those above it. A `.git` file and `commondir` are read as git reads them, a `..`
   after a symlink leading up from its target; config is parsed as git parses it, with a finding where git would refuse
-  it. The submodules `.gitmodules` names are followed too, and theirs in turn; a nested repository it doesn't name is not. The hooks followed are the ones the
+  it. The submodules `.gitmodules` names are followed too, and theirs in turn, and so is every repository nested in the work
+  tree, found by listing it (`readDirectory`), since one added as a gitlink is looked into with no `.gitmodules` entry;
+  without a listing, a git command is an `exec-config` finding, and symlinks to directories aren't descended into, as
+  git doesn't. The hooks followed are the ones the
   command runs in git 2.55, plus `pre-auto-gc` where older gits collect garbage afterwards; a command the table
   doesn't have may run any. They're read from `core.hooksPath` where that directory is certain, and from the config's
   own `hook.<name>.command`. A hook is read as the shell its first line names (`sh`, which expands aliases, with

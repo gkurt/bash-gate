@@ -1,6 +1,7 @@
 import { describe, test } from 'bun:test';
 import { huskyFiles } from '#src/husky.ts';
 import { check, recommended, type Decision, type Environment } from '#src/index.ts';
+import { listing } from './listing.ts';
 
 /** Each case: a command, the decision the recommended policy should reach, and what it exercises. */
 const cases: [source: string, decision: Decision, what: string][] = [
@@ -771,7 +772,9 @@ const tree: Record<string, string> = {
   'merging/.git/HEAD': 'ref: refs/heads/main\n',
   'merging/.git/config': '[branch "main"]\n\tmergeOptions = -s evil\n',
 };
-const withFiles: Environment = { fs: { readFile: (path) => tree[path] ?? null, realpath: (path) => path } };
+const withFiles: Environment = {
+  fs: { readFile: (path) => tree[path] ?? null, realpath: (path) => path, readDirectory: listing(Object.keys(tree)) },
+};
 const filesystemCases: [source: string, decision: Decision, what: string][] = [
   ['git commit -m x', 'allow', 'a hook the filesystem has is walked'],
   ['echo x > out && git commit -m x', 'ask', 'a write before git reads, which may go through a symlink to a hook'],
@@ -1409,6 +1412,7 @@ const linked: Environment = {
   fs: {
     readFile: (path) => placed[path] ?? null,
     realpath: (path) => (path === '/w/p/link' || path.startsWith('/w/p/link/') ? `/etc/sub${path.slice('/w/p/link'.length)}` : path),
+    readDirectory: listing(Object.keys(placed)),
   },
 };
 const linkedCases: [source: string, decision: Decision, what: string, cwd?: string][] = [
@@ -1572,11 +1576,13 @@ function disk(files: Record<string, string>, links: Record<string, string> = {},
       if (path === link || path.startsWith(`${link}/`)) return real(target + path.slice(link.length));
     return path;
   };
+  const list = listing([...Object.keys(files), ...dirs]);
   const there = new Set<string>(['/']);
   for (const path of [...Object.keys(files), ...dirs]) for (let at = path; at !== ''; at = at.slice(0, at.lastIndexOf('/'))) there.add(at);
   return {
     readFile: (path) => files[real(path)] ?? null,
     realpath: (path) => (there.has(real(path)) ? real(path) : null),
+    readDirectory: (path) => (there.has(real(path)) ? list(real(path)) : null),
   };
 }
 const fsmonitor = '[core]\n\tfsmonitor = touch /tmp/PWNED\n';
@@ -1743,6 +1749,26 @@ const projectCases: [what: string, source: string, decision: Decision, fs: Envir
       '/w/p/.git/refs/remotes/origin/fix': 'abc\n',
       '/w/p/fix': 'x',
     }),
+  ],
+  [
+    'a repository added as a gitlink with no .gitmodules entry, whose config git status runs',
+    'git status',
+    'ask',
+    disk({ ...repository('/w/p/.git'), ...repository('/w/p/vendor/nested/.git', fsmonitor) }),
+  ],
+  [
+    'the same, with a filesystem that cannot list directories',
+    'git status',
+    'ask',
+    { readFile: (path) => repository('/w/p/.git')[path] ?? null, realpath: (path) => path },
+  ],
+  [
+    'a symlink to another repository, which git does not descend into',
+    'git status',
+    'allow',
+    disk({ ...repository('/w/p/.git'), ...repository('/w/other/.git', fsmonitor), '/w/p/a': 'x' }, { '/w/p/link': '/w/other' }, [
+      '/w/p/link',
+    ]),
   ],
   [
     "a submodule's own submodule, whose config git status runs too",

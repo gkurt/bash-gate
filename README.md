@@ -262,7 +262,7 @@ while anything the last one started is still running: a job it left in the backg
 kills, the whole process tree.
 
 ```ts
-import { lstatSync, readFileSync, realpathSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { check, recommended, type FileSystem } from 'bash-gate';
 
 const absent = (error: unknown) => ['ENOENT', 'ENOTDIR', 'EISDIR'].includes((error as { code?: string }).code ?? '');
@@ -282,6 +282,14 @@ const fs: FileSystem = {
       if (!absent(error)) throw error;
       // A dangling symlink isn't nothing: where it points isn't known.
       return lstatSync(path, { throwIfNoEntry: false }) ? undefined : null;
+    }
+  },
+  readDirectory(path) {
+    try {
+      return readdirSync(path);
+    } catch (error) {
+      if (absent(error)) return null;
+      throw error;
     }
   },
 };
@@ -305,8 +313,12 @@ known `HOME`, a path set in a conditional include): that's an `exec-config` find
 - `readFile(path)` returns the text, `null` when nothing is there or it isn't a file, or `undefined` when it isn't
   known. `realpath(path)` returns where an absolute path really is, `null` only when nothing at all is there (not even a
   dangling symlink; then its parent is tried, so files that don't exist yet have a real path), or `undefined`.
-- What isn't known becomes an `unknown-file` finding, and an entry in `analysis.needs`: `{ kind: 'file' | 'realpath',
-  path }`. Errors thrown by the callbacks propagate.
+  `readDirectory(path)`, optional, returns the names in a directory, `null` when it isn't one, or `undefined`. git
+  looks into every repository nested in its work tree that was added as a gitlink, `.gitmodules` or not, and those are
+  found by listing the tree (symlinks aren't descended into, as git doesn't). Without it, a git command is an
+  `exec-config` finding; a tree too large to list (50,000 directories) is one too.
+- What isn't known becomes an `unknown-file` finding, and an entry in `analysis.needs`: `{ kind: 'file' | 'realpath' |
+  'directory', path }`. Errors thrown by the callbacks propagate.
 - The answers are about the filesystem _before_ the command. A file the script may write before it's read
   (`cp -r hooks .git/ && git commit`), or while it's read, is an `unknown-file` finding. While it's read is what the
   other commands of a pipeline write (`./build.sh | git commit`), and with `&` or `<(…)` anything the script writes
@@ -327,19 +339,24 @@ known `HOME`, a path set in a conditional include): that's an `exec-config` find
   named for them to write (`tsc --outFile`). `tsc` copies the JSON its sources import into its output, from wherever
   it is, so after it every `.json` is unknown too, a package.json included (`tsc --noEmit` writes nothing).
 
-`snapshot({ files, realpaths })` builds a `FileSystem` from records: a path in neither isn't known. Where the
+`snapshot({ files, realpaths, directories })` builds a `FileSystem` from records: a path in none isn't known, and
+without `directories` it can't list them. Where the
 filesystem is only reachable asynchronously (a browser, a remote sandbox), `checkAsync` analyses with what it has,
 fetches the needs, and goes again:
 
 ```ts
 import { checkAsync, recommended, type AsyncFileSystem } from 'bash-gate';
 
-const fs: AsyncFileSystem = { readFile: (path) => sandbox.read(path), realpath: (path) => sandbox.realpath(path) };
+const fs: AsyncFileSystem = {
+  readFile: (path) => sandbox.read(path),
+  realpath: (path) => sandbox.realpath(path),
+  readDirectory: (path) => sandbox.list(path),
+};
 const verdict = await checkAsync('git commit -m wip', recommended, { cwd: '/repo', fs }, { rounds: 8 });
 ```
 
 Only content that names the next file costs a round: finding `.git` above a directory takes one, its hooks and
-includes another. Needs left after the last round stay findings, so the command asks.
+includes another, and listing the work tree one for each level of directories in it. Needs left after the last round stay findings, so the command asks.
 
 ## Running under the supervisor
 
