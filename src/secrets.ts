@@ -80,9 +80,10 @@ export function secretFile(path: string, short = true): boolean {
 /**
  * Whether a glob, as written, may match a file that holds secrets: filled in with the least and the most its
  * wildcards may stand for, or matching one of `examples` (`.e?v`, `~/.aws/*`). A last part with no text of its own
- * (`*`) is only tested against paths, as it matches every file.
+ * (`*`) is only tested against paths, as it matches every file. `dots`: a wildcard may match a leading dot (`dotglob`,
+ * `GLOBIGNORE`).
  */
-export function secretGlob(glob: string): boolean {
+export function secretGlob(glob: string, dots = false): boolean {
   const lower = glob.toLowerCase().replaceAll('\\', '/').replace(/["']/g, '');
   const filled = (any: string) =>
     lower
@@ -95,12 +96,12 @@ export function secretGlob(glob: string): boolean {
   return examples.some((example) => {
     if (parts.length < example.length || (example.length === 1 && !own)) return false;
     const tail = parts.slice(-example.length);
-    return example.every((part, i) => part === '*' || globPart(tail[i]!).test(part));
+    return example.every((part, i) => part === '*' || globPart(tail[i]!, dots).test(part));
   });
 }
 
-/** One part of a path glob as a regular expression: a wildcard first doesn't match a leading dot. */
-function globPart(glob: string): RegExp {
+/** One part of a path glob as a regular expression: a wildcard first doesn't match a leading dot, unless `dots`. */
+function globPart(glob: string, dots: boolean): RegExp {
   if (/[@!+?*]\(/.test(glob)) return /^/;
   let source = '';
   for (let i = 0; i < glob.length; i++) {
@@ -120,7 +121,7 @@ function globPart(glob: string): RegExp {
     }
   }
   try {
-    return new RegExp(`^${/^[*?[]/.test(glob) ? '(?!\\.)' : ''}${source}$`);
+    return new RegExp(`^${!dots && /^[*?[]/.test(glob) ? '(?!\\.)' : ''}${source}$`);
   } catch {
     return /^/;
   }
@@ -130,13 +131,13 @@ function globPart(glob: string): RegExp {
  * A variable named like a secret: one of its `_`-separated words ends in TOKEN, SECRET, PASSWORD, PASSWD, PASSPHRASE,
  * CREDENTIALS or APIKEY (`PGPASSWORD`), is PWD, PAT or SSHPASS (`MYSQL_PWD`, `GITHUB_PAT`), or it ends in KEY
  * (`OPENAI_API_KEY`). Not one named for where a secret is (`PASSWORD_STORE_DIR`) or meant to be public
- * (`NEXT_PUBLIC_…`), nor the working directory. Upper case only: the environment's names are, and a script's own
- * `token` or `key` is rarely one.
+ * (`NEXT_PUBLIC_…`), nor a count of tokens (`MAX_TOKENS`, `TOKEN_LIMIT`), nor the working directory. Upper case only:
+ * the environment's names are, and a script's own `token` or `key` is rarely one.
  */
 export function secretVariable(name: string): boolean {
   if (!/^[A-Z_][A-Z0-9_]*$/.test(name) || name === 'PWD' || name === 'OLDPWD') return false;
   const words = name.split('_');
-  if (words.includes('PUBLIC') || /^(DIR|FILE|PATH)$/.test(words.at(-1)!)) return false;
+  if (words.some((word) => /^(PUBLIC|MAX|MIN|NUM|COUNT|LIMIT|BUDGET)$/.test(word)) || /^(DIR|FILE|PATH)$/.test(words.at(-1)!)) return false;
   return (
     words.some(
       (word) => /(TOKENS?|SECRETS?|PASSWORDS?|PASSWD|PASSPHRASE|CREDENTIALS?|APIKEY)$/.test(word) || /^(PWD|PAT|SSHPASS)$/.test(word),
@@ -144,46 +145,59 @@ export function secretVariable(name: string): boolean {
   );
 }
 
-/** A variable code expands: by name, or `indirect`, the one another's value names (`${!x}`). */
+/**
+ * A variable code expands: by name, or `indirect`, the one another's value names (`${!x}`). `arithmetic`: in
+ * arithmetic, where a value that names a variable is evaluated in turn (`x=GITHUB_TOKEN; $(( x ))`).
+ */
 export interface Expanded {
   name: string;
   indirect: boolean;
+  arithmetic: boolean;
 }
+
+/** The names arithmetic text evaluates: words that aren't numbers (`0x1f`, `16#ff`). */
+export function arithmeticNames(text: string): string[] {
+  return text.match(/(?<![\w#])[A-Za-z_]\w*/g) ?? [];
+}
+
+/** `[[ ]]` operators that evaluate both sides as arithmetic. */
+const numeric = /^-(eq|ne|lt|le|gt|ge)$/;
 
 /**
  * The variables a command's words, redirections, here-documents and arithmetic expand, but not those in its
- * substitutions. `${x:+y}` expands y, not x, and `${!x*}` and `${!x[@]}` only names and keys.
+ * substitutions. `${x:+y}` expands y, not x, and `${!x*}` and `${!x[@]}` only names and keys. Arithmetic evaluates the
+ * names in it: `(( ))`, `$(( ))`, a subscript (`a[X]=1`, `${a[X]}`), an offset (`${x:X}`), `[[ X -eq 0 ]]`.
  */
 export function expandedNames(node: SyntaxNode): Expanded[] {
   const names: Expanded[] = [];
-  const identifier = /^[A-Za-z_]\w*/;
-  const visit = (item: SyntaxNode) => {
+  const evaluated = (text: string | undefined) => {
+    for (const name of arithmeticNames(text ?? '')) names.push({ name, indirect: false, arithmetic: true });
+  };
+  const visit = (item: SyntaxNode, arithmetic: boolean) => {
     if (item.type === 'Script') return;
-    if (item.type === 'SimpleExpansion') names.push({ name: item.text.slice(1), indirect: false });
+    const inner = arithmetic || item.type.startsWith('Arithmetic');
+    if (item.type === 'SimpleExpansion') names.push({ name: item.text.slice(1), indirect: false, arithmetic: inner });
     if (item.type === 'ParameterExpansion') {
       const { parameter, prefix, index, operation } = item;
       const listed = operation?.type === 'Names' || index?.value === '@' || index?.value === '*';
       const alternative = operation?.type === 'Default' && operation.operator.endsWith('+');
       if (prefix === '!') {
-        if (!listed) names.push({ name: parameter, indirect: true });
+        if (!listed) names.push({ name: parameter, indirect: true, arithmetic: inner });
       } else if (!alternative) {
-        names.push({ name: parameter, indirect: false });
+        names.push({ name: parameter, indirect: false, arithmetic: inner });
       }
-      // A subscript is arithmetic, which evaluates a name in it.
-      const subscript = index && identifier.exec(index.value)?.[0];
-      if (subscript) names.push({ name: subscript, indirect: false });
+      if (!listed) evaluated(index?.value);
+      if (operation?.type === 'Slice') [operation.offset, operation.length].forEach((word) => evaluated(word?.value));
     }
-    if (item.type === 'ArithmeticWord') {
-      const name = identifier.exec(item.value)?.[0];
-      if (name) names.push({ name, indirect: false });
-    }
-    forEachChild(item, visit);
+    if (item.type === 'Assignment') evaluated(item.index?.value);
+    if (item.type === 'ArithmeticWord') evaluated(item.value);
+    const both = item.type === 'TestBinary' && numeric.test(item.operator);
+    if (both) [item.left, item.right].forEach((word) => evaluated(word.value));
+    forEachChild(item, (child) => visit(child, inner || both));
   };
-  visit(node);
+  visit(node, false);
   return names;
 }
-
-const staticValue = (arg: Arg | undefined) => (arg?.kind === 'static' ? arg.value : undefined);
 
 /**
  * Whether a program prints the environment, or a variable in it named like a secret: `printenv`, `env` with no
@@ -201,9 +215,12 @@ export function printsEnvironment(program: string | null, argv: Arg[], runs: boo
       return !runs;
     case 'export':
     case 'declare':
-    case 'typeset': {
+    case 'typeset':
+    case 'local': {
+      // `-p` with other letters (`-px`, `-gp`) prints the names it's given too; `local -p` a caller's, inherited.
+      const printing = (arg: Arg) => arg.kind === 'dynamic' || /^-\w*p/.test(arg.value);
       const prints = program === 'export' || args.some((arg) => arg.kind === 'dynamic' || /^-\w*[px]/.test(arg.value)) || args.length === 0;
-      return prints && (names.length === 0 || (args.some((arg) => staticValue(arg) === '-p') && names.some(named)));
+      return prints && (names.length === 0 || (args.some(printing) && names.some(named)));
     }
     case 'set':
       return args.length === 0;
@@ -213,14 +230,19 @@ export function printsEnvironment(program: string | null, argv: Arg[], runs: boo
     case 'gojq':
     case 'jaq': {
       const filter = jqFilter(args);
-      return filter === 'file' || filter?.kind === 'dynamic' || (filter !== undefined && /\$ENV\b|(^|[^\w$.])env\b/.test(filter.value));
+      // `env`, `$ENV`, or a file loaded as data (`import "f" as $x`); `{env: …}` is a key.
+      const reads = /\$ENV\b|(^|[^\w$.])env\b(?!\s*:)|\b(import|include)\b/;
+      return filter === 'file' || filter?.kind === 'dynamic' || (filter !== undefined && reads.test(filter.value));
     }
-    case 'yq':
+    case 'yq': {
+      // `env()`, `strenv()`, `envsubst`, `$ENV`, and files loaded by name (`load_str`, `load_props`).
+      const reads = /\b(str)?env\s*\(|envsubst|\$ENV\b|\bload(_\w+)?\s*\(/;
       return args.some(
         (arg, i) =>
           (arg.kind === 'dynamic' && !args.slice(0, i).some((before) => before.kind === 'dynamic' || !before.value.startsWith('-'))) ||
-          (arg.kind === 'static' && (/\b(str)?env\s*\(|envsubst|\$ENV\b/.test(arg.value) || arg.value.startsWith('--from-file'))),
+          (arg.kind === 'static' && (reads.test(arg.value) || arg.value.startsWith('--from-file'))),
       );
+    }
     case null:
     default:
       return false;

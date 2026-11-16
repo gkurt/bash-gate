@@ -28,13 +28,30 @@ but which in real Bash run, write, fetch or delete something the analysis doesn'
 command, the environment (`cwd`, `fs` contents) and what really happens. Don't pass on your own suspicions or earlier
 findings. You want a read that isn't anchored on yours.
 
+Pass it the safety rules below word for word. In round 43, a reviewer's Bash heredoc closed early on an inner `EOF`,
+and Git Bash on the Windows host ran its candidate commands for real, printing the real environment and credentials
+files into a saved tool result.
+
+**Safety rules, for the reviewer and for you while confirming:**
+
+- Write test inputs (case lists, scripts) only with the Write tool, never with a Bash heredoc or `echo` into a file.
+- Run a candidate command only inside WSL, never on the Windows host: in a fresh temp directory (`mktemp -d`), under an
+  environment emptied with `env -i` and given fake values only (`env -i HOME="$d" PATH=/usr/bin:/bin
+  FAKE_TOKEN=ab-cd.ef bash script.sh`).
+- Never run anything that reads real credentials or the real environment, even in WSL: `printenv`, `env`, `cat ~/…`,
+  `ps e`, `declare -p` and the like are tested only on fake files under the temp `HOME` and fake variables.
+- Don't run test suites or process loops on Windows: the Git Bash suite spawns thousands of processes. Run
+  `test/bash.test.ts`, `test/trace.test.ts` and `bun run checks` only in WSL (`~/bg`). On Windows, use small in-process
+  Bun scripts that call the analysis.
+
 ## 3. Confirm each finding
 
 A finding is real only when both of these hold:
 
 - A failing test reproduces it: a case in `test/escapes.test.ts`, or in `test/analyze.test.ts` when it needs an `fs`.
-- What it claims about Bash is true. Check it in real Bash with harmless commands (`echo`) under WSL. The repo copy
-  is `~/bg`; sync `src` and `test` to it first.
+- What it claims about Bash is true. Check it in real Bash with harmless commands (`echo`) under WSL, following the
+  safety rules in step 2: a script written with the Write tool, run under `env -i` with fake values in a temp
+  directory. The repo copy is `~/bg`; sync `src` and `test` to it first.
 
 Drop the rest, and log them as rejected with the reason.
 
@@ -59,10 +76,13 @@ Drop the rest, and log them as rejected with the reason.
 
 ## 5. Check and commit
 
-Run `bun run fix`, then `bun run checks`. Run `bun test test/bash.test.ts test/trace.test.ts` in WSL:
+On Windows, run `bun run fix`, `bun check`, `bun typecheck` and the in-process test files (`bun test
+test/analyze.test.ts test/escapes.test.ts test/everyday.test.ts test/match.test.ts test/metamorphic.test.ts
+test/properties.test.ts`), never `bun run checks` or `test/bash.test.ts`. Run the whole suite in WSL after syncing
+`src` and `test` to `~/bg`:
 
 ```
-MSYS_NO_PATHCONV=1 wsl.exe -e bash -lc 'cd ~/bg && PATH=$HOME/.bun/bin:$PATH bun test test/bash.test.ts test/trace.test.ts'
+MSYS_NO_PATHCONV=1 wsl.exe -e bash -lc 'cd ~/bg && PATH=$HOME/.bun/bin:$PATH bun test'
 ```
 
 All must pass. Commit to the current branch (`main`) with one commit per round. Stage only the files you changed, with

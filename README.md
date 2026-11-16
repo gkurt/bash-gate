@@ -120,18 +120,22 @@ const policy: Policy = {
   case, and `.git`'s Windows short name `GIT~1`, as a filesystem that ignores case takes them.
 - `effects`: `fs:read`, `fs:write`, `fs:delete`, `network`, `network:read`, `privilege`, `exec:arbitrary`,
   `exec:project`, `exec:file`, `exec:remote`, `shell-state`, `secrets:read`. `secrets:read` reads what is likely a
-  secret: the environment as a whole (`printenv`, `env` or `export -p` alone, `declare -p`, `set` alone, `ps e`
-  anywhere in its arguments, `ps -E`, awk's `ENVIRON`, jq's `env` and `$ENV`, yq's `env()` and `strenv()`), a file
-  that holds credentials, read, sourced, redirected, renamed (`mv`, `ln`), matched by a glob (`.e?v`, `~/.aws/*`) or
-  at a git revision (`git show HEAD:.env`) (`.env` and its variants but templates like `.env.example`, `.envrc`,
+  secret: the environment as a whole (`printenv`, `env` or `export -p` alone, `declare -p`, `local -p`, `set` alone,
+  `ps e` anywhere in its arguments, `ps -E`, awk's `ENVIRON`, jq's `env`, `$ENV` and `import`, yq's `env()`,
+  `strenv()` and `load…()`), a file that holds credentials, read, sourced, redirected, renamed (`mv`, `ln`), matched by
+  a glob (`.e?v`, `~/.aws/*`, `~/*/credentials` under `dotglob` or `GLOBIGNORE`), listed by `git config --file` or at
+  a git revision (`git show HEAD:.env`), but not only named (`git ls-files .env`, `git status .env`) or written (`cp
+  .env.example .env`) (`.env` and its variants but templates like `.env.example`, `.envrc`,
   `.dev.vars`, SSH private keys, `*.pem`, `*.key`, `*.ppk`, `*.kdbx`, `.netrc`, `.npmrc`, `.my.cnf`, `.htpasswd`,
   `~/.aws/credentials`, any file in `~/.kube`, gcloud and Azure credentials, git's, agents', registries' and cloud
   CLIs' credentials files, `*.tfstate`, `*.tfvars`, `/proc/*/environ`), a variable that may hold one expanded anywhere
   (an upper-case name with a word ending in `TOKEN`, `SECRET`, `PASSWORD`, `PASSPHRASE`, `CREDENTIALS` or `APIKEY`, a
   word `PWD`, `PAT` or `SSHPASS`, or ending in `KEY`: `$GITHUB_TOKEN`, `$PGPASSWORD`, `$OPENAI_API_KEY`, but not one
-  ending in `DIR`, `FILE` or `PATH`, or with a word `PUBLIC`; a nameref; `${!x}` naming one), in a command, an
-  assignment, a loop's words or arithmetic, but only tested (`test`, `[[ ]]`, `case`, not as a number and not under
-  `set -x`), and what a tool prints of its own (`kubectl get secret -o yaml`, any kubectl command printing a Secret
+  ending in `DIR`, `FILE` or `PATH`, or with a word `PUBLIC`, `MAX`, `MIN`, `NUM`, `COUNT`, `LIMIT` or `BUDGET`; a
+  nameref; `${!x}` naming one), in a command, an assignment, a loop's words, a prompt string (`PS4`, `${x@P}`) or
+  arithmetic (`$(( ))`, a subscript, an offset, `[[ X -eq 0 ]]`, an integer variable's value, and a variable whose
+  value names one), but only tested (`[ … ]` with one word, a unary test or a string comparison, `[[ ]]`, `case`; not
+  `test`, which leaves its last word in `$_`; not as a number and not under `set -x`), and what a tool prints of its own (`kubectl get secret -o yaml`, any kubectl command printing a Secret
   with `-o`, `kubectl config view --raw` or `--flatten`, `helm get values`, `helm status -o json`, `terraform output
   -json`, `terraform state pull`). A file named only by a word known at run time (`cat
   "$f"`), or read by a recursive search (`grep -r`), isn't known to be one. `network:read` only reads, from a host already set up:

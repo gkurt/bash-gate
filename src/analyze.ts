@@ -20,7 +20,7 @@ import { assignment, emptyParsed, flag, normalize, type Parsed } from './argv.ts
 import { Changes, compare, Probe, type FileSystem } from './files.ts';
 import { huskyHook } from './husky.ts';
 import { basename, isSystemPath, resolvePath } from './paths.ts';
-import { expandedNames, printsEnvironment, secretFile, secretGlob, secretVariable } from './secrets.ts';
+import { arithmeticNames, expandedNames, printsEnvironment, secretFile, secretGlob, secretVariable } from './secrets.ts';
 import { gitConfig, specFor } from './specs.ts';
 import type { Analysis, Arg, Effect, FindingKind, Invocation } from './types.ts';
 import {
@@ -258,6 +258,8 @@ interface Call {
    * when `set -x` may be on, which shows it even to a test.
    */
   secrets?: true | 'traced';
+  /** A glob's wildcards may match a leading dot (`dotglob`). */
+  dots?: true;
 }
 
 /**
@@ -350,6 +352,27 @@ function reopens(path: string, outputsRead: boolean): boolean {
 /** Programs whose arguments name files they don't read the contents of. */
 const contentBlind =
   /^(echo|printf|ls|stat|test|\[|touch|mkdir|rmdir|rm|unlink|basename|dirname|realpath|readlink|which|type|command|du|chmod|chown|chgrp|find|cd|pushd|popd|true|false|:)$/;
+
+/** Whether GLOBIGNORE may be set to something, which turns `dotglob` on. */
+function globIgnored(state: State): boolean {
+  const value = state.vars.get('GLOBIGNORE');
+  return value !== undefined && !(value.kind === 'static' && value.value === '');
+}
+
+/**
+ * Whether `[ … ]` only tests what it's given, in a form whose words make no error that shows them: one word, a unary
+ * test, or a string comparison, each maybe after `!`, with no word that may split. `test` leaves its last word in `$_`.
+ */
+function quietTest(argv: Arg[]): boolean {
+  const word = (arg: Arg | undefined, pattern: RegExp) => arg?.kind === 'static' && pattern.test(arg.value);
+  if (!word(argv[0], /^\[$/) || !word(argv.at(-1), /^\]$/)) return false;
+  let words = argv.slice(1, -1);
+  if (words.some((arg) => arg.kind === 'dynamic' && arg.split)) return false;
+  if (word(words[0], /^!$/)) words = words.slice(1);
+  if (words.length === 1) return true;
+  if (words.length === 2) return word(words[0], /^-[a-zA-Z]$/);
+  return words.length === 3 && word(words[1], /^(=|==|!=|<|>)$/);
+}
 
 /** Whether a `[[ ]]` shows what it tests: as a number (`-eq`), whose error prints it, or copied to BASH_REMATCH (`=~`). */
 function exposesTested(node: SyntaxNode): boolean {
@@ -1578,7 +1601,11 @@ class Walker {
       open: false,
       cwd: state.cwd,
       home: homeOf(state),
-      ...(this.expandsSecret([command], state) ? { secrets: option(state, 'xtrace') === false ? true : 'traced' } : {}),
+      ...(this.expandsSecret([command], state) || this.assignsSecretInteger(assignments, argv, state)
+        ? { secrets: option(state, 'xtrace') === false ? true : 'traced' }
+        : {}),
+      // `dotglob`, or a GLOBIGNORE that turns it on: a wildcard matches a leading dot.
+      ...(option(state, 'dotglob') !== false || globIgnored(state) ? { dots: true } : {}),
     };
     const before = new Map(assignments.map(({ name }) => [name, state.vars.get(name)]));
     // Before a command, they're its temporary environment: a function or builtin sees them as variables, and a local
@@ -3441,6 +3468,8 @@ class Walker {
     for (const error of script.errors ?? []) this.finding(inner, 'parse-error', `Parse error: ${error.message}`, call.span);
     this.carriageReturn(source, inner);
     this.substitutions(script.commands, state, inner);
+    // A prompt string (`PS4` under `set -x`, `${x@P}`) shows the variables it expands.
+    this.secretsIn(script.commands, state, inner, { pos: call.span[0], end: call.span[1] });
   }
 
   /**
@@ -3517,12 +3546,39 @@ class Walker {
     const lookup = lookupIn(state);
     const secret = (name: string) => secretVariable(name) || state.refs.has(name);
     return nodes.some((node) =>
-      expandedNames(node).some(({ name, indirect }) => {
+      expandedNames(node).some(({ name, indirect, arithmetic }) => {
+        if (arithmetic) return this.evaluatesSecret(name, state);
         if (!indirect) return secret(name);
         const value = lookup(name);
         return secret(name) || value?.kind !== 'static' || secret(value.value.replace(/\[.*$/s, ''));
       }),
     );
+  }
+
+  /**
+   * Whether arithmetic evaluating a name reaches a secret, whose value its error message shows (`$(( GITHUB_TOKEN ))`):
+   * the name is one, or its known value names one in turn (`x=GITHUB_TOKEN; $(( x ))`).
+   */
+  evaluatesSecret(name: string, state: State, seen = new Set<string>()): boolean {
+    if (secretVariable(name) || state.refs.has(name)) return true;
+    const value = lookupIn(state)(name);
+    if (value?.kind !== 'static' || seen.has(name) || seen.size > 16) return false;
+    return arithmeticNames(value.value).some((inner) => this.evaluatesSecret(inner, state, new Set([...seen, name])));
+  }
+
+  /**
+   * What an integer variable is assigned is arithmetic: `declare -i n=GITHUB_TOKEN`, or `n=GITHUB_TOKEN` once n is one.
+   */
+  assignsSecretInteger(assignments: Assignment[], argv: Arg[], state: State): boolean {
+    const evaluated = (text: string) => arithmeticNames(text).some((name) => this.evaluatesSecret(name, state));
+    const integers = assignments.filter(
+      ({ name, value }) => (state.integers.has(name) || state.maybeIntegers.has(name)) && value.type !== 'ArrayValue',
+    );
+    if (integers.some(({ value }) => value.type !== 'ArrayValue' && evaluated(value.value))) return true;
+    const [head, ...args] = argv;
+    if (head?.kind !== 'static' || !/^(declare|typeset|local|export|readonly)$/.test(head.value)) return false;
+    if (!args.some((arg) => arg.kind === 'static' && /^-\w*i/.test(arg.value))) return false;
+    return args.some((arg) => arg.kind === 'static' && arg.value.includes('=') && evaluated(arg.value.slice(arg.value.indexOf('=') + 1)));
   }
 
   /**
@@ -3550,15 +3606,13 @@ class Walker {
     realpaths: Record<string, string | null> | undefined,
   ): boolean {
     if (parsed.effects.has('secrets:read')) return true;
-    const tested =
-      (program === 'test' || program === '[') && !argv.some((arg) => arg.kind === 'static' && /^-(eq|ne|lt|le|gt|ge)$/.test(arg.value));
-    if (call.secrets === 'traced' || (call.secrets && !tested)) return true;
+    if (call.secrets === 'traced' || (call.secrets && !(program === '[' && quietTest(argv)))) return true;
     if (printsEnvironment(program, argv, parsed.nested.length > 0)) return true;
     const secret = (arg: Arg, short = true) => {
       if (arg.kind === 'dynamic') {
         return (
           arg.reason === 'glob' &&
-          [arg.text, resolvePath(call.cwd, arg.text, call.home)].some((glob) => glob !== undefined && secretGlob(glob))
+          [arg.text, resolvePath(call.cwd, arg.text, call.home)].some((glob) => glob !== undefined && secretGlob(glob, call.dots))
         );
       }
       const resolved = resolvePath(call.cwd, arg.value, call.home);
@@ -3568,8 +3622,15 @@ class Walker {
     };
     if (redirected.some((arg) => secret(arg))) return true;
     if (program !== null && contentBlind.test(program)) return false;
-    // git's words are revisions as often as paths: `HEAD~1` is no short name.
-    return [...parsed.reads, ...parsed.positionals].some((arg) => secret(arg, program !== 'git'));
+    // git's words are revisions as often as paths: `HEAD~1` is no short name. Some of its commands only name files
+    // (`git ls-files .env`), and `config --file` reads the file it names as well as writing it.
+    const command = parsed.subcommands[0];
+    if (program === 'git' && /^(add|check-attr|check-ignore|ls-files|restore|rm|status)$/.test(command ?? '')) return false;
+    const config = program === 'git' && command === 'config' ? parsed.writes : [];
+    // cp reads its sources, not where it copies them to (`cp .env.example .env`).
+    const copied = (arg: Arg) =>
+      program === 'cp' && arg.kind === 'static' && parsed.writes.some((write) => write.kind === 'static' && write.value === arg.value);
+    return [...parsed.reads, ...parsed.positionals, ...config].some((arg) => !copied(arg) && secret(arg, program !== 'git'));
   }
 
   finding(ctx: Context, kind: FindingKind, message: string, span: [number, number]): void {
@@ -4263,7 +4324,7 @@ function clone(state: State): State {
  */
 const followed = {
   set: new Set(['allexport', 'monitor', 'physical', 'xtrace']),
-  shopt: new Set(['lastpipe', 'localvar_inherit', 'cdable_vars']),
+  shopt: new Set(['lastpipe', 'localvar_inherit', 'cdable_vars', 'dotglob']),
 };
 /** The letters of `set` (and a shell's options) for the options `shellOption` knows. */
 const setLetters: Record<string, string> = {
