@@ -494,3 +494,20 @@ Rejected (known by name, as README and THREAT_MODEL say; README now names them):
 Also seen: on Windows the Git Bash "mutated scripts" property failed with seed 1228426010, path `94:20:2:19:7:16:13` ("A stub never finished its log", `declare v1=<(v3='f1' ls '' >out)` in a while loop). The same seed fails on 60f9f96's code in a detached worktree, so it's the harness (a process substitution's stub outliving the script), not this change. The next full run and WSL (425 pass) were green.
 Costs: `a=$SECRET`, `for x in $SECRET`, `(( SECRET ))` ask; `mv`/`ln` of a secret file ask; `cat *.*`-like globs that could match a key type ask. No everyday verdict moved.
 Needs a decision: none.
+
+## Round 42: kubectl, helm and terraform specs (new in d3de581), 2026-11-16, see commit
+The tools aren't installed: the reviewer cited each claim to their source or docs (helm release-3.19 and main, kubectl/client-go/cli-runtime master, terraform main and its CLI docs) and ran in-process checks only. No Bash claim needed WSL. All 19 new escapes cases fail on a6d7c84. From this round on, Bash-backed tests run only in WSL: the Windows Git Bash suite had slowed the user's PC to a halt.
+Confirmed and fixed:
+- `helm uninstall myrel --dry-run=false` (and `=0`, `rollback --dry-run=false`, `install`/`upgrade --dry-run=false`) → allow, `network:read`; uninstall's and rollback's `--dry-run` is a Go bool, and install's `isDryRun()` is true only for client, server or true → dry only when ParseBool reads true, or for client/server.
+- `kubectl config view --flatten` → allow; view.go skips RedactSecrets when flattening and FlattenConfig inlines key files → `secrets:read`.
+- `kubectl get --raw /api/v1/namespaces/default/%73ecrets/foo` → allow; RequestURI keeps the decoded path → any `%` in a raw path counts.
+- `kubectl get secrets -o JSON` → allow; cli-runtime lowers the format → `showsData` ignores case.
+- `kubectl label secret foo a=b --dry-run=client -o yaml`, `annotate … -o json`, `wait --for=create secret/foo -o yaml` → allow; they print the object as the server has it → the print check applies to every kubectl command, and `wait` has the output options.
+- `helm status myrel -o json` → allow; statusPrinter encodes the whole release, its config and manifest → `-o json|yaml` on status, install and upgrade is `secrets:read`.
+- `helm repo update --repository-config ./r.yaml`, `helm template r/c --repository-cache ./cache`, `XDG_CACHE_HOME=./c helm template r/c` → allow; repositories from a file the command names may be any host → those options count as elsewhere (`network`), and `XDG_CACHE_HOME`/`XDG_DATA_HOME` are sensitive.
+- `terraform init -migrate-state -force-copy`, `init -backend-config=address=https://…` → allow; migration overwrites the new backend's state, and KEY=VALUE is a backend setting, not a file → `network`.
+- `terraform fmt -check=false -recursive /home/me/other` → allow, read as checking only; fmt.go writes unless check is true → check only when ParseBool reads true (and `-write` false the same way).
+- `terraform providers lock -net-mirror=https://…` → allow → `network`.
+Rejected or not verified (not changed): `kubectl create cm …` looking for a `kubectl-create-cm` plugin first (cmd.go compares only subcommand names, not aliases; needs a plugin on PATH, unverified); `kubectl kustomize --load-restrictor LoadRestrictionsNone` and `helm install --dry-run=server` with `lookup` (the kustomization and chart are project input, trusted per THREAT_MODEL); `-o JSONPATH=…` lower-casing (asks now anyway, through the case-insensitive match).
+Costs: any kubectl command printing a possible Secret with `-o yaml|json|…` asks (not only `get`); helm `--repository-config`/`--repository-cache` and `XDG_CACHE_HOME`/`XDG_DATA_HOME` assignments ask. No everyday verdict moved.
+Needs a decision: none.

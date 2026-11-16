@@ -2660,9 +2660,18 @@ const gh: CommandSpec = {
   finish: finishGh,
 };
 
-/** Output formats that print an object's data, a Secret's included: every one but the tables and `-o name`. */
+/**
+ * Output formats that print an object's data, a Secret's included: every one but the tables and `-o name`. kubectl
+ * lowers the format's case.
+ */
 const showsData =
-  /^(yaml|json|jsonpath|jsonpath-as-json|jsonpath-file|go-template|go-template-file|template|templatefile|custom-columns|custom-columns-file|kyaml)\b/;
+  /^(yaml|json|jsonpath|jsonpath-as-json|jsonpath-file|go-template|go-template-file|template|templatefile|custom-columns|custom-columns-file|kyaml)\b/i;
+
+/** A Go flag's value that `strconv.ParseBool` reads as true, or as false. */
+const goTrue = (value: Arg | true | undefined) =>
+  value === true || (value?.kind === 'static' && /^(1|t|T|TRUE|true|True)$/.test(value.value));
+const goFalse = (value: Arg | true | undefined) =>
+  value !== undefined && value !== true && value.kind === 'static' && /^(0|f|F|FALSE|false|False)$/.test(value.value);
 
 /** Whether the resources a kubectl command names may include Secrets: by name, by file, or only known at run time. */
 function maySecrets(parsed: Parsed): boolean {
@@ -2693,11 +2702,15 @@ function finishKubectl(parsed: Parsed): void {
     parsed.options['--template'] !== undefined ||
     (output !== undefined && (output === true || output.kind === 'dynamic' || showsData.test(output.value)));
   const raw = parsed.options['--raw']?.at(-1);
-  if (path === 'get' && raw !== undefined && (raw === true || raw.kind === 'dynamic' || /secrets/i.test(raw.value)))
+  // The path is sent decoded: `%73ecrets` is `secrets`.
+  if (path === 'get' && raw !== undefined && (raw === true || raw.kind === 'dynamic' || /secrets|%/i.test(raw.value)))
     parsed.effects.add('secrets:read');
-  if (path === 'get' && shows && maySecrets(parsed)) parsed.effects.add('secrets:read');
+  // Any command with print flags prints the objects it names or changes, as the server has them (`label -o yaml`).
+  if (shows && maySecrets(parsed)) parsed.effects.add('secrets:read');
   if (path === 'apply view-last-applied' && maySecrets(parsed)) parsed.effects.add('secrets:read');
-  if (path === 'config view' && (parsed.options['--raw'] || parsed.maybeOptions)) parsed.effects.add('secrets:read');
+  // `--flatten` skips the redaction, and puts the key and certificate files' contents in.
+  if (path === 'config view' && (parsed.options['--raw'] || parsed.options['--flatten'] || parsed.maybeOptions))
+    parsed.effects.add('secrets:read');
   if (path === 'diff' && parsed.options['--show-secrets']) parsed.effects.add('secrets:read');
   // The kubeconfig and kuberc it changes, where it reads them.
   const configFile = (option: string, fallback: string) => {
@@ -3325,7 +3338,7 @@ const kubectl: CommandSpec = {
       },
       uncordon: { effects: ['network'], options: [...kubeSelect, ...opts('--dry-run=?')] },
       version: { options: opts('--client', '-o= --output=') },
-      wait: { effects: ['network:read'], options: [...kubeFiles, ...kubeSelect, ...opts('--for=', '--timeout=')] },
+      wait: { effects: ['network:read'], options: [...kubeFiles, ...kubeSelect, ...kubeOutput, ...opts('--for=', '--timeout=')] },
     },
   }),
   parse: (args, parsed) => readCobra(kubectl, args, parsed),
@@ -3366,10 +3379,25 @@ function finishHelm(parsed: Parsed): void {
   if (/^repo (add|remove)$/.test(path)) configFile('--repository-config', '~/.config/helm/repositories.yaml');
   if (/^registry (login|logout)$/.test(path)) configFile('--registry-config', '~/.config/helm/registry/config.json');
   if (/^plugin (install|uninstall|update)$/.test(path)) configFile(undefined, '~/.local/share/helm/plugins');
+  // Dry as Go reads a bool (uninstall, rollback), or in one of install's and upgrade's modes: `false` is a real run.
   const dryRun = parsed.options['--dry-run']?.at(-1);
-  const dry = dryRun !== undefined && !(dryRun !== true && dryRun.kind === 'static' && dryRun.value === 'none');
+  const dry =
+    goTrue(dryRun) || (dryRun !== undefined && dryRun !== true && dryRun.kind === 'static' && /^(client|server)$/.test(dryRun.value));
   if (dry && /^(install|upgrade|uninstall|rollback)$/.test(path) && parsed.effects.delete('network')) parsed.effects.add('network:read');
-  const elsewhere = ['--kube-apiserver', '--kubeconfig', '--kube-insecure-skip-tls-verify', '--kube-ca-file', '--kube-tls-server-name'];
+  // As JSON or YAML, the release itself: its values and rendered manifest, Secrets included.
+  const output = parsed.options['--output']?.at(-1);
+  const whole = output !== undefined && (output === true || output.kind === 'dynamic' || /^(json|yaml)$/i.test(output.value));
+  if (/^(status|install|upgrade)$/.test(path) && whole) parsed.effects.add('secrets:read');
+  // Repositories from a file or cache the command names may be any host.
+  const elsewhere = [
+    '--kube-apiserver',
+    '--kubeconfig',
+    '--kube-insecure-skip-tls-verify',
+    '--kube-ca-file',
+    '--kube-tls-server-name',
+    '--repository-config',
+    '--repository-cache',
+  ];
   if (parsed.effects.has('network:read') && elsewhere.some((name) => parsed.options[name])) parsed.effects.add('network');
 }
 
@@ -3882,9 +3910,8 @@ function parseTerraform(args: Arg[], parsed: Parsed): void {
   if (path === 'output' && (parsed.options['--json'] || parsed.options['--raw'] || parsed.positionals.length > 0 || parsed.maybeOptions))
     parsed.effects.add('secrets:read');
   if (path === 'show' && (parsed.options['--json'] || parsed.maybeOptions)) parsed.effects.add('secrets:read');
-  const check =
-    parsed.options['--check'] !== undefined ||
-    parsed.options['--write']?.some((value) => value !== true && value.kind === 'static' && value.value === 'false');
+  // Only checking when -check is true or -write false, as Go reads a bool: `-check=false` writes.
+  const check = goTrue(parsed.options['--check']?.at(-1)) || goFalse(parsed.options['--write']?.at(-1));
   if (path === 'fmt' && check) {
     parsed.effects.delete('fs:write');
     parsed.writes = [];
@@ -3894,6 +3921,13 @@ function parseTerraform(args: Arg[], parsed: Parsed): void {
   if (path === 'login' || path === 'logout') parsed.writes.push({ kind: 'static', value: '~/.terraform.d/credentials.tfrc.json' });
   // A module copied from elsewhere, or a source on the command line.
   if (path === 'init' && parsed.options['--from-module']) parsed.effects.add('network');
+  // State copied to a new backend, or a backend setting given as KEY=VALUE rather than as a file.
+  const migrates = ['--migrate-state', '--force-copy'].some((name) => parsed.options[name] && !goFalse(parsed.options[name].at(-1)));
+  const settings = (parsed.options['--backend-config'] ?? []).some(
+    (value) => value === true || value.kind === 'dynamic' || value.value.includes('='),
+  );
+  if (path === 'init' && (migrates || settings)) parsed.effects.add('network');
+  if (path === 'providers lock' && parsed.options['--net-mirror']) parsed.effects.add('network');
 }
 
 const terraform: CommandSpec = { parse: parseTerraform };

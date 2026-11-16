@@ -131,8 +131,9 @@ const policy: Policy = {
   word `PWD`, `PAT` or `SSHPASS`, or ending in `KEY`: `$GITHUB_TOKEN`, `$PGPASSWORD`, `$OPENAI_API_KEY`, but not one
   ending in `DIR`, `FILE` or `PATH`, or with a word `PUBLIC`; a nameref; `${!x}` naming one), in a command, an
   assignment, a loop's words or arithmetic, but only tested (`test`, `[[ ]]`, `case`, not as a number and not under
-  `set -x`), and what a tool prints of its own (`kubectl get secret -o yaml`, `kubectl config view --raw`, `helm get
-  values`, `terraform output -json`, `terraform state pull`). A file named only by a word known at run time (`cat
+  `set -x`), and what a tool prints of its own (`kubectl get secret -o yaml`, any kubectl command printing a Secret
+  with `-o`, `kubectl config view --raw` or `--flatten`, `helm get values`, `helm status -o json`, `terraform output
+  -json`, `terraform state pull`). A file named only by a word known at run time (`cat
   "$f"`), or read by a recursive search (`grep -r`), isn't known to be one. `network:read` only reads, from a host already set up:
   `git fetch` and `git ls-remote` from a remote given by its name (or none), and the `gh` commands that look
   (`gh pr view`, `gh run list`, `gh search`). They have `network` instead once the command line may say where to go:
@@ -169,12 +170,15 @@ issues, runs, releases, repositories and search. A fetch that forces or deletes 
 command line (sensitive variables). It asks about reading secrets (`secrets:read`).
 `kubectl` and `helm` run when they only read the cluster and the chart repositories their config already names
 (`kubectl get`, `logs`, `describe`, `diff`, a `--dry-run`, `helm list`, `status`, `template`), and ask when they change
-it (`network`: `apply`, `delete`, `install`, `upgrade`), run something in a container (`exec:remote`: `kubectl exec`,
-`run`, `debug`, `cp`), open an editor, run a plugin (a word they don't know), print a Secret, change the user's
-kubeconfig or helm config, or go to a server, kubeconfig or chart URL of their own. `terraform init`, `validate`,
-`plan`, `fmt` and the state commands that only list run: they run the project's providers and `external` data sources
-as project code (`exec:project`). `apply`, `destroy`, `import`, `test`, the state changes and `login` ask, and so do
-`output -json`, `output NAME`, `show -json`, `state pull`, `state show` and `console`, which print secrets.
+it (`network`: `apply`, `delete`, `install`, `upgrade`, and a `--dry-run` Go reads as false, `=false` or `=0`), run
+something in a container (`exec:remote`: `kubectl exec`, `run`, `debug`, `cp`), open an editor, run a plugin (a word
+they don't know), print a Secret, change the user's kubeconfig or helm config, or go to a server, kubeconfig, chart
+URL, repository file or cache of their own (`--repository-config`, `--repository-cache`, `XDG_CACHE_HOME`).
+`terraform init`, `validate`, `plan`, `fmt` and the state commands that only list run: they run the project's
+providers and `external` data sources as project code (`exec:project`). `apply`, `destroy`, `import`, `test`, the
+state changes and `login` ask, and so do `init -migrate-state`, `-force-copy` or a `-backend-config=KEY=VALUE`,
+`providers lock -net-mirror`, `fmt -check=false` outside the project, and `output -json`, `output NAME`, `show
+-json`, `state pull`, `state show` and `console`, which print secrets.
 It allows project code (`exec:project`) as it does git hooks: the scripts, tests and builds `npm`, `pnpm`, `bun` and
 `cargo` run (`npm test`, `bun typecheck`, `cargo build`), and the tools those scripts run (`tsc`, `biome`, `oxlint`,
 `oxfmt`, `eslint`, `prettier`, `vitest`, `jest`, `tsdown`, `vite`), unless they also install, publish, delete, write
