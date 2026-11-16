@@ -1,4 +1,4 @@
-import { anyWords, flag, isOption, normalize, readCobra, type CommandSpec, type OptionSpec, type Parsed } from './argv.ts';
+import { anyWords, flag, isOption, normalize, readCobra, type CommandSpec, type DryRunSpec, type OptionSpec, type Parsed } from './argv.ts';
 import type { Arg, Effect } from './types.ts';
 import { dynamicArg, resolveWords } from './words.ts';
 
@@ -164,6 +164,21 @@ function writesManifest(parsed: Parsed): void {
  * `npm pack <spec>`: another package, from a directory (whose scripts it runs as it packs), the registry or a git
  * host (which it clones, installs and runs `prepare` in). Only `.` is the project's.
  */
+/**
+ * npm's `--dry-run`, on the commands that honor it: those that change the local installation, and packing and
+ * publishing. Others ignore it (`dist-tag`, `owner`, `version`, `run`, `pkg set`: npm's config docs). `npm publish
+ * --dry-run` still runs the lifecycle scripts, which are walked as they are, and still fetches another package it's
+ * given.
+ */
+const npmDryRun: DryRunSpec = {
+  options: ['--dry-run'],
+  keeps: (parsed) =>
+    /^(pack|publish)$/.test(parsed.subcommands[0] ?? '') &&
+    parsed.positionals.some((arg) => arg.kind === 'dynamic' || !/^[.~/]/.test(arg.value))
+      ? ['network']
+      : [],
+};
+
 function packsElsewhere(parsed: Parsed): void {
   for (const spec of parsed.positionals) {
     const value = staticValue(spec);
@@ -1114,7 +1129,8 @@ const git: CommandSpec = {
     },
     fetch: {
       abbreviations: true,
-      dryRun: { options: ['--dry-run'] },
+      // A dry run updates no refs, but still stores the objects it downloads in `.git/objects`.
+      dryRun: { options: ['--dry-run'], keeps: () => ['fs:write'] },
       effects: ['fs:write'],
       options: opts(
         '-v --verbose',
@@ -3433,6 +3449,12 @@ function finishHelm(parsed: Parsed): void {
   if (/^(install|upgrade)$/.test(path) && dryRun !== undefined && fromCluster && !parsed.options['--hide-secret'])
     parsed.effects.add('secrets:read').add('secrets:print');
   // Where it writes: the index into the directory it's given, the dependencies into the chart's.
+  // With `--dependency-update`, the dependencies go into the chart's `charts/`, beside a `Chart.lock`.
+  const chart = parsed.positionals.at(-1);
+  if (/^(install|upgrade|template)$/.test(path) && parsed.options['--dependency-update'] && chart) {
+    parsed.writes.push(chart);
+    parsed.effects.add('fs:write');
+  }
   if (/^(repo index|dependency (build|update))$/.test(path))
     parsed.writes.push(...(parsed.positionals.length > 0 ? parsed.positionals : [{ kind: 'static' as const, value: '.' }]));
   if (parsed.effects.has('network:read') && helmElsewhere(parsed)) parsed.effects.add('network');
@@ -3788,7 +3810,11 @@ const helm: CommandSpec = {
   dryRun: {
     options: ['--dry-run'],
     values: /^(1|t|T|TRUE|true|True|client|server)$/,
-    keeps: (parsed) => (helmFetches(parsed) || helmElsewhere(parsed) ? ['network'] : []),
+    // `--dependency-update` downloads the chart's dependencies into it, dry run or not.
+    keeps: (parsed) => [
+      ...(helmFetches(parsed) || helmElsewhere(parsed) ? (['network'] as const) : []),
+      ...(parsed.options['--dependency-update'] ? (['fs:write'] as const) : []),
+    ],
   },
   parse: (args, parsed) => readCobra(helm, args, parsed),
   finish: finishHelm,
@@ -4920,16 +4946,6 @@ const programs: Record<string, CommandSpec> = {
   ruby: interpreter(opts(inline('-e='), '-n', '-p', o('-i=?', { effects: ['fs:write'] }), '-r=', '-I=', '-w', '-W=?')),
   npm: {
     nopt: true,
-    // `npm publish --dry-run` still runs the lifecycle scripts, which are walked as they are, and still fetches
-    // another package it's given.
-    dryRun: {
-      options: ['--dry-run'],
-      keeps: (parsed) =>
-        /^(pack|publish)$/.test(parsed.subcommands[0] ?? '') &&
-        parsed.positionals.some((arg) => arg.kind === 'dynamic' || !/^[.~/]/.test(arg.value))
-          ? ['network']
-          : [],
-    },
     options: opts(
       o('--prefix= -C=', { role: 'cwd' }),
       '-w= --workspace=',
@@ -4965,19 +4981,21 @@ const programs: Record<string, CommandSpec> = {
     subcommands: {
       ...each('run|run-script|rum|urn test|t|tst start stop restart', { effects: ['exec:project'] }),
       ...each(
-        'install|i|in|ins|inst|insta|instal|isnt|isnta|isntal|isntall|add ci|clean-install|ic|install-clean|isntall-clean update|up|upgrade|udpate rebuild|rb uninstall|unlink|remove|rm|r|un install-test|it install-ci-test|cit dedupe|ddp prune find-dupes link|ln',
-        { effects: ['network', 'fs:write', 'exec:project'] },
+        'install|i|in|ins|inst|insta|instal|isnt|isnta|isntal|isntall|add ci|clean-install|ic|install-clean|isntall-clean update|up|upgrade|udpate uninstall|unlink|remove|rm|r|un install-test|it install-ci-test|cit dedupe|ddp prune find-dupes link|ln',
+        { effects: ['network', 'fs:write', 'exec:project'], dryRun: npmDryRun },
       ),
+      'rebuild|rb': { effects: ['network', 'fs:write', 'exec:project'] },
       ...each('exec|x init|create|innit edit explore', { effects: ['network', 'exec:arbitrary'] }),
       ...each(
-        'unpublish deprecate dist-tag|dist-tags owner|author access team login logout adduser|add-user audit outdated view|info|show|v search|find|s|se doctor docs|home bugs|issues repo fund diff hook token profile org star stars unstar ping whoami',
+        'deprecate dist-tag|dist-tags owner|author access team login logout adduser|add-user audit outdated view|info|show|v search|find|s|se doctor docs|home bugs|issues repo fund diff hook token profile org star stars unstar ping whoami',
         { effects: ['network'] },
       ),
       // `npm version` runs the version scripts, and commits and tags with git.
       'version|verison': { effects: ['exec:project'], finish: writesManifest },
-      pack: { effects: ['exec:project', 'fs:write'], finish: packsElsewhere },
+      pack: { effects: ['exec:project', 'fs:write'], finish: packsElsewhere, dryRun: npmDryRun },
       // Publishing runs the lifecycle scripts, packing among them: another package's (`npm publish ../b`) aren't the project's.
-      publish: { effects: ['network', 'exec:project'], finish: packsElsewhere },
+      publish: { effects: ['network', 'exec:project'], finish: packsElsewhere, dryRun: npmDryRun },
+      unpublish: { effects: ['network'], dryRun: npmDryRun },
       shrinkwrap: { effects: ['fs:write'] },
       cache: { effects: ['fs:write', 'fs:delete'] },
       'config|c': { finish: setsConfig },

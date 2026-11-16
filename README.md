@@ -169,10 +169,14 @@ const policy: Policy = {
   without knowing about dry runs, though a rule on options still matches (`recommended` denies `git push --dry-run
   --force`). A value that turns it off (`--dry-run=false`, `=none`, `=0`), or one only known at run time, is no dry run,
   and neither is a command with an option the spec doesn't know, or a word that may be one: it may take the dry-run
-  option as its value (`kubectl run --detach-keys --dry-run=client`). A `kubectl --raw` request ignores the dry run.
+  option as its value (`kubectl run --detach-keys --dry-run=client`), a plugin or a subcommand the spec doesn't know,
+  or a command whose words without the option would read as another (`git clean -n -fen -x`, where one `n` is `-e`'s
+  value). A `kubectl --raw` request ignores the dry run, and so do npm's commands but those that change the
+  installation, pack or publish (`npm --dry-run run deploy`, `npm --dry-run dist-tag add` and `version` run for real).
+  `git fetch --dry-run` and helm's `--dependency-update` still write (objects in `.git`, the chart's dependencies).
   `invocation.dryRun` is the real command it rehearses: `{ text, shape, effects }`, the effects that command would have,
   so a caller can match a later real run by shape and arguments as evidence it was rehearsed. Most are the same command
-  without the option: `git push -n`, `git add|rm|mv|fetch -n`, `rsync -n`, `npm --dry-run`, `cargo publish
+  without the option: `git push -n`, `git add|rm|mv|fetch -n`, `rsync -n`, `npm install|ci|update|uninstall|dedupe|prune|link|pack|publish|unpublish --dry-run`, `cargo publish
   --dry-run`, `gh pr create --dry-run`, `gh extension upgrade --dry-run`, kubectl's `--dry-run=client|server`, helm's
   `--dry-run` and `terraform state mv|rm -dry-run`. `git clean -n` stands for `git clean -f` with the same arguments,
   since git cleans nothing without `-f` while `clean.requireForce` has its default, true (`-f` or `-i` given are kept).

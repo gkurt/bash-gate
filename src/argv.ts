@@ -483,13 +483,15 @@ function levelsOf(root: CommandSpec, subcommands: string[]): CommandSpec[] {
  * its lifecycle scripts), but writes, deletes and runs nothing remotely, and only reads from the network. What it writes
  * by an option of its own (a log, a plan file) it still writes. A value only known at run time may be no dry run, and
  * so may a command with an option the spec doesn't know, or a word that may be one: it may take the dry-run option as
- * its value (`--detach-keys --dry-run=client`), or turn it off.
+ * its value (`--detach-keys --dry-run=client`), or turn it off. Nor is a plugin or a subcommand the spec doesn't know,
+ * which needn't honor it, or a command whose words without the dry run would read as another (`git clean -n -fen`,
+ * where one `n` is a value): then `dryRun` couldn't name the real command.
  */
 export function rehearse(root: CommandSpec | undefined, args: Arg[], parsed: Parsed): void {
   if (!root) return;
   const levels = levelsOf(root, parsed.subcommands);
   const spec = levels.findLast((level) => level.dryRun)?.dryRun;
-  if (!spec) return;
+  if (!spec || parsed.unknownSubcommand) return;
   const others = parsed.unknownOptions.filter((option) => !spec.options?.includes(option.split('=')[0]!));
   if (others.length > 0 || parsed.maybeOptions) return;
   if (spec.options) {
@@ -499,15 +501,30 @@ export function rehearse(root: CommandSpec | undefined, args: Arg[], parsed: Par
     if (last !== true && (last.kind === 'dynamic' || (spec.values ? !spec.values.test(last.value) : falseValue.test(last.value)))) return;
   }
   const without = withoutOptions(args, levels, spec.options ?? []);
+  if (!sameCommand(normalize(args, root), normalize(without, root), spec.options ?? [])) return;
   const real = spec.real ? spec.real(without, parsed, args) : without;
   parsed.dryRun = { args: real, parsed: normalize(real, root), rehearsal: new Set() };
   const keeps = spec.keeps?.(parsed) ?? [];
   for (const effect of ['fs:write', 'fs:delete', 'exec:remote'] as const) if (!keeps.includes(effect)) parsed.effects.delete(effect);
   if (!keeps.includes('network') && parsed.effects.delete('network')) parsed.effects.add('network:read');
   const named = new Set(Object.values(parsed.options).flat());
-  parsed.writes = parsed.writes.filter((arg) => named.has(arg));
+  if (!keeps.includes('fs:write')) parsed.writes = parsed.writes.filter((arg) => named.has(arg));
   if (parsed.writes.length > 0) parsed.effects.add('fs:write');
   parsed.dryRun.rehearsal = new Set(parsed.effects);
+}
+
+/** Whether two readings are the same command: subcommands, options (but `ignored`) with their values, and positionals. */
+function sameCommand(a: Parsed, b: Parsed, ignored: string[]): boolean {
+  const key = (parsed: Parsed) =>
+    JSON.stringify([
+      parsed.subcommands,
+      Object.entries(parsed.options)
+        .filter(([name]) => !ignored.includes(name))
+        .sort(([x], [y]) => x.localeCompare(y)),
+      parsed.positionals,
+      parsed.unknownOptions.filter((option) => !ignored.includes(option.split('=')[0]!)),
+    ]);
+  return key(a) === key(b);
 }
 
 /** `args` without the options named (canonical names, at any level): a whole word, or a letter in a cluster. */

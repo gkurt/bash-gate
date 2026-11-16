@@ -1107,6 +1107,24 @@ describe('dry runs', () => {
     ],
     // What the script writes besides, the real run writes too.
     ['git clean -n > list.txt', ['fs:write'], ['git clean -f', 'git clean --force', ['fs:delete', 'fs:write']]],
+    // Round 46: npm ignores --dry-run outside the commands that change the installation, pack or publish.
+    ['npm --dry-run dist-tag add pkg@1.0.0 latest', ['network']],
+    ['npm --dry-run pkg set description=x', ['fs:write']],
+    ['npm --dry-run run deploy', ['exec:project']],
+    ['npm --dry-run install', ['exec:project', 'network:read'], ['npm install', 'npm install', ['exec:project', 'fs:write', 'network']]],
+    // Words that would read as another command without the dry run: one `n` is the value of `-e`.
+    ['git clean -n -fen -x', ['fs:delete']],
+    ['git push -n -o -n origin main', ['exec:project', 'network']],
+    // It stores the objects it downloads.
+    ['git fetch --dry-run origin', ['fs:write', 'network:read'], ['git fetch origin', 'git fetch <arg>', ['fs:write', 'network:read']]],
+    // The chart's dependencies are downloaded into it.
+    [
+      'helm install x ./chart --dry-run --dependency-update',
+      ['fs:write', 'network:read'],
+      ['helm install x ./chart --dependency-update', 'helm install --dependency-update <arg> <arg>', ['fs:write', 'network']],
+    ],
+    // A plugin needn't honor it.
+    ['kubectl myplugin --dry-run=client', ['exec:arbitrary']],
   ];
   for (const [source, effects, real] of cases) {
     test(JSON.stringify(source), () =>
