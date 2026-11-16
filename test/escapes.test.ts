@@ -1009,6 +1009,8 @@ const startedCases: [source: string, decision: Decision, what: string][] = [
   ['git -c http.cookieFile=../x -c http.saveCookies=true ls-remote origin', 'ask', 'the same, given with -c'],
   ['vite build --outDir src', 'ask', 'vite emptying an outDir named on the command line'],
   ['tsdown -d src', 'ask', 'tsdown cleaning its out-dir'],
+  ['/proc/self/cwd/../../../usr/bin/ls', 'ask', 'a program path through /proc, which is no system path whatever it folds to'],
+  ['/repo/l/../../usr/bin/ls', 'ask', 'a program path with .. after a name, which a symlink may lead elsewhere'],
   ['cargo clippy -- -C linker=/tmp/evil', 'ask', "words after -- that clippy's rustc reads as a linker"],
   ['cargo clippy -- -D warnings -Aclippy::all --cap-lints=warn', 'allow', 'lint levels after --'],
   ["f() { local -n r='a[$(rm -rf /)]'; echo $r; }; f", 'deny', 'the same, with local -n'],

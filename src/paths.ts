@@ -6,7 +6,18 @@ export function basename(path: string): string {
   return trimmed.slice(trimmed.lastIndexOf('/') + 1) || path;
 }
 
+/**
+ * Whether what `path` names may differ from its text folded: a `..` after another name leaves from where that name
+ * leads, a symlink's target included (`link/..`), and `/proc` names each process's own (`/proc/self/cwd/..`).
+ */
+export function followsLinks(path: string): boolean {
+  if (/^\/+proc(\/|$)/.test(path)) return true;
+  const parts = path.split('/').filter((part) => part !== '' && part !== '.');
+  return parts.some((part, i) => part === '..' && parts.slice(0, i).some((before) => before !== '..'));
+}
+
 export function isSystemPath(path: string): boolean {
+  if (followsLinks(path)) return false;
   const slash = path.lastIndexOf('/');
   return systemDirs.has(normalize(path.slice(0, slash) || '/') ?? '');
 }

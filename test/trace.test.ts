@@ -282,6 +282,20 @@ while os.waitpid(sub, os.WNOHANG) == (0, 0):
     expect(result.execs.map(({ covered, refused }) => [covered, refused])).toEqual([[false, true]]);
   });
 
+  test('a .. after a symlink, or under /proc, is where the kernel leads, not the text folded', async () => {
+    fresh();
+    mkdirSync(join(work, 'usr', 'bin'), { recursive: true });
+    mkdirSync(join(work, 'a', 'b', 'c'), { recursive: true });
+    writeFileSync(join(work, 'usr', 'bin', 'ls'), `#!/bin/sh\ntouch ${join(work, 'ran')}\n`, { mode: 0o755 });
+    symlinkSync(join(work, 'a', 'b', 'c'), join(work, 'l'));
+    const up = '../'.repeat(work.split('/').length + 3);
+    for (const script of ['cd a/b/c && /proc/self/cwd/../../../usr/bin/ls', `${join(work, 'l')}/${up}usr/bin/ls`]) {
+      const result = await run(script, options({ analysis: analyze('/usr/bin/ls', { cwd: work }) }));
+      expect([script, result.execs.map(({ covered, refused }) => [covered, refused])]).toEqual([script, [[false, true]]]);
+    }
+    expect(existsSync(join(work, 'ran'))).toBe(false);
+  });
+
   test('a relative path is the file it reaches from where the process is', async () => {
     fresh();
     mkdirSync(join(work, 'd'));

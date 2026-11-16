@@ -12,7 +12,7 @@ import { constants, homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, posix } from 'node:path';
 import { analyze, type Environment } from '#src/analyze.ts';
 import { covers, predicting, unseen, wrappers } from '#src/cover.ts';
-import { isSystemPath, resolvePath } from '#src/paths.ts';
+import { followsLinks, isSystemPath, resolvePath } from '#src/paths.ts';
 import { specFor } from '#src/specs.ts';
 import type { Analysis, Arg, Invocation } from '#src/types.ts';
 
@@ -251,7 +251,8 @@ function judge(analysis: Analysis, via: string[], argv: string[], at?: Where & {
   // The code it runs is what the wrapper was given (`flock -c CODE`, or `watch`'s words joined), unless that's only known
   // at run time.
   const wrapper = via.at(-1);
-  const system = at === undefined || isSystemPath(at.path.startsWith('/') ? at.path : posix.join(at.cwd, at.path));
+  const system =
+    at === undefined || (!followsLinks(at.path) && isSystemPath(at.path.startsWith('/') ? at.path : posix.join(at.cwd, at.path)));
   const code = argv[1] === '-c' ? argv[2] : undefined;
   const given = (invocation: Invocation) =>
     invocation.program === wrapper &&
@@ -301,6 +302,8 @@ function real(path: string): string | undefined {
 
 /** Whether the file an exec runs is the one the invocation names: its path, or the name found on `PATH`. */
 function placed(invocation: Invocation, at: Where & { path: string }): boolean {
+  // What the kernel ran isn't the text folded: `link/..` and `/proc/self/cwd/..` lead elsewhere.
+  if (followsLinks(at.path)) return false;
   // The supervisor reads a relative path from where the process really is: the path is absolute here.
   const run = at.path.startsWith('/') ? posix.normalize(at.path) : posix.normalize(posix.join(at.cwd, at.path));
   if (invocation.path === undefined) return at.path.startsWith('/') && at.search.has(dirname(run));
