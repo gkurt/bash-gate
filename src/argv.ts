@@ -299,7 +299,12 @@ function readOption(args: Arg[], i: number, spec: CommandSpec | undefined, parse
     const next = args[at];
     if (!next) return false;
     if (!dashless) return true;
-    if (next.kind === 'static') return !(next.value.length > 1 && next.value.startsWith('-'));
+    // nopt takes it for some types and not others (pnpm's `--test-pattern --reporter`): either way, it may be options.
+    if (next.kind === 'static') {
+      const dashed = next.value.length > 1 && next.value.startsWith('-');
+      if (dashed) parsed.maybeOptions = true;
+      return !dashed;
+    }
     if (next.prefix === '' || next.prefix.startsWith('-')) parsed.maybeOptions = true;
     return true;
   };
@@ -322,6 +327,17 @@ function readOption(args: Arg[], i: number, spec: CommandSpec | undefined, parse
     else if (!takes && (optionValue = boolean(i + 1)) !== true) i++;
     record(parsed, option, optionValue);
     if (optionValue === args[i] && mayBeSeveral(optionValue)) parsed.maybeOptions = true;
+    return i;
+  }
+  // nopt splits `-C=x` at the `=`, and reads a word of shorthands letter by letter, each valued one taking the next
+  // word whatever it is (npm's `-Cd` is `--prefix --loglevel`, leaving `info`): such a cluster is unknown.
+  if (nopt && value.length > 2 && !findOption(spec, value)) {
+    const option = findOption(spec, value.slice(0, 2));
+    if (value[2] === '=' && option && (option.value ?? false) !== false) {
+      record(parsed, option, { kind: 'static', value: value.slice(3) });
+      return i;
+    }
+    unknown(parsed, value, true);
     return i;
   }
   for (let j = 1; j < value.length; j++) {

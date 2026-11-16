@@ -1328,7 +1328,8 @@ const git: CommandSpec = {
         }),
         ...each('pop apply branch', { effects: ['fs:write'] }),
         ...each('drop clear', { effects: ['fs:delete'] }),
-        list: {},
+        // It hands its options to `git log -g`, `--output` among them.
+        list: { abbreviations: true, options: opts(o('--output=', { role: 'write' })) },
         show: { abbreviations: true, options: opts(o('--output=', { role: 'write' })) },
         // `export --to-ref` sets a ref to the stashes, whatever it held, as `recommended` asks about.
         export: {
@@ -3599,14 +3600,15 @@ const programs: Record<string, CommandSpec> = {
       // `pnpm with <version> …` runs another pnpm.
       ...each('dlx|x create with', { posix: true, effects: ['network', 'exec:arbitrary'] }),
       ...each(
-        'install|i add update|up|upgrade remove|rm|uninstall|un link|ln unlink import rebuild|rb fetch install-test|it ci query dedupe prune deploy patch patch-commit patch-remove approve-builds env runtime|rt setup self-update clean',
+        'install|i add update|up|upgrade remove|rm|uninstall|un|uni link|ln unlink|dislink import rebuild|rb fetch install-test|it ci|clean-install|ic|install-clean query dedupe prune deploy patch patch-commit patch-remove approve-builds env runtime|rt setup self-update clean|purge',
         { effects: ['network', 'fs:write', 'exec:project'] },
       ),
       ...each(
-        'audit outdated licenses view|info|show|v search|find|s|se publish stage login|adduser|add-user logout whoami doctor docs|home bugs|issues repo dist-tag|dist-tags owner|author access team unpublish deprecate token profile org star stars unstar ping sbom store cache',
+        'audit outdated licenses view|info|show|v search|find|s|se publish stage login|adduser|add-user logout whoami doctor docs|home bugs|issues repo dist-tag|dist-tags owner|author|owners access team unpublish deprecate undeprecate token profile org star stars unstar ping sbom store cache peers',
         { effects: ['network'] },
       ),
-      ...each('edit recursive|multi|m', { effects: ['exec:arbitrary'] }),
+      // Commands this spec doesn't follow: what they do is only known at run time.
+      ...each('edit recursive|multi|m set-script|ss change lane pack-app', { effects: ['exec:arbitrary'] }),
       'version|verison': { effects: ['exec:project'], finish: writesManifest },
       pack: { effects: ['exec:project', 'fs:write'], finish: packsElsewhere },
       init: { finish: writesManifest },
@@ -3617,7 +3619,7 @@ const programs: Record<string, CommandSpec> = {
           if (staticValue(parsed.positionals[0]) !== 'get') writesManifest(parsed);
         },
       },
-      ...each('ls|list ll|la why root bin help get ignored-builds cat-file cat-index find-hash completion', {}),
+      ...each('ls|list ll|la why root bin prefix help get ignored-builds cat-file cat-index find-hash completion', {}),
     },
     finish(parsed) {
       unknownIsConfig(parsed);
@@ -3792,9 +3794,12 @@ const programs: Record<string, CommandSpec> = {
       'x|bunx': { posix: true, effects: ['network', 'exec:arbitrary'] },
       ...each('repl exec', { effects: ['exec:arbitrary'] }),
       ...each('create|c', { effects: ['network', 'exec:arbitrary'] }),
-      ...each('install|i|ci add|a remove|rm|r|uninstall update link unlink patch patch-commit pm init dedupe prune upgrade completions', {
-        effects: ['network', 'fs:write', 'exec:project'],
-      }),
+      ...each(
+        'install|i|ci add|a remove|rm|r|uninstall update|up link unlink patch patch-commit pm init dedupe prune upgrade completions',
+        {
+          effects: ['network', 'fs:write', 'exec:project'],
+        },
+      ),
       ...each('audit outdated info why publish whoami login logout discord feedback', { effects: ['network'] }),
       ...each('help deploy list getcompletes', {}),
     },
@@ -3947,6 +3952,13 @@ const programs: Record<string, CommandSpec> = {
       '-v --version',
     ),
     finish(parsed) {
+      // `@file` reads more options from that file: `--outDir`, `-p` and the rest, only known at run time.
+      if (
+        parsed.positionals.some(
+          (arg) => (arg.kind === 'dynamic' ? arg.prefix : arg.value).startsWith('@') || (arg.kind === 'dynamic' && arg.prefix === ''),
+        )
+      )
+        parsed.effects.add('exec:arbitrary');
       if (flag(parsed, '--init')) {
         writesFile(parsed, 'tsconfig.json');
         return;
