@@ -828,8 +828,10 @@ function finishCheckout(parsed: Parsed): void {
   finishTreePaths(parsed);
   // A word git refuses as a branch name (`.`, `src/`, `a..b`, `*.ts`) is a path.
   const path = parsed.positionals.some((arg) => arg.kind === 'static' && /^\.|\/$|\.\.|\/\.|[\s~^:?*[\\]|\.lock$|^-|^$/.test(arg.value));
-  if (parsed.options['-B'] || parsed.options['--ours'] || parsed.options['--theirs'] || parsed.positionals.length > 1 || path)
-    force(parsed);
+  // After `--`, or from a file, words are paths; `-m` and `--conflict` check out paths as they were merged.
+  const paths = (parsed.separated === true && parsed.positionals.length > 0) || parsed.positionals.length > 1 || path;
+  const named = ['-B', '--ours', '--theirs', '--pathspec-from-file', '--merge', '--conflict'].some((name) => parsed.options[name]);
+  if (paths || named) force(parsed);
 }
 
 /** `git switch -C` resets a branch that's there. */
@@ -875,6 +877,8 @@ const remoteName = /^\w[\w.-]*$/;
  */
 function finishRemoteRead(parsed: Parsed): void {
   const repositories = parsed.options['--multiple'] ? parsed.positionals : parsed.positionals.slice(0, 1);
+  // Refspecs read from standard input may be any: `+` ones, or ones --prune deletes local branches by.
+  if (parsed.options['--stdin']) (parsed.options['--force'] ??= []).push(true);
   // A `+` refspec forces the update of what it names, as `--force` does for all.
   for (const refspec of parsed.positionals.slice(repositories.length)) {
     const value = staticValue(refspec);
@@ -1082,6 +1086,7 @@ const git: CommandSpec = {
         '--prefetch',
         '-p --prune',
         '-P --prune-tags',
+        '--stdin',
         '--recurse-submodules=?',
         '--no-recurse-submodules',
         '--dry-run',
@@ -1147,9 +1152,12 @@ const git: CommandSpec = {
         '-t --track=?',
         '--detach',
         '-p --patch',
-        '--ours',
-        '--theirs',
+        '-2 --ours',
+        '-3 --theirs',
         '-m --merge',
+        '--conflict=',
+        '--pathspec-from-file=',
+        '--pathspec-file-nul',
         '-q --quiet',
       ),
       finish: finishCheckout,
@@ -2835,6 +2843,16 @@ const copy = (all: boolean): CommandSpec => ({
     for (const directory of [...directories, ...targets]) {
       const into = staticValue(directory);
       for (const source of sources) {
+        // --parents puts each under its whole path as given: `d/../../x` is outside `d`.
+        if (parsed.options['--parents']) {
+          const path = staticValue(source);
+          parsed.writes.push(
+            into !== undefined && path !== undefined
+              ? { kind: 'static', value: `${into.replace(/\/+$/, '')}/${path}` }
+              : dynamicArg(`${into ?? '…'}/…`, 'placeholder', false, ''),
+          );
+          continue;
+        }
         const name = staticValue(source)?.replace(/\/+$/, '').split('/').pop();
         const base = into?.replace(/\/+$/, '');
         const known = base !== undefined && name !== undefined && name !== '' && name !== '.' && name !== '..';
@@ -4238,7 +4256,25 @@ const programs: Record<string, CommandSpec> = {
       for (const file of script?.reads ?? []) parsed.reads.push({ kind: 'static', value: file });
       for (const file of script?.writes ?? []) parsed.writes.push({ kind: 'static', value: file });
       if (script && script.writes.length > 0) parsed.effects.add('fs:write');
-      if (parsed.options['--in-place']) parsed.writes.push(...(scripted ? parsed.positionals : parsed.positionals.slice(1)));
+      const edited = scripted ? parsed.positionals : parsed.positionals.slice(1);
+      if (parsed.options['--in-place']) parsed.writes.push(...edited);
+      // A backup suffix: a `*` in it is the file's name, and with a `/`, it's a path of its own.
+      for (const suffix of parsed.options['--in-place'] ?? []) {
+        if (suffix === true) continue;
+        const text = staticValue(suffix);
+        for (const file of edited) {
+          const name = staticValue(file);
+          const plain = text !== undefined && !text.includes('*');
+          const here = text !== undefined && name !== undefined && !name.includes('/');
+          parsed.writes.push(
+            plain && name !== undefined
+              ? { kind: 'static', value: name + text }
+              : here
+                ? { kind: 'static', value: text.replaceAll('*', name) }
+                : dynamicArg('…', 'placeholder', false, ''),
+          );
+        }
+      }
       if (!scripted && parsed.positionals.length > 0) parsed.reads = parsed.reads.filter((arg) => arg !== parsed.positionals[0]);
     },
   },

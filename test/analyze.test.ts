@@ -128,6 +128,14 @@ describe('options', () => {
     expect(git!.via).toEqual(['gh']);
   });
 
+  test("sed -i's backup and cp --parents write where the path leads", () => {
+    expect(values(only("sed -i'/home/me/.bash*' s/x/y/ rc").writes)).toEqual(['rc', '/home/me/.bashrc']);
+    expect(values(only("sed --in-place='../bak_*' s/x/y/ rc").writes)).toEqual(['rc', '../bak_rc']);
+    expect(values(only('sed -i.orig s/x/y/ sub/rc').writes)).toEqual(['sub/rc', 'sub/rc.orig']);
+    expect(only("sed -i'b_*' s/x/y/ sub/rc").writes[1]?.kind).toBe('dynamic');
+    expect(values(only('cp --parents ../../s/f d').writes)).toEqual(['d', 'd/../../s/f']);
+  });
+
   test('output-file positionals are writes, not reads', () => {
     for (const source of ['uniq input output', 'xxd -r input output']) {
       const invocation = only(source);

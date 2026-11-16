@@ -76,6 +76,8 @@ export interface Parsed {
   env: Arg[];
   /** Configuration entries (`git -c key=value`). */
   configs: Arg[];
+  /** Whether `--` ended the options: what follows is no option, and for git, no revision. */
+  separated?: boolean;
   /** A working directory it switches to (`git -C`, `env -C`). */
   cwd?: Arg;
 }
@@ -120,6 +122,7 @@ export function normalize(args: Arg[], spec: CommandSpec | undefined): Parsed {
     if (arg.kind === 'static' && optionsOpen) {
       if (arg.value === '--') {
         ended = true;
+        parsed.separated = true;
         continue;
       }
       if (isOption(arg.value)) {
