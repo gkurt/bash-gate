@@ -581,3 +581,16 @@ Confirmed and fixed:
 Rejected or not verified: `gh alias set d 'api "\-XDELETE" …'` split with Bash rules where gh uses shlex (gh isn't installed; the verdict asks anyway, as `alias set` writes config). Close calls that already ask through a finding: IFS changes (`getopts … IFS`, `let IFS=5`, `mapfile -t IFS` ask through their own builtin rules only), `$` before a line continuation, changes to a read-only name.
 Costs: an assignment-shaped argument with an unquoted tilde after `=` or `:` is dynamic, so a rule on its value no longer matches it statically. No everyday verdict moved.
 Needs a decision: none.
+
+## Round 49: src/analyze.ts shell state (sixth pass), 2026-11-16, see commit
+The reviewer checked against Bash 5.2.21 in WSL under `env -i`; I re-ran each claim the same way. 5 of 6 new escapes cases fail on d0c515f. The OLDPWD one already asks there without an `fs`; the reviewer's allow needed realpaths.
+Confirmed and fixed (one root cause: Bash assigns `_`, PWD and OLDPWD itself through `bind_variable`, which follows namerefs and applies attributes):
+- `x=ls; declare -n _=x; : rm; $x -f victim` (and `local -n _` in a function) → allow, `ls -f victim`; Bash ran `rm` (victim deleted).
+- `x=sub; declare -n OLDPWD=x; cd ~ && cd ~/repo && echo hi >> "$x/.bashrc"` → allow with an fs; cd set x to HOME and the write went to `~/.bashrc`.
+- `declare -l PWD; cd LINK && echo x >> ~+/.bashrc` (with `LINK/` and a `link -> ~` symlink) → allow; `~+` read the lowercased PWD through the symlink to HOME.
+- `: 0; declare -i _ y; : 'a[$(rm -f victim)]'` → allow; binding `_` evaluated the subscript, and rm ran.
+- `read l < input.txt; declare -n r=v; declare -i r; v=$l` → allow; the attribute went to v, and the file's subscript ran. `declare -l r` through a nameref lowers v the same way.
+Fix: a nameref or an `-i`/`-l`/`-u`/`-c` attribute on `_`, PWD or OLDPWD, and an attribute given to a name that may be a nameref, are `sensitive-variable` findings.
+Rejected: none.
+Costs: `declare -n`/`-i`/`-l`/`-u`/`-c` on `_`, PWD or OLDPWD, and attributes on a nameref, ask. No everyday verdict moved.
+Needs a decision: none.

@@ -179,6 +179,13 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['declare -l v; v=RM; $v -rf /', 'deny', 'a variable that lowercases what it is assigned'],
   ["declare +u -u o=-c; git $o core.fsmonitor='touch PWNED' status", 'ask', '+u with -u, which turns the attribute off'],
   ['declare -u +u v=rm; $v -rf /', 'deny', 'the same in the other order'],
+  // Round 49: names Bash assigns itself, through a nameref or with an attribute, and attributes through a nameref.
+  ['x=ls; declare -n _=x; : rm; $x -f victim', 'ask', 'a nameref named _, which each command assigns'],
+  ['f() { local -n _=x; : rm; }; x=ls; f; $x -f victim', 'ask', 'the same, local'],
+  ['x=sub; declare -n OLDPWD=x; cd ~ && cd ~/repo && echo hi >> "$x/.bashrc"', 'ask', 'a nameref named OLDPWD, which cd assigns'],
+  ['declare -l PWD; cd LINK && echo x >> ~+/.bashrc', 'ask', 'PWD lowercased, which ~+ reads'],
+  [": 0; declare -i _ y; : 'a[$(rm -f victim)]'", 'ask', '_ as an integer, which evaluates each last word'],
+  ['read l < input.txt; declare -n r=v; declare -i r; v=$l', 'ask', 'an attribute given through a nameref'],
   ['x=/; declare -e x=./build; rm -rf $x', 'deny', 'declare with an option Bash rejects changes nothing'],
   ['shopt -s expand_aliases\nalias rm=true <missing\nrm -rf /', 'deny', "a builtin that doesn't run when its redirection fails"],
   ['hash x -p /bin/true rm; rm -rf /', 'deny', "hash's options end at its first name"],

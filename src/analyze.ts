@@ -2340,6 +2340,26 @@ class Walker {
             if (match[2]) state.vars.set(variable, { kind: 'dynamic' });
             continue;
           }
+          // Bash assigns `_`, PWD and OLDPWD itself, through a nameref and with the attributes they have: `declare -n
+          // _=x` makes each command's last word x's value, `declare -i _` evaluates it as arithmetic, `declare -l PWD`
+          // lowers what `~+` reads.
+          if (/^(_|PWD|OLDPWD)$/.test(variable) && /[niluc]/.test(flags)) {
+            this.finding(
+              ctx,
+              'sensitive-variable',
+              `${variable} is assigned by Bash itself, with the nameref or attribute ${name} gives it`,
+              call.span,
+            );
+          }
+          // An attribute given to a nameref goes to the variable it names.
+          if (state.refs.has(variable) && !flags.includes('n') && /[iluc]/.test(flags)) {
+            this.finding(
+              ctx,
+              'sensitive-variable',
+              `${variable} may be a nameref: the attributes ${name} gives it go to another variable`,
+              call.span,
+            );
+          }
           if (flags.includes('f')) {
             // `export -f`, `declare -fx`; `export -nf` and `declare +x -f` take it back. One that isn't defined is an
             // error, which exports nothing.
