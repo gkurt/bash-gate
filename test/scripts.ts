@@ -101,6 +101,7 @@ export const scripts = [
   'cat {a}s,d}e {[}s,d}e x{a,[}b}y {a,b}}',
   's=a; x="a  b"; cat {$,}s,d}e {,$x} "${u:-"$"("ls m)"}" "${v:-"$(sort ok)"}"',
   'x="a  b"; xls=c; cat $x{ls,-q$,x} $x-q$ $x"$" $x\\$ $x-q$}$x"$" $x$/"$x" $x$/$x',
+  'y=ls; y1=cat; $y{\v1..1} a; sort x{\f1..2}',
   'shopt -s expand_aliases\nalias l="ls -la"\nl\\\n y; declare d=(a){b,c}; cat $d',
   'set -o posix\n{ alias ls=cat\nx=$(ls a; alias rm=sort\nrm b); }\ny=$(ls c)',
   'set set -o posix\nalias ls=cat\nls a\nset -eo posix\nalias ls=sort\nls b',

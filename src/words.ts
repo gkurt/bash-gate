@@ -505,7 +505,10 @@ function expandSequence(text: string): string[] | null | undefined {
   const numeric = /^([+-]?\d+)\.\.([+-]?\d+)(?:\.\.([+-]?\d+))?$/.exec(text);
   const letters = /^([a-zA-Z])\.\.([a-zA-Z])(?:\.\.([+-]?\d+))?$/.exec(text);
   const match = numeric ?? letters;
-  if (!match) return undefined;
+  // Bash reads a number past the whitespace before it, which a word holds as `\v` or `\f`: not followed.
+  if (!match) return /^\s*[+-]?\d+\.\.\s*[+-]?\d+(\.\.\s*[+-]?\d+)?$/.test(text) ? null : undefined;
+  // A step past what Bash's integers hold makes no sequence, and a bigger one than JavaScript's isn't followed.
+  if (match[3] !== undefined && !Number.isSafeInteger(Number(match[3]))) return null;
   const from = numeric ? Number(match[1]) : match[1]!.charCodeAt(0);
   const to = numeric ? Number(match[2]) : match[2]!.charCodeAt(0);
   const size = Math.abs(Number(match[3] ?? 1));

@@ -820,6 +820,9 @@ const startedCases: [source: string, decision: Decision, what: string][] = [
   ["echo hi | tee {$(echo ' /home/me/.bashrc ')..}", 'ask', 'the same, around a substitution'],
   ['touch {a..}', 'allow', 'braces that are no sequence, around plain text'],
   ['declare BASH_VERSINFO=echo; $BASH_VERSINFO hi', 'ask', 'a variable Bash keeps read-only from the start'],
+  ["y='echo hi'; y1='rm -rf ~'; $y{\v1..1}", 'ask', 'a sequence with a vertical tab before a number, which Bash skips'],
+  ['env -u ./x{\f1..2} echo hi', 'ask', 'the same with a form feed, making two words'],
+  ['echo {1..3..9223372036854775808}', 'allow', 'a step past what Bash holds'],
   // What sh and env -S read otherwise than Bash.
   ["env -S $'find .\\v-delete'", 'ask', 'env -S splitting at a vertical tab'],
   ["env -S $'find .\\f-delete\\r'", 'ask', 'the same, at a form feed and a carriage return'],
