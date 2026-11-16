@@ -187,6 +187,7 @@ export const hiding = [
   'shopt -s expand_aliases\nread -r v <<< \'env cat a; ls b\'\nalias q="$v"\nq c',
   // A lone `-` is env's -i only right after its options.
   'env -- --unset=X - cat a; env - X=1 cat b; env -- - cat c',
+  'shopt -s expand_aliases\nalias e="env "\nalias l="e ls"\nalias m="l -a"\ne l x; e m y\nalias s="e&& s"\ne s z; e e w',
   'shopt -s expand_aliases\nBASH_ALIASES[ls]=cat\nls a\nBASH_CMDS[sort]=bin/grep; sort b',
   "declare -n r=PS4; r='+$(cat ps4) '; set -x; ls a",
   "printf -vPS4 %s '+$(cat printf) '; set -x; ls a",

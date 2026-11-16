@@ -149,7 +149,8 @@ execs kill the process, and so does any x32 system call.
   forms every sed reads alike, an awk program by the tokens it can't run a command or write a file without. So is
   `network:read`, which the recommended policy doesn't ask about: that `git fetch`, `git ls-remote` and gh's reading
   commands, given no URL, host or config of their own, call only the hosts the repository and gh were set up with. Where GNU
-  coreutils and uutils (Ubuntu's since 25.10) read a wrapper's arguments differently, the command it runs is unknown.
+  coreutils and uutils (Ubuntu's since 25.10) read a wrapper's arguments differently, the command it runs is unknown,
+  or, where each reading is known, both are walked (`env -- X=1 - cmd`).
   For npm, pnpm and bun, the specs say which of their own commands beat a script of the same name, which words they
   run as a script, a file or a command from PATH, and which of their options they know: the one they don't is
   configuration, `exec:arbitrary`. A flag that turns something off (`--ignore-scripts`, `--offline`) counts only

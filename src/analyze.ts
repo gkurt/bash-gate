@@ -1790,8 +1790,10 @@ class Walker {
       return undefined;
     }
     // Its own words: the first command's, as an operator after them puts the next in a command word's place, which
-    // the command parsed again checks.
-    const first = this.parse(value).commands[0]?.command;
+    // the command parsed again checks. A `!` or `time` before them is a word that isn't an alias, which ends the
+    // checking.
+    let first = this.parse(value).commands[0]?.command;
+    while (first?.type === 'AndOr' || (first?.type === 'Pipeline' && first.prefixes.length === 0)) first = first.commands[0];
     const words =
       first?.type === 'Command'
         ? [...first.prefix, ...(first.name ? [first.name] : []), ...first.suffix].toSorted((a, b) => a.pos - b.pos)

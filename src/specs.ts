@@ -2779,13 +2779,26 @@ const envSpec: CommandSpec = {
   ),
   finish(parsed) {
     // A lone `-` right after the options is `-i`: assignments and the command come after it. After an assignment
-    // (`env -- --x=1 - cat`), it's the command.
+    // (`env -- --x=1 - cat`), it's the command to GNU's env.
+    const lone = (arg: Arg | undefined) => arg?.kind === 'static' && arg.value === '-';
     const [nested] = parsed.nested;
-    if (parsed.env.length > 0 || nested?.argv[0]?.kind !== 'static' || nested.argv[0].value !== '-') return;
-    const rest = nested.argv.slice(1);
-    const command = rest.findIndex((arg) => arg.kind === 'dynamic' || !arg.value.includes('='));
-    parsed.env.push(...rest.slice(0, command === -1 ? rest.length : command));
-    parsed.nested = command === -1 ? [] : [{ ...nested, argv: rest.slice(command) }];
+    if (parsed.env.length === 0 && nested && lone(nested.argv[0])) {
+      const rest = nested.argv.slice(1);
+      const command = rest.findIndex((arg) => arg.kind === 'dynamic' || !arg.value.includes('='));
+      parsed.env.push(...rest.slice(0, command === -1 ? rest.length : command));
+      parsed.nested = command === -1 ? [] : [{ ...nested, argv: rest.slice(command) }];
+    }
+    // uutils' env (Ubuntu's since 25.10) reads every `-` among the assignments as `-i`: both are walked.
+    const [command] = parsed.nested;
+    if (!command || !lone(command.argv[0])) return;
+    let i = 0;
+    while (i < command.argv.length) {
+      const arg = command.argv[i]!;
+      if (arg.kind !== 'static' || !(arg.value === '-' || arg.value.includes('='))) break;
+      if (arg.value !== '-') parsed.env.push(arg);
+      i++;
+    }
+    if (i < command.argv.length) parsed.nested = [command, { ...command, argv: command.argv.slice(i) }];
   },
 };
 
