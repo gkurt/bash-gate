@@ -11,7 +11,7 @@ import type { Arg } from './types.ts';
  * state and variables, and tools' credentials files.
  */
 const secretNames =
-  /^(\.env(\..+|~)?|\.envrc|\.dev\.vars|id_(rsa|dsa|ecdsa|ed25519)(_sk)?|.+\.(pem|key|p12|pfx|p8|ppk|jks|keystore|kdbx|tfstate|tfstate\.backup|tfvars|tfvars\.json)|\.netrc|_netrc|\.pgpass|\.my\.cnf|\.htpasswd|\.git-credentials|\.npmrc|\.pypirc|\.dockercfg|\.vault-token|\.terraformrc|terraform\.rc|credentials\.tfrc\.json|secring\.gpg|\.s3cfg|\.boto)$/;
+  /^(\.env(\..+|~)?|\.envrc|\.dev\.vars|id_(rsa|dsa|ecdsa|ed25519)(_sk)?|.+\.(pem|key|p12|pfx|p8|ppk|jks|keystore|kdbx|tfstate|tfstate\.backup|tfvars|tfvars\.json)|\.netrc|_netrc|\.pgpass|\.my\.cnf|\.htpasswd|\.git-credentials|\.npmrc|\.pypirc|\.dockercfg|\.vault-token|\.terraformrc|terraform\.rc|credentials\.tfrc\.json|secring\.gpg|\.s3cfg|\.boto|\.yarnrc\.yml|credentials\.json|secrets?\.(ya?ml|json)|\.(bash|zsh)_history)$/s;
 
 /** `.env` files that hold no secret: templates (names and placeholders), and source files named after them. */
 const notSecret = /^\.env(\.[^.]+)*?\.((example|sample|template|dist|defaults)|(d\.)?[cm]?[jt]sx?|py|rb|go|rs)$/;
@@ -48,6 +48,7 @@ const secretPaths = new RegExp(
     String.raw`etc/ssl/private/.+`,
     String.raw`proc/[^/]+(/task/[^/]+)?/environ`,
   ].join('|')})$`,
+  's',
 );
 
 /**
@@ -55,7 +56,7 @@ const secretPaths = new RegExp(
  * directory.
  */
 const examples = [
-  ...'.env .env.local .env~ .envrc .dev.vars id_rsa id_dsa id_ecdsa id_ed25519 id_ed25519_sk .netrc _netrc .pgpass .my.cnf .htpasswd .git-credentials .npmrc .pypirc .dockercfg .vault-token .terraformrc terraform.rc credentials.tfrc.json secring.gpg .s3cfg .boto'.split(
+  ...'.env .env.local .env~ .envrc .dev.vars id_rsa id_dsa id_ecdsa id_ed25519 id_ed25519_sk .netrc _netrc .pgpass .my.cnf .htpasswd .git-credentials .npmrc .pypirc .dockercfg .vault-token .terraformrc terraform.rc credentials.tfrc.json secring.gpg .s3cfg .boto .yarnrc.yml credentials.json secrets.yaml secrets.yml secrets.json secret.yaml .bash_history .zsh_history'.split(
     ' ',
   ),
   ...'pem key p12 pfx p8 ppk jks keystore kdbx tfstate tfstate.backup tfvars tfvars.json'.split(' ').map((extension) => `x.${extension}`),
@@ -63,6 +64,22 @@ const examples = [
     ' ',
   ),
 ].map((example) => example.split('/'));
+
+/**
+ * Whether a path names a directory that holds a file `secretPaths` matches (`~/.ssh`, `~/.config`, `/etc`): a program
+ * that reads it recursively (`grep -r`) reads the secret.
+ */
+export function secretDirectory(path: string): boolean {
+  const parts = path.toLowerCase().replaceAll('\\', '/').split('/').filter(Boolean);
+  return examples.some(
+    (example) =>
+      example.length > 1 &&
+      Array.from({ length: example.length - 1 }, (_, size) => size + 1).some(
+        (size) =>
+          parts.length >= size && example.slice(0, size).every((part, i) => part === '*' || part === parts[parts.length - size + i]),
+      ),
+  );
+}
 
 /** A file named by Windows' 8.3 short name (`ENV~1` for `.env`) may be any file it shortens. */
 const shortName = /(^|\/)[^/~]{1,6}~\d+(\.[^/.]{1,3})?$/;

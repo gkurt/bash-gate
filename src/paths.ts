@@ -28,7 +28,7 @@ export function isSystemPath(path: string): boolean {
  * when it can't be known: `cwd` is unknown, `..` leaves an unknown `~`, or another user's home (`~root`) or `~-`.
  */
 export function resolvePath(cwd: string | undefined, path: string, home?: string): string | undefined {
-  const tilde = /^~([^/]*)(.*)$/.exec(path);
+  const tilde = /^~([^/]*)(.*)$/s.exec(path);
   if (tilde) {
     const [, user, rest] = tilde;
     if (user === '+') return cwd === undefined ? undefined : resolvePath(cwd, `.${rest}`, home);

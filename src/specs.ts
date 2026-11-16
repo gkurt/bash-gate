@@ -4034,6 +4034,14 @@ function parseTerraform(args: Arg[], parsed: Parsed): void {
     return;
   }
   const path = parsed.subcommands.join(' ');
+  // A word only known at run time may be any option: one that writes where it names (`-out`, `-state-out`), reads a
+  // file (`-var-file`), or reaches a backend or mirror (`-or-create`, `-net-mirror`).
+  if (parsed.maybeOptions) {
+    const unknown = rest.filter((arg) => arg.kind === 'dynamic');
+    parsed.writes.push(...unknown);
+    parsed.reads.push(...unknown);
+    parsed.effects.add('fs:write').add('network');
+  }
   if (path === 'output' && (parsed.options['--json'] || parsed.options['--raw'] || parsed.positionals.length > 0 || parsed.maybeOptions))
     parsed.effects.add('secrets:read').add('secrets:print');
   if (path === 'show' && (parsed.options['--json'] || parsed.maybeOptions)) parsed.effects.add('secrets:read').add('secrets:print');

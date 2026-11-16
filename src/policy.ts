@@ -332,7 +332,8 @@ function globToRegExp(glob: string): RegExp {
       source += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
     }
   }
-  return new RegExp(`^${source}$`);
+  // `**` matches any character, a newline included: a path may hold one.
+  return new RegExp(`^${source}$`, 's');
 }
 
 function describe(rule: Rule): string {

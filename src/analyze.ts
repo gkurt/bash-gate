@@ -20,7 +20,7 @@ import { assignment, emptyParsed, flag, normalize, rehearse, type Parsed } from 
 import { Changes, compare, Probe, type FileSystem } from './files.ts';
 import { huskyHook, huskyStub } from './husky.ts';
 import { basename, isSystemPath, resolvePath } from './paths.ts';
-import { arithmeticNames, expandedNames, printsEnvironment, secretFile, secretGlob, secretVariable } from './secrets.ts';
+import { arithmeticNames, expandedNames, printsEnvironment, secretDirectory, secretFile, secretGlob, secretVariable } from './secrets.ts';
 import { gitConfig, specFor } from './specs.ts';
 import type { Analysis, Arg, Effect, FindingKind, Invocation } from './types.ts';
 import {
@@ -3855,7 +3855,13 @@ class Walker {
     // cp reads its sources, not where it copies them to (`cp .env.example .env`).
     const copied = (arg: Arg) =>
       program === 'cp' && arg.kind === 'static' && parsed.writes.some((write) => write.kind === 'static' && write.value === arg.value);
-    return [...parsed.reads, ...parsed.positionals, ...config].some((arg) => !copied(arg) && secret(arg, program !== 'git'));
+    // A directory that holds credentials (`~/.ssh`, `~/.config`) is read whole by a program that reads it recursively.
+    const directory = (arg: Arg) =>
+      arg.kind === 'static' &&
+      [arg.value, resolvePath(call.cwd, arg.value, call.home)].some((path) => path !== undefined && secretDirectory(path));
+    return [...parsed.reads, ...parsed.positionals, ...config].some(
+      (arg) => !copied(arg) && (secret(arg, program !== 'git') || directory(arg)),
+    );
   }
 
   finding(ctx: Context, kind: FindingKind, message: string, span: [number, number]): void {
