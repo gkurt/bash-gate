@@ -2127,7 +2127,9 @@ class Walker {
             state.cases.delete(variable);
           if (flags.includes('n') && name !== 'export' && name !== 'readonly') {
             // A nameref: its value is the name of the variable it stands for, which isn't assigned. (`export -n`
-            // takes the export away.)
+            // takes the export away.) Each read of it reads that variable, subscript and all: `a[$(ls)]` runs `ls`.
+            if (match[2])
+              this.nameWord(arg.kind === 'static' ? { kind: 'static', value: text.slice(match[0].length) } : arg, state, ctx, call);
             state.refs.add(variable);
             state.vars.set(variable, { kind: 'dynamic' });
             continue;
@@ -2257,6 +2259,15 @@ class Walker {
         for (const [letter, value] of options) {
           if (letter === 'C') this.callback(value, state, ctx, call, name);
           if (letter === 'V' && name === 'compgen') this.setNamed(name, value ?? null, state, ctx, call);
+          if (name !== 'compgen') continue;
+          // compgen expands -W's word list, substitutions and all, and calls -F's function in the shell itself.
+          if (letter === 'W' && value !== undefined) this.expansions(value, state, ctx, call, 'compgen -W');
+          if (letter === 'W' && value === undefined)
+            this.finding(ctx, 'dynamic-script', 'compgen -W expands a word list only known at run time', call.span);
+          if (letter === 'F' && value !== undefined)
+            this.dispatch([{ kind: 'static', value }], state, ctx, { ...call, command: undefined });
+          if (letter === 'F' && value === undefined)
+            this.finding(ctx, 'dynamic-script', 'compgen -F calls a function named only at run time', call.span);
         }
         // compgen -V may be among them, setting any variable.
         if (dynamic && name === 'compgen') this.setNamed(name, null, state, ctx, call);

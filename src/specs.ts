@@ -4659,8 +4659,9 @@ const programs: Record<string, CommandSpec> = {
   file: {
     ...reader('-m= --magic-file=', '-f= --files-from=', '-F= --separator=', '-e= --exclude=', '-P= --parameter=', '-C --compile'),
     finish(parsed) {
-      // -C compiles the magic file into one named after it, in the working directory.
-      if (!parsed.options['--compile']) return;
+      // -C compiles the magic file into one named after it, in the working directory. An argument only known at run time
+      // may be it (`xargs file`).
+      if (!parsed.options['--compile'] && !parsed.maybeOptions) return;
       parsed.writes.push(dynamicArg('compiled magic', 'placeholder', false, ''));
       parsed.effects.add('fs:write');
     },
