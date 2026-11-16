@@ -142,8 +142,8 @@ function redirected(invocation: Invocation): Invocation {
   return { ...invocation, program: ':', kind: 'builtin', argv: [colon], subcommands: [], options: {}, positionals: [], shape: ':' };
 }
 
-/** No, maybe, yes. */
-type Tri = 0 | 1 | 2;
+/** How a rule matches: 0 no, 1 maybe (a dynamic word could make it match), 2 yes. */
+export type Tri = 0 | 1 | 2;
 
 function decide(invocation: Invocation, policy: Policy, start: Start): Reason {
   const base = { span: invocation.span, invocation };
@@ -176,9 +176,13 @@ function decide(invocation: Invocation, policy: Policy, start: Start): Reason {
 }
 
 /** Where the script starts, which relative globs are matched from (see `Analysis`). */
-type Start = Pick<Analysis, 'cwd' | 'realcwd' | 'realhome'>;
+export type Start = Pick<Analysis, 'cwd' | 'realcwd' | 'realhome'>;
 
-/** How `rule` matches `invocation`: 0 no, 1 maybe, 2 yes. Exported for the property tests. */
+/**
+ * How `rule` matches `invocation`, read the cautious way for the rule's decision: 0 no, 1 maybe, 2 yes. Pass the
+ * analysis as `start` so relative globs match from where the script starts. For a gate that maps invocations to its
+ * own actions rather than to a policy's decision.
+ */
 export function matchRule(rule: Rule, invocation: Invocation, start: Start = {}): Tri {
   const all = rule.decision === 'allow';
   let result: Tri = 2;

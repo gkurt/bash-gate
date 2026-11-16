@@ -130,6 +130,17 @@ const policy: Policy = {
   `policy.findings` says otherwise. `recommended` allows `project-file`: a file only project code it runs may have
   changed before it's read.
 
+`matchRule(rule, invocation, analysis)` matches one rule against one invocation outside a policy: 0 no, 1 maybe (a
+dynamic word could make it match), 2 yes, read the cautious way for the rule's decision. A gate that maps invocations to
+actions of its own, rather than to allow, ask and deny, matches them with it:
+
+```ts
+import { analyze, deny, matchRule } from 'bash-gate';
+
+const analysis = analyze('sudo gh -R o/r pr merge 12', { cwd: '/repo' });
+analysis.invocations.some((invocation) => matchRule(deny('gh pr merge'), invocation, analysis) === 2); // true
+```
+
 `recommended` (`src/recommended.ts`) is a starting point. It allows reading and everyday git, denies force pushes and
 deleting top-level directories, and asks about deleting, network, privilege, code it can't see, writes outside the
 working directory (`..` and `../**`, `~` among them: a path counts as outside unless an absolute `cwd` shows it's inside, so a project under `~` is still the project; a `cwd` that isn't a POSIX absolute path, such as `C:/w/p`, places nothing), writes
