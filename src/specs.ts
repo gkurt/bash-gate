@@ -757,7 +757,7 @@ function finishPush(parsed: Parsed): void {
 
 /** Git config keys whose values git runs, or that change what or where it runs. */
 const gitExecKeys =
-  /^(alias\..*|core\.(pager|editor|sshcommand|fsmonitor|hookspath|askpass|gitproxy|worktree)|sequence\.editor|pager\..*|diff\.external|diff\..*\.(command|textconv)|merge\..*\.driver|filter\..*\.(clean|smudge|process)|credential\.helper|credential\..*\.helper|gpg\.program|gpg\..*\.program|interactive\.difffilter|uploadpack\.packobjectshook|remote\..*\.(uploadpack|receivepack|vcs)|protocol\..*\.allow|url\..*|include\.path|includeif\..*|submodule\..*\.update|ssh\.variant|core\.sshcommand|http\..*proxy|web\.browser|browser\..*\.(cmd|path)|man\..*\.(cmd|path)|sendemail\..*cmd|mergetool\..*\.cmd|difftool\..*\.cmd|hook\..*\.command|gpg\.ssh\.defaultkeycommand|trailer\..*\.(command|cmd)|core\.alternaterefscommand|gc\.recentobjectshook|gc\.(.*\.)?(reflogexpire|reflogexpireunreachable|pruneexpire|worktreepruneexpire|rerereresolved|rerereunresolved)|maintenance\..*|help\.(format|browser|htmlpath)|man\.viewer)$/;
+  /^(alias\..*|core\.(pager|editor|sshcommand|fsmonitor|hookspath|askpass|gitproxy|worktree)|sequence\.editor|pager\..*|diff\.external|diff\..*\.(command|textconv)|merge\..*\.driver|filter\..*\.(clean|smudge|process)|credential\.helper|credential\..*\.helper|gpg\.program|gpg\..*\.program|interactive\.difffilter|uploadpack\.packobjectshook|remote\..*\.(uploadpack|receivepack|vcs)|protocol\.(.*\.)?allow|http\.(.*\.)?cookiefile|mergetool\..*\.path|difftool\..*\.path|sendemail\.smtpserver|url\..*|include\.path|includeif\..*|submodule\..*\.update|ssh\.variant|core\.sshcommand|http\..*proxy|web\.browser|browser\..*\.(cmd|path)|man\..*\.(cmd|path)|sendemail\..*cmd|mergetool\..*\.cmd|difftool\..*\.cmd|hook\..*\.command|gpg\.ssh\.defaultkeycommand|trailer\..*\.(command|cmd)|core\.alternaterefscommand|gc\.recentobjectshook|gc\.(.*\.)?(reflogexpire|reflogexpireunreachable|pruneexpire|worktreepruneexpire|rerereresolved|rerereunresolved)|maintenance\..*|help\.(format|browser|htmlpath)|man\.viewer)$/;
 
 /** Keys whose value is a command git runs with the shell. */
 const gitShellKeys =
@@ -4242,6 +4242,8 @@ const programs: Record<string, CommandSpec> = {
     ),
     finish(parsed) {
       loadsModules(parsed, ['--config'], true);
+      // It cleans the out-dir before building, unless told not to: one named here is deleted from.
+      if (given(parsed, '--out-dir')) parsed.effects.add('fs:delete');
       // Each workspace's configuration, from the directories it finds or is given.
       if (parsed.options['--workspace']) parsed.effects.add('exec:file');
       unknownIsConfig(parsed);
@@ -4253,7 +4255,13 @@ const programs: Record<string, CommandSpec> = {
     options: viteServer,
     subcommands: {
       ...each('serve dev', { options: viteServer }),
-      build: { options: viteBuild },
+      // It empties an outDir named on the command line first (one inside the root by default, any with --emptyOutDir).
+      build: {
+        options: viteBuild,
+        finish: (parsed) => {
+          if (given(parsed, '--outDir', '--emptyOutDir')) parsed.effects.add('fs:delete');
+        },
+      },
       preview: { options: viteServer },
       optimize: { options: opts(...viteCommon, '--force') },
     },

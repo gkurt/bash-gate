@@ -721,6 +721,10 @@ const tree: Record<string, string> = {
   'hooked/.git/HEAD': 'ref: refs/heads/main\n',
   'hooked/.git/hooks/pre-commit': 'rm -rf /',
   'hooked/.git/hooks/pre-push': 'rm -rf /',
+  'extern/.git/HEAD': 'ref: refs/heads/main\n',
+  'extern/.git/config': '[protocol]\n\tallow = always\n[remote "origin"]\n\turl = ext::sh -c touch% /tmp/x\n',
+  'cookies/.git/HEAD': 'ref: refs/heads/main\n',
+  'cookies/.git/config': '[http]\n\tcookieFile = ~/.bashrc\n\tsaveCookies = true\n',
 };
 const withFiles: Environment = { fs: { readFile: (path) => tree[path] ?? null, realpath: (path) => path } };
 const filesystemCases: [source: string, decision: Decision, what: string][] = [
@@ -754,6 +758,8 @@ const filesystemCases: [source: string, decision: Decision, what: string][] = [
   ['cd hooked && git commit -Sn -m x', 'deny', '-S taking the rest of its word as the key, not -n'],
   ['cd hooked && git commit -n --verify -m x', 'deny', '--verify after --no-verify'],
   ['cd hooked && git push --no-verify --veri origin main', 'deny', '--verify abbreviated after --no-verify, on push'],
+  ['cd extern && git fetch origin', 'ask', 'protocol.allow, which lets an ext:: remote run a command'],
+  ['cd cookies && git fetch origin', 'ask', 'http.cookieFile, which git writes the cookies to'],
 ];
 
 /** The same, starting in a known absolute directory: relative globs match from it. */
@@ -999,6 +1005,10 @@ const startedCases: [source: string, decision: Decision, what: string][] = [
   ['vite -m development -m --host', 'ask', 'the same, short, in vite'],
   ['prettier --tab-width --plugin=../outside/evil.mjs a.js', 'ask', 'minimist, which leaves a value starting with - as an option'],
   ['tsc --noEmit false ../other/a.ts', 'ask', "tsc's flag followed by false, which turns it off"],
+  ['git -c protocol.allow=always cat-file -p 1234567890123456789012345678901234567890', 'ask', 'the same, given with -c'],
+  ['git -c http.cookieFile=../x -c http.saveCookies=true ls-remote origin', 'ask', 'the same, given with -c'],
+  ['vite build --outDir src', 'ask', 'vite emptying an outDir named on the command line'],
+  ['tsdown -d src', 'ask', 'tsdown cleaning its out-dir'],
   ['cargo clippy -- -C linker=/tmp/evil', 'ask', "words after -- that clippy's rustc reads as a linker"],
   ['cargo clippy -- -D warnings -Aclippy::all --cap-lints=warn', 'allow', 'lint levels after --'],
   ["f() { local -n r='a[$(rm -rf /)]'; echo $r; }; f", 'deny', 'the same, with local -n'],
