@@ -138,6 +138,16 @@ interface Alias {
 interface Frame {
   locals: Set<string>;
   unknown: Set<string>;
+  /** `local -`: the `set` options as they were, which the return puts back, and whether it may not have run. */
+  saved?: SavedOptions;
+}
+
+/** POSIX mode, `expand_aliases` and the followed `set` options, as `local -` saves them. */
+interface SavedOptions {
+  posix: boolean | undefined;
+  expandAliases: boolean | undefined;
+  set: Map<string, boolean | undefined>;
+  maybe: boolean;
 }
 
 /** A function definition, with the aliases its body was parsed with. */
@@ -1881,20 +1891,30 @@ class Walker {
             break;
           }
         }
-        const target = values.find((value) => value === undefined || !value.startsWith('-'));
-        const arg = args[values.indexOf(target)];
-        // Physically (-P, `set -P`), `..` leaves a symlink's target, not the symlink; with cdable_vars, a name that's
-        // no directory is a variable holding one.
-        const physical = option(state, 'physical') !== false || values.some((value) => value !== target && value?.includes('P'));
+        const at = values.findIndex((value) => value === undefined || !value.startsWith('-') || value === '-' || value === '--');
+        const index = values[at] === '--' ? at + 1 : at;
+        const target = index === -1 ? undefined : values[index];
+        const arg = index === -1 ? undefined : args[index];
+        // Physically (-P, `set -P`; the last of -L and -P counts), the directory is where symlinks lead, and `..` leaves
+        // that, not the symlink; with cdable_vars, a name that's no directory is a variable holding one.
+        const letters = (at === -1 ? values : values.slice(0, at)).join('').replace(/[^LP]/g, '');
+        const physical = letters === '' ? option(state, 'physical') : letters.endsWith('P');
         const elsewhere =
           arg?.kind === 'static' &&
-          ((physical && arg.value.split('/').includes('..')) ||
+          ((physical !== false && arg.value.split('/').includes('..')) ||
             (option(state, 'cdable_vars') !== false && /^[A-Za-z_]\w*$/.test(arg.value)));
         // It fails on a directory that isn't there, and the shell stays where it was.
         state.failedCwd = { cwd: state.cwd };
-        if (args.length === 0) state.cwd = homeOf(state) ?? '~';
-        else if (arg?.kind === 'static' && arg.value !== '-' && !elsewhere) state.cwd = resolvePath(state.cwd, arg.value, homeOf(state));
-        else state.cwd = undefined;
+        const logical =
+          index === -1
+            ? (homeOf(state) ?? '~')
+            : arg?.kind === 'static' && target !== '-' && !elsewhere
+              ? resolvePath(state.cwd, arg.value, homeOf(state))
+              : undefined;
+        // Where symlinks lead is known from the files, if at all.
+        const real =
+          physical === false || logical === undefined ? logical : logical.startsWith('/') ? this.files?.physical(logical) : undefined;
+        state.cwd = physical === undefined && real !== logical ? undefined : real;
         break;
       }
       case 'popd':
@@ -1919,6 +1939,8 @@ class Walker {
           // variable, and unquoted, several words: options and names, all unseen.
           const attributes = `${name} has arguments only known at run time, which may give a variable any attribute`;
           if (unknown.split) this.finding(ctx, 'dynamic-script', attributes, call.span);
+          // It may be `-`, which saves the options.
+          if (name === 'local') saveOptions(state, true);
           this.anyVariable(state, ctx, call, `${name} may set a variable named only at run time`);
           for (const arg of args.slice(end + 1)) {
             const variable = /^[A-Za-z_]\w*/.exec(arg.kind === 'static' ? arg.value : arg.prefix)?.[0];
@@ -1933,10 +1955,14 @@ class Walker {
         // What a later assignment or `unset` does to one (nothing, past an error) isn't followed.
         if (name === 'readonly' || flags.includes('r'))
           this.finding(ctx, 'sensitive-variable', `${name} makes a name read-only, which later changes leave as it is`, call.span);
-        // In a function, `local`, and `declare` without -g, make a variable of the call's own, unset until assigned.
-        const locals = ctx.calls.length > 0 && (name === 'local' || (name !== 'export' && name !== 'readonly' && !flags.includes('g')));
+        // In a function, `local` and `declare` without -g make a variable of the call's own, unset until assigned.
+        const locals = ctx.calls.length > 0 && name !== 'export' && name !== 'readonly' && !flags.includes('g');
+        // -p and -F only print: `declare -p x=1` is an error that assigns nothing.
+        const prints = /[pF]/.test(flags);
         for (const arg of args) {
           const text = arg.kind === 'static' ? arg.value : arg.prefix;
+          // `local -` saves the `set` options, which the return puts back.
+          if (name === 'local' && arg.kind === 'static' && text === '-') saveOptions(state, false);
           if (text.startsWith('-')) continue;
           // `declare 'a[$(ls)]=1'` runs `ls`: the subscript is expanded, then evaluated.
           const open = arg.kind === 'static' ? /^[A-Za-z_]\w*\[/.exec(text)?.[0].length : undefined;
@@ -1954,6 +1980,10 @@ class Walker {
             continue;
           }
           const variable = match[1]!;
+          if (prints && !flags.includes('f')) {
+            if (match[2]) state.vars.set(variable, { kind: 'dynamic' });
+            continue;
+          }
           if (flags.includes('f')) {
             // `export -f`, `declare -fx`; `export -nf` and `declare +x -f` take it back. One that isn't defined is an
             // error, which exports nothing.
@@ -2010,8 +2040,13 @@ class Walker {
             state.vars.set(variable, { kind: 'dynamic' });
             continue;
           }
+          // An element (`x[1]=`, or one `export` refuses), an array (-a, -A, which Bash may refuse to convert), and
+          // `(…)`, which is a list for an array, aren't followed.
+          const assigned = text.slice(match[0].length);
           const value: Value =
-            match[2] === '+=' || arg.kind === 'dynamic' ? { kind: 'dynamic' } : { kind: 'static', value: text.slice(match[0].length) };
+            match[2] === '+=' || arg.kind === 'dynamic' || match[0].includes('[') || /[aA]/.test(flags) || assigned.startsWith('(')
+              ? { kind: 'dynamic' }
+              : { kind: 'static', value: assigned };
           const stored = match[2] ? this.assigned(variable, value, state, ctx, call, true) : value;
           // -g under a local of the same name changes the global, which the calls that made it local don't put back.
           const shadowed = !locals && flags.includes('g') && state.frames.some((f) => f.locals.has(variable) || f.unknown.has(variable));
@@ -2052,6 +2087,16 @@ class Walker {
           if (value.startsWith('-')) continue;
           // `unset 'a[$(ls)]'` runs `ls` when a is an array.
           if (!functions) this.subscript(value, state, ctx, call);
+          // An element: `x[0]` of a plain variable is all of it, and `x[@]` of an array.
+          const element = functions ? undefined : /^([A-Za-z_]\w*)\[/.exec(value)?.[1];
+          if (element) {
+            if (sensitive.test(element))
+              this.finding(ctx, 'sensitive-variable', `Unsetting ${element} changes what runs or how`, call.span);
+            if (state.refs.has(element) && !refsThemselves)
+              this.anyVariable(state, ctx, call, `${element} may be a nameref: unsetting it unsets another variable`);
+            state.vars.set(element, { kind: 'dynamic' });
+            continue;
+          }
           if (functions) {
             state.functions.delete(value);
             state.exportedFunctions.delete(value);
@@ -2178,7 +2223,7 @@ class Walker {
       return;
     }
     if (name === 'getopts') return set(named(1));
-    const { options, rest, dynamic, bad } = getopt(values, name === 'read' ? 'ersa:d:i:n:N:p:t:u:' : 'd:u:n:O:tC:c:s:');
+    const { options, rest, dynamic, bad } = getopt(values, name === 'read' ? 'Eersa:d:i:n:N:p:t:u:' : 'd:u:n:O:tC:c:s:');
     if (bad) return;
     if (dynamic && name !== 'read')
       this.finding(ctx, 'dynamic-script', `${name} has an option only known at run time, which may be a callback`, call.span);
@@ -3446,7 +3491,12 @@ function equal(a: State, b: State): boolean {
     sameSet(a.integers, b.integers) &&
     sameSet(a.maybeIntegers, b.maybeIntegers) &&
     a.frames.length === b.frames.length &&
-    a.frames.every((frame, i) => sameSet(frame.locals, b.frames[i]!.locals) && sameSet(frame.unknown, b.frames[i]!.unknown)) &&
+    a.frames.every(
+      (frame, i) =>
+        sameSet(frame.locals, b.frames[i]!.locals) &&
+        sameSet(frame.unknown, b.frames[i]!.unknown) &&
+        sameSaved(frame.saved, b.frames[i]!.saved),
+    ) &&
     sameMap(a.cases, b.cases) &&
     a.cwd === b.cwd &&
     !a.failedCwd === !b.failedCwd &&
@@ -3553,11 +3603,18 @@ function cased(value: Value, how: Case | undefined): Value {
   return { kind: 'static', value: text.slice(0, 1).toUpperCase() + text.slice(1).toLowerCase() };
 }
 
-/** Puts back the variables a function call made local, as they were before it (`outside`). */
+/** Puts back the variables a function call made local, as they were before it (`outside`), and options `local -` saved. */
 function restore(state: State, outside: State): void {
   const frame = state.frames.at(-1);
   state.frames = state.frames.slice(0, -1);
   if (!frame) return;
+  const { saved } = frame;
+  if (saved) {
+    const back = <T>(now: T, then: T) => (saved.maybe && now !== then ? undefined : then);
+    state.posix = back(state.posix, saved.posix);
+    state.expandAliases = back(state.expandAliases, saved.expandAliases);
+    for (const [name, then] of saved.set) state.options.set(name, back(option(state, name), then));
+  }
   for (const variable of frame.locals) {
     const value = outside.vars.get(variable);
     if (value) state.vars.set(variable, value);
@@ -3578,6 +3635,37 @@ function restore(state: State, outside: State): void {
     }
     if (outside.cases.get(variable) !== state.cases.get(variable)) state.cases.set(variable, undefined);
   }
+}
+
+/** The options `local -` saves now, in a function. */
+function saveOptions(state: State, maybe: boolean): void {
+  const frame = state.frames.at(-1);
+  if (!frame) return;
+  const now: SavedOptions = {
+    posix: state.posix,
+    expandAliases: state.expandAliases,
+    set: new Map([...followed.set].map((name) => [name, option(state, name)])),
+    maybe,
+  };
+  // Saved again, either may be what's put back.
+  frame.saved = frame.saved ? joinSaved(frame.saved, { ...now, maybe: true }) : now;
+}
+
+/** What a return puts back when `local -` ran one way or the other: a value they differ on may be either. */
+function joinSaved(a: SavedOptions | undefined, b: SavedOptions | undefined): SavedOptions | undefined {
+  if (!a || !b) return a || b ? { ...(a ?? b)!, set: new Map((a ?? b)!.set), maybe: true } : undefined;
+  const same = <T>(x: T, y: T) => (x === y ? x : undefined);
+  return {
+    posix: same(a.posix, b.posix),
+    expandAliases: same(a.expandAliases, b.expandAliases),
+    set: new Map([...a.set].map(([name, value]) => [name, same(value, b.set.get(name))])),
+    maybe: a.maybe || b.maybe,
+  };
+}
+
+function sameSaved(a: SavedOptions | undefined, b: SavedOptions | undefined): boolean {
+  if (!a || !b) return a === b;
+  return a.posix === b.posix && a.expandAliases === b.expandAliases && a.maybe === b.maybe && sameMap(a.set, b.set);
 }
 
 /** A variable whose value and attributes are only known at run time. */
@@ -3607,7 +3695,11 @@ function clone(state: State): State {
     disabled: new Set(state.disabled),
     integers: new Set(state.integers),
     maybeIntegers: new Set(state.maybeIntegers),
-    frames: state.frames.map((frame) => ({ locals: new Set(frame.locals), unknown: new Set(frame.unknown) })),
+    frames: state.frames.map((frame) => ({
+      locals: new Set(frame.locals),
+      unknown: new Set(frame.unknown),
+      saved: frame.saved && { ...frame.saved, set: new Map(frame.saved.set) },
+    })),
     cases: new Map(state.cases),
     cwd: state.cwd,
     failedCwd: state.failedCwd && { ...state.failedCwd },
@@ -3801,6 +3893,7 @@ function join(state: State, other: State): void {
       if (!frame.locals.has(name) || !theirs.locals.has(name)) frame.unknown.add(name);
     for (const name of theirs.unknown) frame.unknown.add(name);
     for (const name of frame.unknown) frame.locals.delete(name);
+    frame.saved = joinSaved(frame.saved, theirs.saved);
   });
   for (const name of new Set([...state.cases.keys(), ...other.cases.keys()]))
     if (state.cases.get(name) !== other.cases.get(name)) state.cases.set(name, undefined);

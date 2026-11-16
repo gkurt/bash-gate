@@ -57,7 +57,8 @@ analyze('sudo -u root rm -rf "$dir"').invocations.map((i) => [i.shape, i.via, i.
    Shell options that change what runs are state as well, from `set`, `shopt` and a child shell's own options (`+O`
    too), and passed on to it when BASHOPTS or SHELLOPTS is exported: `lastpipe` keeps what a pipeline's last command
    changes (unless `set -m`), `localvar_inherit` gives a local its outer value, `allexport` exports what's assigned or
-   defined, and `cd` goes where nothing can say under `set -P`, `cd -P` past `..`, or `cdable_vars`. A `cd` fails on a
+   defined, `local -` puts the `set` options back when the function returns, and under `set -P` or `cd -P` the
+   directory is where symlinks lead, which only the files say (`cdable_vars`: nothing can say). A `cd` fails on a
    directory that isn't there and the shell stays, so the working directory is only known after it where the status
    says it succeeded (`cd a && …`, `if cd a; then …`), or failed (`cd a || …`). Those whose effect
    isn't followed are `unknown-syntax` findings: a compatibility level (`compat31`…, `BASH_COMPAT`), `set -k` and

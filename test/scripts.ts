@@ -127,6 +127,8 @@ export const scripts = [
   'select x in ls; do $x cat a; break; done <<< 9',
   'x=ls; shopt -s lastpipe; echo cat | read -r x; $x a; set -m; echo grep | read -r x; $x b',
   'x=cat; f() { local x=ls; g; }; g() { unset x; $x a; }; f; y=sort; shopt -s localvar_inherit; h() { local y; $y b; }; h',
+  'f() { local -; set -o posix; }; f; alias ls=cat\nls a; x=cat; g() { local -g x=sort; declare -p x >/dev/null; $x b; }; g; $x c',
+  "x=ls; unset 'x[0]'; ${x:-cat} a; y=ls; declare 'y[1]=grep' -p y=sort; $y b",
   "set -a; x=cat; f() { ls fn; }; /bin/bash -c '$x a; f'",
   "shopt -s expand_aliases; export BASHOPTS; /bin/bash -c 'alias l=cat\nl a'",
   'x=ls; f() { $x a; }; x=cat f; g() { local x; $x b; }; x=sort g; $x c; set -o posix; x=grep :; $x d',
