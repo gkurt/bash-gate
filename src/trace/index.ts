@@ -6,13 +6,13 @@
  */
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync } from 'node:fs';
 import { createServer, type Socket } from 'node:net';
 import { constants, homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, posix } from 'node:path';
 import { analyze, type Environment } from '#src/analyze.ts';
 import { covers, predicting, unseen, wrappers } from '#src/cover.ts';
-import { resolvePath } from '#src/paths.ts';
+import { isSystemPath, resolvePath } from '#src/paths.ts';
 import { specFor } from '#src/specs.ts';
 import type { Analysis, Invocation } from '#src/types.ts';
 
@@ -242,10 +242,13 @@ function judge(analysis: Analysis, via: string[], argv: string[], at?: Where & {
     (invocation) => at === undefined || invocation.program === null || anyProgram.has(invocation.span.join()) || placed(invocation, at),
   );
   if (found.length > 0) return { covered: true, next: after(analysis, via, program, found) };
-  // A wrapper that runs its command through a shell (`watch`, `flock -c`): the analysis walked that code under it.
+  // A wrapper that runs its command through a shell (`watch`, `flock -c`): the analysis walked that code under it,
+  // with the system's shell. Another file of that name (`SHELL=./bash flock -c`, a `PATH` set in the code) isn't it.
   const wrapper = via.at(-1);
+  const system = at === undefined || isSystemPath(at.path.startsWith('/') ? at.path : posix.join(at.cwd, at.path));
   if (
     shells.has(program) &&
+    system &&
     wrapper !== undefined &&
     analysis.invocations.some((invocation) => startsWith(wrappers(invocation), via) && invocation.nesting.includes(`${wrapper} -c`))
   )
@@ -256,13 +259,23 @@ function judge(analysis: Analysis, via: string[], argv: string[], at?: Where & {
   return { covered, next: null };
 }
 
+/** Where `path` really is, or `undefined` when it isn't there. */
+function real(path: string): string | undefined {
+  try {
+    return realpathSync(path);
+  } catch {
+    return undefined;
+  }
+}
+
 /** Whether the file an exec runs is the one the invocation names: its path, or the name found on `PATH`. */
 function placed(invocation: Invocation, at: Where & { path: string }): boolean {
   const run = at.path.startsWith('/') ? posix.normalize(at.path) : posix.normalize(posix.join(at.cwd, at.path));
   if (invocation.path === undefined) return at.path.startsWith('/') && at.search.has(dirname(run));
   const cwd = invocation.cwd?.startsWith('/') ? invocation.cwd : posix.join(at.cwd, invocation.cwd ?? '.');
   const named = resolvePath(cwd, invocation.path, invocation.home);
-  return at.path === invocation.path || named === run;
+  // The file each leads to: a relative path from a directory a symlink leads elsewhere isn't the one predicted.
+  return named !== undefined && (named === run || (real(named) ?? named) === (real(run) ?? run));
 }
 
 /**

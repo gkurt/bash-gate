@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as fc from 'fast-check';
@@ -257,6 +257,29 @@ while os.waitpid(sub, os.WNOHANG) == (0, 0):
     expect(there.execs.map(({ covered, refused }) => [covered, refused])).toEqual([[false, true]]);
     const named = await run('./true', options());
     expect(named.execs.map(({ covered, refused }) => [covered, refused])).toEqual([[true, false]]);
+  });
+
+  test("a shell a wrapper starts is the system's, not another file of that name", async () => {
+    fresh();
+    mkdirSync(join(work, 'x'));
+    writeFileSync(join(work, 'x', 'bash'), `#!/bin/sh\ntouch ${join(work, 'ran')}\n`, { mode: 0o755 });
+    const shell = join(work, 'x', 'bash');
+    const flock = await run('flock lk -c "sleep 0"', options({ env: { PATH: '/usr/bin:/bin', SHELL: shell } }));
+    expect(flock.execs.filter((exec) => exec.path === shell).map(({ refused }) => refused)).toEqual([true]);
+    const dash = await run(`dash -c "PATH=${join(work, 'x')}:/usr/bin; bash -c 'sleep 0'"`, options());
+    expect(dash.execs.filter((exec) => exec.path.startsWith(join(work, 'x'))).map(({ refused }) => refused)).toEqual([true]);
+    expect(existsSync(join(work, 'ran'))).toBe(false);
+  });
+
+  test('a relative path from a directory a symlink leads elsewhere is refused', async () => {
+    fresh();
+    const other = join(dir, 'other');
+    rmSync(other, { recursive: true, force: true });
+    mkdirSync(join(other, 'd'), { recursive: true });
+    writeFileSync(join(other, 'tool'), '#!/bin/sh\n', { mode: 0o755 });
+    symlinkSync(join(other, 'd'), join(work, 'sub'));
+    const result = await run('cd sub && ../tool', options());
+    expect(result.execs.map(({ covered, refused }) => [covered, refused])).toEqual([[false, true]]);
   });
 
   test('find passes as many paths as fit to a command ended by {} +', async () => {

@@ -877,6 +877,11 @@ function finishStrategy(parsed: Parsed): void {
 
 const hooks: Effect[] = ['fs:write', 'exec:project'];
 
+/** With no command, `unshare` and `chroot` run `$SHELL` (else `/bin/sh`), which reads its input or a terminal. */
+function shellWithout(parsed: Parsed): void {
+  if (parsed.nested.length === 0) parsed.effects.add('exec:arbitrary');
+}
+
 /** A git remote by its name: where it leads is what the repository's config says, not the command line. */
 const remoteName = /^\w[\w.-]*$/;
 
@@ -3174,6 +3179,7 @@ const programs: Record<string, CommandSpec> = {
     effects: ['privilege'],
     command: { skip: 1 },
     options: opts('--userspec=', '--groups=', '--skip-chdir'),
+    finish: shellWithout,
   },
   xargs: {
     abbreviations: true,
@@ -3306,6 +3312,7 @@ const programs: Record<string, CommandSpec> = {
       '--keep-caps',
       '--kill-child=?',
     ),
+    finish: shellWithout,
   },
   ionice: {
     posix: true,

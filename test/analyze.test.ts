@@ -136,6 +136,13 @@ describe('options', () => {
     expect(values(only('cp --parents ../../s/f d').writes)).toEqual(['d', 'd/../../s/f']);
   });
 
+  test('SHELL is sensitive, and unshare or chroot with no command runs a shell no one sees', () => {
+    expect(analyze('SHELL=x/bash flock lk -c "echo hi"').findings.map((finding) => finding.kind)).toContain('sensitive-variable');
+    expect(only('unshare -r').effects).toContain('exec:arbitrary');
+    expect(only('chroot /').effects).toContain('exec:arbitrary');
+    expect(analyze('unshare -r true').invocations[0]!.effects).not.toContain('exec:arbitrary');
+  });
+
   test('output-file positionals are writes, not reads', () => {
     for (const source of ['uniq input output', 'xxd -r input output']) {
       const invocation = only(source);
