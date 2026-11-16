@@ -128,7 +128,10 @@ const policy: Policy = {
   .env.example .env`) (`.env` and its variants but templates like `.env.example`, `.envrc`,
   `.dev.vars`, SSH private keys, `*.pem`, `*.key`, `*.ppk`, `*.kdbx`, `.netrc`, `.npmrc`, `.my.cnf`, `.htpasswd`,
   `~/.aws/credentials`, any file in `~/.kube`, gcloud and Azure credentials, git's, agents', registries' and cloud
-  CLIs' credentials files, `*.tfstate`, `*.tfvars`, `/proc/*/environ`), a variable that may hold one expanded anywhere
+  CLIs' credentials files, `*.tfstate`, `*.tfvars`, `/proc/*/environ`; a directory holding them read recursively; and a
+  name only known at run time, from a substitution, input, a variable or an argument, unless its known end rules a
+  secret out: `cat "$f"`, `cat $(…)`, `xargs cat`, `find -exec cat {}`, but not `cat "$name.ts"` or a loop's file from a
+  static glob that matches none, `for f in src/*.ts`), a variable that may hold one expanded anywhere
   (an upper-case name with a word ending in `TOKEN`, `SECRET`, `PASSWORD`, `PASSPHRASE`, `CREDENTIALS` or `APIKEY`, a
   word `PWD`, `PAT` or `SSHPASS`, or ending in `KEY`: `$GITHUB_TOKEN`, `$PGPASSWORD`, `$OPENAI_API_KEY`, but not one
   ending in `DIR`, `FILE` or `PATH`, or with a word `PUBLIC`, `MAX`, `MIN`, `NUM`, `COUNT`, `LIMIT` or `BUDGET`; a

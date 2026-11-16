@@ -20,7 +20,17 @@ import { assignment, emptyParsed, flag, normalize, rehearse, type Parsed } from 
 import { Changes, compare, Probe, type FileSystem } from './files.ts';
 import { huskyHook, huskyStub } from './husky.ts';
 import { basename, isSystemPath, resolvePath } from './paths.ts';
-import { arithmeticNames, expandedNames, printsEnvironment, secretDirectory, secretFile, secretGlob, secretVariable } from './secrets.ts';
+import {
+  arithmeticNames,
+  expandedNames,
+  printsEnvironment,
+  secretDirectory,
+  secretFile,
+  secretGlob,
+  secretSuffix,
+  secretVariable,
+  staticEnd,
+} from './secrets.ts';
 import { gitConfig, specFor } from './specs.ts';
 import type { Analysis, Arg, Effect, FindingKind, Invocation } from './types.ts';
 import {
@@ -1042,10 +1052,19 @@ class Walker {
         const values = (node.wordlist ?? []).flatMap((word) => resolveWord(word, lookupIn(state)));
         const only = values.length === 1 ? values[0] : undefined;
         // `select` sets the variable to what's chosen, which is nothing for a bad answer, and REPLY to the answer.
+        // Files a static glob matched, none a secret's, aren't a secret's name read from input.
+        const files =
+          node.type === 'For' &&
+          values.length > 0 &&
+          values.every((arg) =>
+            arg.kind === 'static'
+              ? !secretFile(arg.value)
+              : arg.reason === 'glob' && !secretGlob(arg.text, globIgnored(state) || option(state, 'dotglob') !== false),
+          );
         const value: Value =
           only?.kind === 'static' && node.type === 'For' && node.wordlist?.length === 1
             ? tildeExpanded({ kind: 'static', value: only.value }, node.wordlist[0]!.text, state, false)
-            : { kind: 'dynamic' };
+            : { kind: 'dynamic', ...(files ? { files: true } : {}) };
         const call = this.at(ctx, state, node);
         state.vars.set(node.name.value, this.assigned(node.name.value, value, state, ctx, call, true));
         if (node.type === 'Select') state.vars.set('REPLY', this.assigned('REPLY', { kind: 'dynamic' }, state, ctx, call, true));
@@ -3854,10 +3873,11 @@ class Walker {
     if (printsEnvironment(program, argv, parsed.nested.length > 0)) return true;
     const secret = (arg: Arg, short = true) => {
       if (arg.kind === 'dynamic') {
-        return (
-          arg.reason === 'glob' &&
-          [arg.text, resolvePath(call.cwd, arg.text, call.home)].some((glob) => glob !== undefined && secretGlob(glob, call.dots))
-        );
+        if (arg.reason === 'glob')
+          return [arg.text, resolvePath(call.cwd, arg.text, call.home)].some((glob) => glob !== undefined && secretGlob(glob, call.dots));
+        // A name only known at run time, from a substitution, input, a variable or an argument, may be a secret's,
+        // unless what's known of its end rules that out (`"$name.ts"`). A number is no file's name.
+        return arg.reason !== 'arithmetic' && secretSuffix(staticEnd(arg.text));
       }
       const resolved = resolvePath(call.cwd, arg.value, call.home);
       const real = resolved && realpaths?.[resolved];

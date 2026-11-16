@@ -81,6 +81,31 @@ export function secretDirectory(path: string): boolean {
   );
 }
 
+/**
+ * The end of a word's text after its last expansion, unquoted (`.ts` of `"$name.ts"`, `/.env` of `"$PWD"/.env`): what's
+ * known of a value only known at run time. Empty when it ends in one.
+ */
+export function staticEnd(text: string): string {
+  const end = /(?:\$\{[^}]*\}|\$\([^]*\)|\$[\w@*#?$!-]|`[^`]*`)([^$`]*)$/.exec(text);
+  return (end ? end[1]! : '').replace(/["']/g, '');
+}
+
+/**
+ * Whether a path whose end is `end` and whose start is only known at run time may name a file that holds secrets: it
+ * may be any such file when nothing of its end is known, `.env` and a suffix (`.env.md`), or a file of a secret's kind
+ * (`x.pem`, `credentials.json`).
+ */
+export function secretSuffix(end: string): boolean {
+  if (end === '') return true;
+  const lower = end.toLowerCase().replaceAll('\\', '/');
+  if (lower.includes('/')) {
+    const name = lower.slice(lower.lastIndexOf('/') + 1);
+    // The directory may be any, but the name is known: `/.env`, `/.aws/credentials`, or nothing known of it (`/`).
+    return name === '' || secretFile(lower, false) || secretFile(`x${lower}`, false);
+  }
+  return secretFile(`x${lower}`, false) || secretFile(`.env${lower}`, false) || examples.some((example) => example.at(-1)!.endsWith(lower));
+}
+
 /** A file named by Windows' 8.3 short name (`ENV~1` for `.env`) may be any file it shortens. */
 const shortName = /(^|\/)[^/~]{1,6}~\d+(\.[^/.]{1,3})?$/;
 

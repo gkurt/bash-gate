@@ -2,7 +2,11 @@ import { parse, type AnsiCQuotedPart, type DoubleQuotedChild, type Word, type Wo
 import type { Arg, DynamicReason } from './types.ts';
 
 /** A variable as the analysis knows it: its value, or only that it has one at run time. */
-export type Value = { kind: 'static'; value: string } | { kind: 'dynamic'; numeric?: boolean };
+/**
+ * A variable's value. A dynamic one may be `numeric` (an integer), or `files`: one of the files a static glob matched,
+ * none of them a secret's (`for f in src/*.ts`).
+ */
+export type Value = { kind: 'static'; value: string } | { kind: 'dynamic'; numeric?: boolean; files?: boolean };
 
 /** Looks variables up; `undefined` for one never assigned. */
 export type Lookup = (name: string) => Value | undefined;
@@ -229,6 +233,7 @@ function resolvePart(part: WordPart | DoubleQuotedChild, lookup: Lookup, quoted:
 function expand(name: string, lookup: Lookup, quoted: boolean): Segment {
   const value = special.test(name) ? undefined : lookup(name);
   if (value?.kind === 'static') return { kind: 'text', value: value.value, split: !quoted };
+  if (value?.files) return { kind: 'dynamic', reason: 'glob', split: !quoted };
   return { kind: 'dynamic', reason: special.test(name) ? 'positional' : 'variable', split: !quoted || name === '@' };
 }
 

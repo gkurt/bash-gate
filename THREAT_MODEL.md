@@ -154,7 +154,9 @@ execs kill the process, and so does any x32 system call.
   cluster and repositories their config names. Checked against kubectl 1.35, Helm 3 and 4, and terraform 1.17 docs:
   which of their commands only read, which change a cluster or infrastructure, which run a plugin, and which print
   secrets (`secrets:read`). Which files and variables hold secrets is a list of names: one named otherwise isn't
-  known to be one. A directory that holds one of them (`~/.ssh`, `~/.config`) is a secret read too, for a program that
+  known to be one. A file named only at run time (a substitution, input, a variable or an argument) may be any of them,
+  unless the end of its name that is known rules that out; a loop's file from a static glob that matches none of them
+  isn't. A directory that holds one of them (`~/.ssh`, `~/.config`) is a secret read too, for a program that
   may read it recursively. `secrets:print` trusts that the programs a spec marks `copies` print what they read unchanged, and
   that output redirected to a file, piped into a program that doesn't copy it, or captured by a substitution doesn't
   reach the script's output. `grep` prints the lines it matches whole, unless it only tests, counts or names files

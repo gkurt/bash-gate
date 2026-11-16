@@ -700,3 +700,11 @@ The user chose "grep, plus sed/awk/jq that may pass a line whole" (round 45's op
 - `-f` scripts and words only known at run time count as printing.
 Checked in WSL under `env -i`: `awk '/TOKEN/'`, `awk '{print $1}'`, `sed -n '/TOKEN/p'`, `sed 's/^export //'` and `env | grep FAKE` printed the fake secret whole, while `awk '{print length}'` and `grep -c` didn't.
 Costs: `secrets:print` added to `grep KEY .env`, `cat .env | grep KEY`, `env | grep TOKEN`, and to sed, awk and jq reading a secret as above. `recommended` asks on `secrets:read` already, so no verdict changed. No everyday verdict moved.
+
+## Decision round B: secret files named at run time, 2026-11-17, see commit
+The user chose "Secret when from a substitution or input" (round 54's open item). A dynamic read is now `secrets:read` unless any of these hold:
+- it's arithmetic;
+- `staticEnd`/`secretSuffix` show the known end rules a secret out: `.ts` or `.md`-style endings that `.env<end>`, `x<end>` and no example name can have;
+- it's a loop variable over static words and globs, none of them a secret's (`Value.files`, expanded as a `glob` Arg).
+`cat $(echo .env)`, `read f; cat "$f"`, `find . -name .env | xargs cat`, `find ~/.ssh -type f -exec cat {} +` and `cat "$1"` ask. `for f in src/*.ts; do cat "$f"; done` and `cat "$name.ts"` stay allowed.
+Costs: `xargs grep TODO < list` moved from allow to ask (an escapes case, updated). No line in `test/everyday.test.ts` moved. Any read of a path only known at run time with no telling end now asks: `cat "$f"`, `cp "$src" dst`, `grep x "$file"`, `while read f; do cat "$f"; done`.
