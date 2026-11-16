@@ -299,7 +299,8 @@ const bunOptions = opts(
   '--preserve-symlinks',
   '--preserve-symlinks-main',
   '--extension-order=',
-  o('--tsconfig-override=', { role: 'read' }),
+  // A tsconfig's `paths` and a JSX import source decide which modules run.
+  o('--tsconfig-override=', { role: 'read', effects: ['exec:file'] }),
   '-d= --define=',
   '--drop=',
   '--feature=',
@@ -307,7 +308,7 @@ const bunOptions = opts(
   '--no-macros',
   '--jsx-factory=',
   '--jsx-fragment=',
-  '--jsx-import-source=',
+  o('--jsx-import-source=', { effects: ['exec:file'] }),
   '--jsx-runtime=',
   '--jsx-side-effects',
   '--ignore-dce-annotations',
@@ -552,7 +553,6 @@ const jestOptions = opts(
     '--debug',
     '--detectLeaks',
     '--detectOpenHandles',
-    '--env=',
     '--errorOnDeprecated',
     '-e --expand',
     '--findRelatedTests',
@@ -614,6 +614,7 @@ const jestOptions = opts(
 /** jest's options that name code it loads, whatever their value: a config may be JSON naming more. */
 const jestModules = camel(
   '-c= --config=',
+  '--env=',
   '--filter=',
   '--globalSetup=',
   '--globalTeardown=',
@@ -790,6 +791,12 @@ function finishConfig(parsed: Parsed): void {
   const named: Arg | undefined = file !== undefined && file !== true ? file : undefined;
   const target: Arg = named ?? { kind: 'static', value: scope ?? (parsed.options['--worktree'] ? '.git/config.worktree' : '.git/config') };
   const removing = ['--unset', '--unset-all', '--remove-section', '--rename-section'];
+  // `edit` opens the file in an editor, as `-e` does.
+  if (subcommand === 'edit') {
+    parsed.effects.add('exec:arbitrary');
+    parsed.writes.push(target);
+    return;
+  }
   if (subcommand === 'unset' || subcommand?.endsWith('-section') || removing.some((name) => parsed.options[name])) {
     parsed.effects.add('fs:write');
     parsed.writes.push(target);
@@ -1279,6 +1286,8 @@ const git: CommandSpec = {
         '-m= --mainline=',
         '--continue',
         '--abort',
+        '--skip',
+        '--quit',
         '-x',
         '-s= --strategy=',
         '-X= --strategy-option=',
@@ -1299,6 +1308,13 @@ const git: CommandSpec = {
         ...each('drop clear', { effects: ['fs:delete'] }),
         list: {},
         show: { abbreviations: true, options: opts(o('--output=', { role: 'write' })) },
+        // `export --to-ref` sets a ref to the stashes, whatever it held, as `recommended` asks about.
+        export: {
+          abbreviations: true,
+          effects: ['fs:write'],
+          options: opts('--print', '--to-ref='),
+        },
+        import: { effects: ['fs:write'] },
       },
     },
     remote: {
@@ -2839,7 +2855,14 @@ const copy = (all: boolean): CommandSpec => ({
     parsed.reads.push(...sources);
     // Into a directory, each source lands under its own name (`cp -r x/.git .` writes `./.git`), and a directory's
     // contents (`x/.`) under names only known at run time.
-    if (parsed.options['--no-target-directory']) return;
+    // With -T, the target is the copy: a directory's contents land in it under names only known at run time.
+    if (parsed.options['--no-target-directory']) {
+      for (const target of targets) {
+        const base = staticValue(target)?.replace(/\/+$/, '');
+        parsed.writes.push(dynamicArg(`${base ?? '…'}/…`, 'placeholder', false, base === undefined ? '' : `${base}/`));
+      }
+      return;
+    }
     for (const directory of [...directories, ...targets]) {
       const into = staticValue(directory);
       for (const source of sources) {
@@ -3715,13 +3738,20 @@ const programs: Record<string, CommandSpec> = {
     options: cargoOptions,
     subcommands: {
       ...each(
-        'build|b check|c test|t run|r bench doc|d rustc rustdoc clippy metadata tree pkgid locate-project verify-project read-manifest report config version help generate-lockfile',
+        'build|b check|c test|t run|r bench doc|d clippy metadata tree pkgid locate-project verify-project read-manifest report config version help generate-lockfile',
         { options: cargoOptions },
       ),
       fix: { options: cargoOptions, effects: ['fs:write'] },
       // The words after `--` go to rustfmt: files it rewrites in place, wherever they are.
       fmt: { options: cargoOptions, effects: ['fs:write'], finish: (parsed) => parsed.writes.push(...parsed.positionals) },
       clean: { options: cargoOptions, effects: ['fs:delete'] },
+      // The words after `--` go to rustc or rustdoc: a linker (`-C linker=`), an output file, plugins.
+      ...each('rustc rustdoc', {
+        options: cargoOptions,
+        finish: (parsed) => {
+          if (parsed.positionals.length > 0 || parsed.maybeOptions) parsed.effects.add('exec:arbitrary');
+        },
+      }),
       ...each('new init', { options: cargoNew, effects: ['fs:write'], positionals: 'write' }),
       ...each('add remove|rm update fetch vendor package', { options: cargoOptions, effects: ['network', 'fs:write'] }),
       ...each('search info publish login logout owner yank', { options: cargoOptions, effects: ['network'] }),

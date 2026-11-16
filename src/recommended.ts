@@ -31,6 +31,9 @@ export const recommended: Policy = {
     // `checkout -B` and `switch -C` reset a branch that's there; `-f`, `--ours`, `--theirs` and paths overwrite changes.
     ask('git checkout|switch|restore', { options: ['--force', '--worktree'], reason: 'Discards uncommitted work or moves a ref' }),
     ask('git stash drop|clear', { reason: 'Deletes stashed work' }),
+    ask('git stash export', { options: ['--to-ref'], reason: 'Moves a ref' }),
+    // Aborting or skipping puts back the work tree from before, over a resolution and what's staged.
+    ask('git merge|rebase|cherry-pick|revert', { options: ['--abort', '--skip'], reason: 'Discards uncommitted work' }),
     ask('git fetch', { options: ['--force', '--update-head-ok', '--refmap', '--prune-tags'], reason: 'Deletes or moves a local ref' }),
     // Package scripts, tests and builds: project code, as git hooks are, with the dependencies cargo and bun fetch as
     // they build or run (`network:read`). Their specs give `exec:arbitrary` to inline
