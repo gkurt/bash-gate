@@ -1322,6 +1322,91 @@ const projectCases: [what: string, source: string, decision: Decision, fs: Envir
     disk({ '/w/p/x': '' }, { '/w/p/l': '/home/me/sub' }, ['/home/me/sub', '/home/me/.ssh']),
   ],
   ['a logical cd whose .. path is there', 'cd src/../lib && echo k > x', 'allow', disk({ '/w/p/src/a': '', '/w/p/lib/b': '' })],
+  [
+    'a hook that writes reference-transaction, which git runs after it',
+    'git commit -m x',
+    'ask',
+    disk(
+      hooked('[core]\n\thooksPath = githooks\n', {
+        '/w/p/githooks/pre-commit': '#!/bin/sh\ncp githooks/payload githooks/reference-transaction\n',
+        '/w/p/githooks/payload': evilHook,
+      }),
+    ),
+  ],
+  [
+    'a husky hook that rewrites the dispatcher the next stub sources',
+    'git commit -m x',
+    'ask',
+    disk(
+      hooked('[core]\n\thooksPath = .husky/_\n', {
+        '/w/p/.husky/_/pre-commit': huskyFiles.stub91,
+        '/w/p/.husky/_/prepare-commit-msg': huskyFiles.stub91,
+        '/w/p/.husky/_/h': huskyFiles.dispatcher91,
+        '/w/p/.husky/pre-commit': 'cp .husky/payload .husky/_/h\n',
+        '/w/p/.husky/payload': evilHook,
+      }),
+    ),
+  ],
+  [
+    'a hook run through env -S, whose code is on its first line',
+    'git commit -m x',
+    'ask',
+    disk(hooked('[core]\n\thooksPath = githooks\n', { '/w/p/githooks/pre-commit': '#!/usr/bin/env -S bash -c "rm -rf /"\necho ok\n' })),
+  ],
+  [
+    'a hook run by an interactive bash, which reads a startup file',
+    'git commit -m x',
+    'ask',
+    disk(hooked('[core]\n\thooksPath = githooks\n', { '/w/p/githooks/pre-commit': '#!/bin/bash -i\necho ok\n' })),
+  ],
+  [
+    'a hook whose shell is no system one',
+    'git commit -m x',
+    'ask',
+    disk(hooked('[core]\n\thooksPath = githooks\n', { '/w/p/githooks/pre-commit': '#!/tmp/x/sh\necho ok\n' })),
+  ],
+  [
+    'a hook with set options on its first line',
+    'git commit -m x',
+    'allow',
+    disk(hooked('[core]\n\thooksPath = githooks\n', { '/w/p/githooks/pre-commit': '#!/bin/sh -eu\necho ok\n' })),
+  ],
+  [
+    'git -C with .. after a symlink, which the kernel resolves from where the symlink leads',
+    'git -C link/.. commit -m x',
+    'deny',
+    disk(
+      { ...repository('/w/p/.git'), ...repository('/o/foo/.git'), '/o/foo/.git/hooks/pre-commit': evilHook },
+      { '/w/p/link': '/o/foo/src' },
+      ['/o/foo/src'],
+    ),
+  ],
+  [
+    'the same, with env -C',
+    'env -C link/.. npm test',
+    'ask',
+    disk({ ...repository('/w/p/.git'), '/w/p/package.json': '{"scripts":{"test":"echo ok"}}' }, { '/w/p/link': '/o/foo/src' }, [
+      '/o/foo/src',
+    ]),
+  ],
+  [
+    'a hook written in another case, on a filesystem that ignores it',
+    'echo "rm -rf /" > .HUSKY/pre-commit && git commit -m x',
+    'ask',
+    disk(
+      hooked('[core]\n\thooksPath = .husky/_\n', {
+        '/w/p/.husky/_/pre-commit': huskyFiles.stub91,
+        '/w/p/.husky/_/h': huskyFiles.dispatcher91,
+        '/w/p/.husky/pre-commit': 'echo ok\n',
+      }),
+    ),
+  ],
+  [
+    'package.json written in another case',
+    `echo '{"scripts":{"test":"rm -rf /"}}' > PACKAGE.JSON && npm test`,
+    'ask',
+    disk({ '/w/p/package.json': '{"scripts":{"test":"echo ok"}}' }),
+  ],
 ];
 
 describe('recommended policy, with the project on disk', () => {

@@ -289,6 +289,21 @@ describe('invocations', () => {
     expect(ssh.invocations.some((invocation) => invocation.program === 'cat' && values(invocation.argv).includes('match'))).toBe(true);
   });
 
+  test('a ~ path with HOME unknown is never asked of the filesystem', () => {
+    const asked: string[] = [];
+    const files: Record<string, string> = {
+      '/repo/.git/HEAD': 'ref: refs/heads/main\n',
+      '/repo/.git/config': '[include]\n\tpath = ~/evil.cfg\n',
+    };
+    const fs = {
+      readFile: (path: string) => (asked.push(path), files[path] ?? null),
+      realpath: (path: string) => (asked.push(path), path),
+    };
+    const { findings } = analyze('git status', { cwd: '/repo', fs });
+    expect(asked.filter((path) => path.startsWith('~'))).toEqual([]);
+    expect(findings.some((finding) => finding.kind === 'unknown-file' && finding.message.includes('~/evil.cfg'))).toBe(true);
+  });
+
   test('git config is read from whichever directory git takes as the repository', () => {
     const head = 'ref: refs/heads/main\n';
     const evil = '[core]\n\tfsmonitor = cat ran\n';

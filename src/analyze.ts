@@ -637,6 +637,11 @@ class Walker {
 
   /** A file the command reads (Git config, a hook): its text, or `undefined` when it's absent or not known (a finding). */
   read(path: string, ctx: Context, call: Call): string | undefined {
+    // A `~` with HOME unknown (`include.path = ~/x`) is no file the analysis can ask for.
+    if (path.startsWith('~')) {
+      this.finding(ctx, 'unknown-file', `Where \`${path}\` is isn't known`, call.span);
+      return undefined;
+    }
     const text = this.files!.readFile(path);
     const changed = this.changed(path, ctx, 'contents');
     if (changed !== false) this.changedFinding(path, changed, ctx, call);
@@ -2534,7 +2539,8 @@ class Walker {
       const value: Value = entry.kind === 'static' ? { kind: 'static', value: entry.value.slice(equals + 1) } : { kind: 'dynamic' };
       this.assigned(start.slice(0, equals), value, state, ctx, call, false, false);
     }
-    const cwd = parsed.cwd?.kind === 'static' ? resolvePath(call.cwd, parsed.cwd.value, call.home) : parsed.cwd ? undefined : call.cwd;
+    // A program changes directory as the kernel does: `link/..` is up from where the symlink leads.
+    const cwd = parsed.cwd?.kind === 'static' ? this.openedPath(call.cwd, parsed.cwd.value, call.home) : parsed.cwd ? undefined : call.cwd;
     // Project code is the code of the project where the script starts: elsewhere (`npm --prefix /tmp/x test`,
     // `cd .. && cargo build`), it's another project's, from a place no one vouched for.
     // Where it really is, too: a symlink under the project (`cd link`) may lead out of it.
@@ -2768,6 +2774,10 @@ class Walker {
 
   /** Whether something is at `path`: `undefined` when that isn't known, or the script may have changed it (a finding). */
   exists(path: string, ctx: Context, call: Call): boolean | undefined {
+    if (path.startsWith('~')) {
+      this.finding(ctx, 'unknown-file', `Where \`${path}\` is isn't known`, call.span);
+      return undefined;
+    }
     const real = this.files!.realpath(path);
     const changed = this.changed(path, ctx, 'contents');
     if (changed !== false) this.changedFinding(path, changed, ctx, call, true);
@@ -2791,7 +2801,7 @@ class Walker {
       return texts.get(path);
     };
     const staticPath = (arg: Arg | true | undefined) =>
-      arg !== undefined && arg !== true && arg.kind === 'static' ? resolvePath(cwd, arg.value, call.home) : undefined;
+      arg !== undefined && arg !== true && arg.kind === 'static' ? this.openedPath(cwd, arg.value, call.home) : undefined;
     const tree = parsed.options['--work-tree']?.at(-1);
     const workTree = staticPath(tree);
     const writesTree = gitWritesTree.test(parsed.subcommands.join(' '));
@@ -2904,6 +2914,12 @@ class Walker {
         }
         if (shell === 'sh') this.dashSyntax(hook.text, ctx, call, `git hook ${name}`);
         this.code(hook.text, shellState(state, workTree ?? root, shell), ctx, call, `git hook ${name}`);
+      }
+      // A hook may write another, or what husky's stubs source, which git runs after it (`reference-transaction` after
+      // `pre-commit`, a second stub): each is read again once they've all run, past what was read before.
+      for (const path of walked) {
+        const again = this.read(path, ctx, call);
+        if (again !== undefined) huskyHook(path, again, (file) => this.read(file, ctx, call));
       }
     };
 
@@ -4124,11 +4140,16 @@ function either(a: boolean | undefined, b: boolean | undefined): boolean | undef
  * fall back to, and `undefined` for another program.
  */
 function interpreter(text: string): 'sh' | 'bash' | undefined {
-  const line = /^#!\s*(\S+)(.*)/.exec(text);
-  if (!line) return 'sh';
-  const words = line[2]!.trim().split(/\s+/);
-  const named = line[1]!.split('/').pop()!;
-  const program = named === 'env' ? (words.find((word) => !word.startsWith('-')) ?? '') : named;
+  if (!text.startsWith('#!')) return 'sh';
+  // The rest of the line is one argument: a system shell's, or the shell `env` finds, with no options but `set`'s
+  // (`-e`, `-eu`). Others (`env -S`, `bash --rcfile x -i`, `/tmp/sh`) run what the analysis doesn't read.
+  const line = /^#![ \t]*(\S+)[ \t]*([^\n]*?)[ \t]*$/m.exec(text);
+  if (!line || !isSystemPath(line[1]!)) return undefined;
+  const rest = line[2]!;
+  const named = basename(line[1]!);
+  const program = named === 'env' ? rest : named;
+  const options = named === 'env' ? '' : rest;
+  if (options !== '' && !/^-[eux]+$/.test(options)) return undefined;
   if (program === 'bash') return 'bash';
   return ['sh', 'dash', 'ash', 'ksh'].includes(program) ? 'sh' : undefined;
 }

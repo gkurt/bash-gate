@@ -71,7 +71,8 @@ Out of scope:
   command runs in git 2.55, plus `pre-auto-gc` where older gits collect garbage afterwards; a command the table
   doesn't have may run any. They're read from `core.hooksPath` where that directory is certain, and from the config's
   own `hook.<name>.command`. A hook is read as the shell its first line names (`sh`, which expands aliases, with
-  none); one in another language is a finding. Package scripts are read as `sh` runs them, and so is code other programs
+  none): a system shell with no options but `set`'s, or one `env` names; anything else, another language included, is
+  a finding. Hooks are read again once a command's hooks have all run, since one may write another git runs later. Package scripts are read as `sh` runs them, and so is code other programs
   hand to `sh` (`watch`, `git rebase -x`): as Bash in POSIX mode, with a finding for Bash's own syntax, which dash
   reads otherwise (`&>`, `((`, `$'…'`, `[[`, brace expansion). The user's and the system's git config are never read, nor husky's
   user files (`~/.config/husky/init.sh`, `~/.huskyrc`). Hooks husky wrote are followed to the project's own hook in

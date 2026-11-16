@@ -138,7 +138,8 @@ function under(trees: { root: string; git: string }[], path: string): boolean {
 
 /** Whether `path` is `dir` or under it. Paths that can't be compared (`~`, relative to another place) may be. */
 function within(path: string, dir: string): boolean {
-  return compare(path, dir) ?? true;
+  // On a filesystem that ignores case, `.HUSKY/x` is `.husky/x`: a write in either spelling may be the file.
+  return compare(path.toLowerCase(), dir.toLowerCase()) ?? true;
 }
 
 /** Whether `path` is `dir` or under it; `undefined` when they can't be compared. */
