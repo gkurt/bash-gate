@@ -376,7 +376,8 @@ const cargoOptions = [
     '--no-run',
     '--no-fail-fast',
     '--doc',
-    '--open',
+    // `cargo doc --open` runs $BROWSER, or the system's opener.
+    o('--open', { effects: ['exec:arbitrary'] }),
     '--no-deps',
     '--document-private-items',
     o('--fix', { effects: ['fs:write'] }),
@@ -655,7 +656,9 @@ const viteCommon = camel(
 );
 const viteServer = opts(
   ...viteCommon,
-  ...camel('--port=', '--open=?', '--cors', '--strictPort', '--force'),
+  ...camel('--port=', '--cors', '--strictPort', '--force'),
+  // It opens a browser.
+  o('--open=?', { effects: ['exec:arbitrary'] }),
   // Its dev server and preview listen beyond this machine with --host.
   o('--host=?', { effects: ['network'] }),
 );
@@ -688,6 +691,11 @@ const biomeEdits = /(?<!(?:^|\/)package)\.(jsonc?|[cm]?[jt]sx?|css|graphql|gql|h
 
 const biomeOptions = opts(
   o('--config-path=', { role: 'read' }),
+  // The daemon logs into that directory, and goes on after the command.
+  o('--log-path=', { role: 'write' }),
+  '--log-prefix-name=',
+  '--log-level=',
+  '--log-kind=',
   '--write',
   '--fix',
   '--apply',
@@ -751,7 +759,7 @@ function finishPush(parsed: Parsed): void {
 
 /** Git config keys whose values git runs, or that change what or where it runs. */
 const gitExecKeys =
-  /^(alias\..*|core\.(pager|editor|sshcommand|fsmonitor|hookspath|askpass|gitproxy|worktree)|sequence\.editor|pager\..*|diff\.external|diff\..*\.(command|textconv)|merge\..*\.driver|filter\..*\.(clean|smudge|process)|credential\.helper|credential\..*\.helper|gpg\.program|gpg\..*\.program|interactive\.difffilter|uploadpack\.packobjectshook|remote\..*\.(uploadpack|receivepack|vcs)|protocol\..*\.allow|url\..*|include\.path|includeif\..*|submodule\..*\.update|ssh\.variant|core\.sshcommand|http\..*proxy|web\.browser|browser\..*\.(cmd|path)|man\..*\.(cmd|path)|sendemail\..*cmd|mergetool\..*\.cmd|difftool\..*\.cmd|hook\..*\.command|gpg\.ssh\.defaultkeycommand|trailer\..*\.(command|cmd)|core\.alternaterefscommand|gc\.recentobjectshook)$/;
+  /^(alias\..*|core\.(pager|editor|sshcommand|fsmonitor|hookspath|askpass|gitproxy|worktree)|sequence\.editor|pager\..*|diff\.external|diff\..*\.(command|textconv)|merge\..*\.driver|filter\..*\.(clean|smudge|process)|credential\.helper|credential\..*\.helper|gpg\.program|gpg\..*\.program|interactive\.difffilter|uploadpack\.packobjectshook|remote\..*\.(uploadpack|receivepack|vcs)|protocol\..*\.allow|url\..*|include\.path|includeif\..*|submodule\..*\.update|ssh\.variant|core\.sshcommand|http\..*proxy|web\.browser|browser\..*\.(cmd|path)|man\..*\.(cmd|path)|sendemail\..*cmd|mergetool\..*\.cmd|difftool\..*\.cmd|hook\..*\.command|gpg\.ssh\.defaultkeycommand|trailer\..*\.(command|cmd)|core\.alternaterefscommand|gc\.recentobjectshook|gc\.(.*\.)?(reflogexpire|reflogexpireunreachable|pruneexpire|worktreepruneexpire|rerereresolved|rerereunresolved)|maintenance\..*|help\.(format|browser|htmlpath)|man\.viewer)$/;
 
 /** Keys whose value is a command git runs with the shell. */
 const gitShellKeys =
@@ -845,7 +853,8 @@ function finishCheckout(parsed: Parsed): void {
 
 /** `git switch -C` resets a branch that's there. */
 function finishSwitch(parsed: Parsed): void {
-  if (parsed.options['--force-create']) force(parsed);
+  // -m and --conflict merge local changes into the branch, leaving conflicts in their place.
+  if (['--force-create', '--merge', '--conflict'].some((name) => parsed.options[name])) force(parsed);
 }
 
 /** `git restore` writes the work tree unless only `--staged` says where. */
@@ -1179,7 +1188,16 @@ const git: CommandSpec = {
     switch: {
       abbreviations: true,
       effects: hooks,
-      options: opts('-c= --create=', '-C= --force-create=', '-f --force --discard-changes', '-d --detach', '--orphan=', '-t --track=?'),
+      options: opts(
+        '-c= --create=',
+        '-C= --force-create=',
+        '-f --force --discard-changes',
+        '-m --merge',
+        '--conflict=',
+        '-d --detach',
+        '--orphan=',
+        '-t --track=?',
+      ),
       finish: finishSwitch,
     },
     restore: {
@@ -3519,7 +3537,9 @@ const programs: Record<string, CommandSpec> = {
           if (staticValue(parsed.positionals[0]) !== 'get') writesManifest(parsed);
         },
       },
-      ...each('ls|list ll|la get prefix root bin help|hlep explain|why query sbom completion', {}),
+      ...each('ls|list ll|la get prefix root bin explain|why query sbom completion', {}),
+      // Its viewer may be a browser.
+      'help|hlep': { effects: ['exec:arbitrary'] },
     },
     finish(parsed) {
       // npm takes any unique start of a command's name (`npm exe` is `npm exec`), and reads an option it doesn't
@@ -3767,13 +3787,20 @@ const programs: Record<string, CommandSpec> = {
     options: cargoOptions,
     subcommands: {
       ...each(
-        'build|b check|c run|r doc|d clippy metadata tree pkgid locate-project verify-project read-manifest report config version help generate-lockfile',
+        'build|b check|c run|r doc|d clippy metadata tree pkgid locate-project verify-project read-manifest report config version generate-lockfile',
         { options: cargoOptions },
       ),
       fix: { options: cargoOptions, effects: ['fs:write'] },
       // The words after `--` go to rustfmt: files it rewrites in place, wherever they are.
       fmt: { options: cargoOptions, effects: ['fs:write'], finish: (parsed) => parsed.writes.push(...parsed.positionals) },
       clean: { options: cargoOptions, effects: ['fs:delete'] },
+      // Help for a word cargo doesn't know runs `cargo-<word> --help`, found on PATH.
+      help: {
+        options: cargoOptions,
+        finish: (parsed) => {
+          if (parsed.positionals.length > 0) parsed.effects.add('exec:arbitrary');
+        },
+      },
       // The words after `--` go to the test harness, whose `--logfile` it writes.
       ...each('test|t bench', {
         options: cargoOptions,

@@ -135,7 +135,7 @@ deleting top-level directories, and asks about deleting, network, privilege, cod
 working directory (`..` and `../**`, `~` among them: a path counts as outside unless an absolute `cwd` shows it's inside, so a project under `~` is still the project), writes
 inside a `.git`, and writes to a file named `HEAD` (with `objects` and `refs` beside it, git takes any directory as a
 repository). It asks about git forms that discard uncommitted work or move a ref (`reset --hard`, `branch -f`,
-`checkout -B`, `switch -C`, `checkout -f`, `checkout -- <path>`, `merge`, `rebase` or `cherry-pick` `--abort` and `--skip`, `stash export --to-ref`, `restore` of the work tree, `fetch --stdin`) and denies those that rewrite or delete remote
+`checkout -B`, `switch -C`, `switch -m`, `checkout -f`, `checkout -- <path>`, `merge`, `rebase` or `cherry-pick` `--abort` and `--skip`, `stash export --to-ref`, `restore` of the work tree, `fetch --stdin`) and denies those that rewrite or delete remote
 history (`push --force`, `--delete`, `--mirror`, `--prune`). `sed` and `awk` run when their script only edits what they read
 (`sed -n '1,40p'`, `awk '{print $1}'`): one that runs a command, writes a file, edits in place or isn't followed asks.
 Of the network, `network:read` runs: `git fetch`, `git ls-remote`, and gh's commands that look at pull requests,
