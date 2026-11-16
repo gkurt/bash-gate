@@ -293,7 +293,7 @@ const setOptions = new Set(
  * (prompt strings and `PROMPT_COMMAND` are walked as code instead).
  */
 const sensitive =
-  /^(PATH|PWD|BASH_FUNC_.+|EXECIGNORE|BASH_ENV|ENV|IFS|SHELLOPTS|BASHOPTS|BASH_LOADABLES_PATH|TEXTDOMAIN|TEXTDOMAINDIR|CDPATH|HOME|ZDOTDIR|TMPDIR|XDG_CONFIG_HOME|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_[A-Z_]+|GH_(PAGER|EDITOR|BROWSER|CONFIG_DIR|PATH|HOST|REPO)|(HTTPS?|ALL)_PROXY|(https?|all)_proxy|BROWSER|PAGER|MANPAGER|EDITOR|VISUAL|LESSOPEN|LESSCLOSE|NODE_OPTIONS|NODE_PATH|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|SSH_ASKPASS|SUDO_ASKPASS|npm_config_\w+|NPM_CONFIG_\w+)$/;
+  /^(PATH|PWD|POSIXLY_CORRECT|BASH_FUNC_.+|EXECIGNORE|BASH_ENV|ENV|IFS|SHELLOPTS|BASHOPTS|BASH_LOADABLES_PATH|TEXTDOMAIN|TEXTDOMAINDIR|CDPATH|HOME|ZDOTDIR|TMPDIR|XDG_CONFIG_HOME|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_[A-Z_]+|GH_(PAGER|EDITOR|BROWSER|CONFIG_DIR|PATH|HOST|REPO)|(HTTPS?|ALL)_PROXY|(https?|all)_proxy|BROWSER|PAGER|MANPAGER|EDITOR|VISUAL|LESSOPEN|LESSCLOSE|NODE_OPTIONS|NODE_PATH|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|SSH_ASKPASS|SUDO_ASKPASS|npm_config_\w+|NPM_CONFIG_\w+)$/;
 
 /** Files a redirection may name without touching the file system. */
 const devices = /^\/dev\/(null|stdin|stdout|stderr|tty|fd\/\d+)$/;
@@ -312,8 +312,9 @@ export function analyze(source: string, environment: Environment = {}): Analysis
       exportedFunctions: new Set(),
       aliases: new Map(),
       aliasesUnknown: false,
-      expandAliases: false,
-      posix: false,
+      // Bash starts in POSIX mode when it's in the environment.
+      expandAliases: environment.env?.POSIXLY_CORRECT !== undefined,
+      posix: environment.env?.POSIXLY_CORRECT !== undefined,
       hashed: new Map(),
       hashUnknown: false,
       refs: new Set(),
@@ -2305,6 +2306,9 @@ class Walker {
   /** A program run from `PATH`, a path, or what `hash -p` gave the name. */
   program(argv: Arg[], state: State, ctx: Context, call: Call): void {
     const name = (argv[0] as Extract<Arg, { kind: 'static' }>).value;
+    // With it in their environment, GNU programs read options only up to the first operand (`cp a b -S x` copies `-S`).
+    if (state.exported.has('POSIXLY_CORRECT') && state.vars.has('POSIXLY_CORRECT'))
+      this.finding(ctx, 'sensitive-variable', `POSIXLY_CORRECT changes how \`${name}\` reads its options`, call.span);
     if (!name.includes('/') && state.hashUnknown && !state.hashed.has(name)) {
       this.finding(ctx, 'loads-code', `\`${name}\` may have been given a path through BASH_CMDS`, call.span);
       return this.run(argv, state, ctx, call, undefined);
@@ -2645,7 +2649,7 @@ class Walker {
       if (writesTree && tree !== undefined && workTree === undefined) this.wroteAnything();
       else if (writesTree) this.wroteTree(workTree ?? root, inside);
       for (const name of hooks) {
-        if (flag(parsed, '--no-verify') && ['pre-commit', 'commit-msg', 'pre-push'].includes(name)) continue;
+        if (flag(parsed, '--no-verify') && !parsed.options['--verify'] && ['pre-commit', 'commit-msg', 'pre-push'].includes(name)) continue;
         const path = `${directory}/${name}`;
         if (walked.has(path)) continue;
         walked.add(path);

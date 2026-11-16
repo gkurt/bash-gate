@@ -24,6 +24,8 @@ export interface CommandSpec {
   plus?: boolean;
   /** Long options may be abbreviated to a unique prefix, as `getopt_long` and git allow. */
   abbreviations?: boolean;
+  /** Read as Go's pflag reads it (cobra): `-o=value` is `-o` with `value`, a flag's too (`-f=false`). */
+  cobra?: boolean;
   /** What the positionals are, when they're paths. */
   positionals?: 'read' | 'write' | 'delete';
   /**
@@ -227,7 +229,7 @@ export function readCobra(root: CommandSpec, args: Arg[], parsed: Parsed): void 
     }
     break;
   }
-  const leaf = normalize(rest, { ...current, subcommands: undefined, parse: undefined, finish: undefined });
+  const leaf = normalize(rest, { ...current, cobra: true, subcommands: undefined, parse: undefined, finish: undefined });
   for (const level of levels) for (const effect of level.effects ?? []) leaf.effects.add(effect);
   Object.assign(parsed, leaf, { subcommands: parsed.subcommands });
   for (const level of levels) level.finish?.(parsed);
@@ -296,6 +298,10 @@ function readOption(args: Arg[], i: number, spec: CommandSpec | undefined, parse
     if (!option) {
       unknown(parsed, name, true);
       continue;
+    }
+    if (spec?.cobra && value[j + 1] === '=') {
+      record(parsed, option, { kind: 'static', value: value.slice(j + 2) });
+      break;
     }
     if ((option.value ?? false) === false || (option.valued && !option.valued.includes(name))) {
       record(parsed, option, true);

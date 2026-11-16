@@ -684,6 +684,8 @@ const tree: Record<string, string> = {
   'watched/.git/HEAD': 'ref: refs/heads/main\n',
   'watched/.git/hooks/post-index-change': 'rm -rf /',
   'watched/.git/hooks/reference-transaction': 'rm -rf /',
+  'hooked/.git/HEAD': 'ref: refs/heads/main\n',
+  'hooked/.git/hooks/pre-commit': 'rm -rf /',
 };
 const withFiles: Environment = { fs: { readFile: (path) => tree[path] ?? null, realpath: (path) => path } };
 const filesystemCases: [source: string, decision: Decision, what: string][] = [
@@ -713,6 +715,9 @@ const filesystemCases: [source: string, decision: Decision, what: string][] = [
   ['rm() { :; }; export -f rm; cd watched && git status', 'deny', 'a hook that may be no Bash, which runs the program'],
   ['rm() { :; }; export -f rm; export -nf rm; cd watched && git status', 'deny', 'a function export -n takes back'],
   ['export -f rm; rm() { :; }; cd watched && git status', 'deny', 'export -f before the function is defined'],
+  ['cd hooked && git commit -n -m x', 'allow', 'a hook --no-verify skips'],
+  ['cd hooked && git commit -Sn -m x', 'deny', '-S taking the rest of its word as the key, not -n'],
+  ['cd hooked && git commit -n --verify -m x', 'deny', '--verify after --no-verify'],
 ];
 
 /** The same, starting in a known absolute directory: relative globs match from it. */
@@ -728,6 +733,27 @@ const startedCases: [source: string, decision: Decision, what: string][] = [
   ['PWD=/home/me; echo hi > ~+/.bashrc', 'ask', '~+, which is $PWD, not the working directory'],
   ['read PWD <<< /home/me; echo hi > ~+/.bashrc', 'ask', 'the same, with PWD read'],
   ['declare -u x; unset x; x=-o; sort $x ~/.bashrc notes.txt', 'ask', 'a case attribute unset takes away'],
+  // Options as the programs read them.
+  ['git --attr-source status clean -fdx', 'ask', "a git option taking the next word, which isn't the subcommand"],
+  ['git --shallow-file status clean -fdx', 'ask', 'the same, for --shallow-file'],
+  ['git config set --global core.pager "sh -c x"', 'ask', "git config's set subcommand, before the key"],
+  ['git config set --worktree core.hooksPath /tmp/evil', 'ask', 'the same, for a key that changes where hooks are'],
+  ['git config --global --comment hi core.pager "sh -c x"', 'ask', 'a git config option taking a value, before the key'],
+  ['git reflog delete refs/stash@{0}', 'ask', 'git reflog deleting an entry, which may be a stash'],
+  ['git reflog expire --expire=now --all', 'ask', 'git reflog expiring entries'],
+  ['git rev-list --output=/home/me/.bashrc HEAD', 'ask', 'git rev-list writing --output'],
+  ['git blame --output=/home/me/.bashrc f', 'ask', 'git blame writing --output'],
+  ['git stash show -p --output=/home/me/.bashrc', 'ask', 'git stash show writing --output'],
+  ['git branch -M feature other', 'ask', 'git branch -M, which moves over an existing branch'],
+  ['git branch -C feature other', 'ask', 'git branch -C, which copies over one'],
+  ['gh repo read-file x -o=/home/me/.bashrc', 'ask', "pflag's -o=value, whose value has no ="],
+  ['echo /home/me/.bashrc | xargs --max-lines rm -rf', 'ask', 'xargs --max-lines, which takes a value only after ='],
+  ["watch -dx echo 'hi; rm -rf /'", 'deny', 'watch -d taking an attached value, so -x is no option'],
+  ['touch -m /home/me/.hushlogin', 'ask', 'touch -m, which is a flag, so the word after it is a file'],
+  ['cp a /home/me/x --sparse always', 'ask', 'a cp option taking the next word'],
+  ['cp a /home/me/x --frobnicate always', 'ask', "a cp option it doesn't know, which may take the next word"],
+  ['POSIXLY_CORRECT=1 cp a b -S /home/me', 'ask', 'POSIXLY_CORRECT, which stops GNU options at the first operand'],
+  ['rg -H --hostname-bin=/tmp/evil --hyperlink-format=default foo', 'ask', 'rg running --hostname-bin'],
   ['cd ~ && pushd /repo && pushd +1 && echo x >> .bashrc', 'ask', 'pushd +N, which rotates the directory stack'],
   ['rm -rf /repo', 'deny', 'deleting the project by its absolute path'],
   ['cd .. && rm -rf repo', 'deny', 'deleting the project from above'],

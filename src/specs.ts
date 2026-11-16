@@ -770,20 +770,42 @@ export function gitConfig(key: string, value: string): { script?: string } | und
   return gitShellKeys.test(name) ? { script: value } : {};
 }
 
-/** `git config key value` (and `--add`, `--replace-all`) sets an entry: read like `-c key=value`. */
+/** `git config` names a subcommand first, or none (`git config key value`): a key always has a dot. */
+const configSubcommands = new Set(['list', 'get', 'set', 'unset', 'rename-section', 'remove-section', 'edit']);
+
+/**
+ * `git config key value` (and `--add`, `--replace-all`, `git config set key value`) sets an entry: read like
+ * `-c key=value`. Unsetting and renaming write the file too.
+ */
 function finishConfig(parsed: Parsed): void {
-  const reading = ['--get', '--get-all', '--get-regexp', '--list', '--unset', '--unset-all', '--remove-section', '--rename-section'];
-  if (reading.some((name) => parsed.options[name])) return;
-  const [key, value] = parsed.positionals;
+  const first = staticValue(parsed.positionals[0]);
+  if (parsed.positionals[0] && first === undefined) parsed.maybeOptions = true;
+  const subcommand = first !== undefined && configSubcommands.has(first) ? first : undefined;
+  const positionals = subcommand ? parsed.positionals.slice(1) : parsed.positionals;
+  const reading = ['--get', '--get-all', '--get-regexp', '--list', '--get-urlmatch', '--get-color', '--get-colorbool'];
+  if (subcommand === 'get' || subcommand === 'list' || reading.some((name) => parsed.options[name])) return;
+  const file = parsed.options['--file']?.[0];
+  const local = !parsed.options['--global'] && !parsed.options['--system'] && !parsed.options['--worktree'];
+  const target: Arg = file !== undefined && file !== true ? file : { kind: 'static', value: '.git/config' };
+  const removing = ['--unset', '--unset-all', '--remove-section', '--rename-section'];
+  if (subcommand === 'unset' || subcommand?.endsWith('-section') || removing.some((name) => parsed.options[name])) {
+    parsed.effects.add('fs:write');
+    if (local) parsed.writes.push(target);
+    return;
+  }
+  const [key, value] = positionals;
   if (!key || !value) return;
   parsed.effects.add('fs:write');
-  if (!parsed.options['--global'] && !parsed.options['--system'] && !parsed.options['--worktree']) {
-    const file = parsed.options['--file']?.[0];
-    parsed.writes.push(file !== undefined && file !== true ? file : { kind: 'static', value: '.git/config' });
-  }
+  if (local) parsed.writes.push(target);
   const k = staticValue(key);
   const v = staticValue(value);
   parsed.configs.push(k !== undefined && v !== undefined ? { kind: 'static', value: `${k}=${v}` } : value);
+}
+
+/** `git reflog expire`, `delete` and `drop` remove entries: a stash is one. */
+function finishReflog(parsed: Parsed): void {
+  const first = parsed.positionals[0];
+  if (first?.kind === 'dynamic' || ['expire', 'delete', 'drop'].includes(first?.value ?? '')) parsed.effects.add('fs:delete');
 }
 
 const hooks: Effect[] = ['fs:write', 'exec:project'];
@@ -826,6 +848,9 @@ const git: CommandSpec = {
     '--git-dir=',
     '--work-tree=',
     '--namespace=',
+    '--attr-source=',
+    '--shallow-file=',
+    '--super-prefix=',
     '-p --paginate',
     '-P --no-pager',
     '--bare',
@@ -868,8 +893,12 @@ const git: CommandSpec = {
         o('--output=', { role: 'write' }),
       ),
     },
+    // Those that take the diff and log options write `--output`.
+    ...each('blame annotate shortlog rev-list whatchanged', { abbreviations: true, options: opts(o('--output=', { role: 'write' })) }),
+    // `expire`, `delete` and `drop` remove entries (a stash is one), and `show` (by default) writes `--output`.
+    reflog: { abbreviations: true, options: opts(o('--output=', { role: 'write' })), finish: finishReflog },
     ...each(
-      'blame annotate shortlog reflog describe rev-parse rev-list ls-files ls-tree show-ref cat-file whatchanged merge-base name-rev count-objects var check-ignore check-attr for-each-ref help version',
+      'describe rev-parse ls-files ls-tree show-ref cat-file merge-base name-rev count-objects var check-ignore check-attr for-each-ref help version',
       { abbreviations: true },
     ),
     'ls-remote': {
@@ -904,13 +933,14 @@ const git: CommandSpec = {
         '-a --all',
         '--amend',
         '-n --no-verify',
+        '--verify --no-no-verify',
         '--fixup=',
         '--squash=',
         '-C= --reuse-message=',
         '-c= --reedit-message=',
         '-e --edit',
         '--no-edit',
-        '-S --gpg-sign=?',
+        '-S=? --gpg-sign=?',
         '--author=',
         '--date=',
         '-q --quiet',
@@ -935,6 +965,7 @@ const git: CommandSpec = {
         '-u --set-upstream',
         '-n --dry-run',
         '--no-verify',
+        '--verify --no-no-verify',
         '--verify',
         '-o= --push-option=',
         o('--receive-pack= --exec=', { effects: ['exec:arbitrary'] }),
@@ -959,6 +990,7 @@ const git: CommandSpec = {
         '--no-ff',
         '-f --force',
         '--no-verify',
+        '--verify --no-no-verify',
         '-s= --strategy=',
         '-X= --strategy-option=',
         o('--upload-pack=', { effects: ['exec:arbitrary'] }),
@@ -1093,10 +1125,17 @@ const git: CommandSpec = {
         '--sort=',
         '--format=',
       ),
+      // `-D`, `-M` and `-C` are `--delete`, `--move` and `--copy` with `--force`.
       finish(parsed) {
-        if (!parsed.options['-D']) return;
-        (parsed.options['--delete'] ??= []).push(true);
-        (parsed.options['--force'] ??= []).push(true);
+        for (const [short, long] of [
+          ['-D', '--delete'],
+          ['-M', '--move'],
+          ['-C', '--copy'],
+        ] as const) {
+          if (!parsed.options[short]) continue;
+          (parsed.options[long] ??= []).push(true);
+          (parsed.options['--force'] ??= []).push(true);
+        }
       },
     },
     tag: {
@@ -1124,6 +1163,7 @@ const git: CommandSpec = {
         '-s= --strategy=',
         '-X= --strategy-option=',
         '--no-verify',
+        '--verify --no-no-verify',
         '--allow-unrelated-histories',
       ),
     },
@@ -1142,6 +1182,7 @@ const git: CommandSpec = {
         '-s= --strategy=',
         '-X= --strategy-option=',
         '--no-verify',
+        '--verify --no-no-verify',
         '--update-refs',
       ),
     },
@@ -1161,7 +1202,8 @@ const git: CommandSpec = {
         }),
         ...each('pop apply branch', { effects: ['fs:write'] }),
         ...each('drop clear', { effects: ['fs:delete'] }),
-        ...each('list show', {}),
+        list: {},
+        show: { abbreviations: true, options: opts(o('--output=', { role: 'write' })) },
       },
     },
     remote: {
@@ -1193,6 +1235,28 @@ const git: CommandSpec = {
         '--type=',
         '--bool',
         '--int',
+        '--bool-or-int',
+        '--path',
+        '--expiry-date',
+        '--comment=',
+        '--default=',
+        '--value=',
+        o('--blob=', { role: 'read' }),
+        '--url=',
+        '--fixed-value',
+        '--all',
+        '--append',
+        '--regexp',
+        '--get-urlmatch',
+        '--get-color',
+        '--get-colorbool',
+        '--show-origin',
+        '--show-scope',
+        '--name-only',
+        '-z --null',
+        '--includes',
+        '--no-includes',
+        o('-e --edit', { effects: ['exec:arbitrary'] }),
       ),
       finish: finishConfig,
     },
@@ -2630,10 +2694,31 @@ const copy = (all: boolean): CommandSpec => ({
     '-a --archive',
     '-p',
     '--preserve=?',
+    '--no-preserve=',
+    '--sparse=',
+    '--reflink=?',
     '-l --link',
     '-s --symbolic-link',
+    '-d',
+    '-P --no-dereference',
+    '-L --dereference',
+    '-H',
+    '-x --one-file-system',
+    '--parents',
+    '--attributes-only',
+    '--strip-trailing-slashes',
+    '--remove-destination',
+    '--copy-contents',
+    '--debug',
+    '--keep-directory-symlink',
+    '--exchange',
+    '--no-copy',
+    '-Z',
+    '--context=?',
   ),
   finish(parsed) {
+    // An option it doesn't know may have taken the next word, so any of them may be the target.
+    if (parsed.unknownOptions.length > 0) parsed.writes.push(...parsed.positionals);
     const targets = parsed.options['--target-directory'] ? [] : parsed.positionals.slice(-1);
     const sources = parsed.options['--target-directory'] ? parsed.positionals : parsed.positionals.slice(0, -1);
     parsed.writes.push(...targets, ...(all ? sources : []));
@@ -2937,8 +3022,8 @@ const programs: Record<string, CommandSpec> = {
       '-e=? --eof=?',
       '-I=',
       '-i=? --replace=?',
-      '-L= --max-lines=',
-      '-l=?',
+      '-L=',
+      '-l=? --max-lines=?',
       '-n= --max-args=',
       '-P= --max-procs=',
       '-p --interactive',
@@ -2974,7 +3059,7 @@ const programs: Record<string, CommandSpec> = {
     posix: true,
     options: opts(
       '-n= --interval=',
-      '-d --differences=?',
+      '-d=? --differences=?',
       '-t --no-title',
       '-b --beep',
       '-e --errexit',
@@ -4189,18 +4274,10 @@ const programs: Record<string, CommandSpec> = {
     '-n= --iterations=',
     '-f --force',
   ),
-  'mkdir|touch|truncate': writer(
-    'fs:write',
-    '-p --parents',
-    '-m= --mode=',
-    '-v --verbose',
-    '-s= --size=',
-    '-r= --reference=',
-    '-d= --date=',
-    '-t=',
-    '-a',
-    '-c --no-create',
-  ),
+  mkdir: writer('fs:write', '-p --parents', '-m= --mode=', '-v --verbose', '-Z', '--context=?'),
+  // `-m` is the modification time, no mode: the word after it is a file.
+  touch: writer('fs:write', '-a', '-c --no-create', '-d= --date=', '-f', '-h --no-dereference', '-m', '-r= --reference=', '-t=', '--time='),
+  truncate: writer('fs:write', '-c --no-create', '-o --io-blocks', '-r= --reference=', '-s= --size='),
   tee: writer('fs:write', '-a --append', '-i --ignore-interrupts', '-p', '--output-error=?'),
   cp: copy(false),
   mv: copy(true),
@@ -4346,6 +4423,7 @@ const programs: Record<string, CommandSpec> = {
       '--color=',
       '--max-depth= -d=',
       o('--pre=', { effects: ['exec:arbitrary'] }),
+      o('--hostname-bin=', { effects: ['exec:arbitrary'] }),
       '--pre-glob=',
       '-i --ignore-case',
       '-S --smart-case',
