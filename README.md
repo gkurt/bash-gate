@@ -119,7 +119,15 @@ const policy: Policy = {
   the start, so it may match a deny or ask rule's relative glob. Deny and ask rules also match `.git` and `HEAD` in any
   case, and `.git`'s Windows short name `GIT~1`, as a filesystem that ignores case takes them.
 - `effects`: `fs:read`, `fs:write`, `fs:delete`, `network`, `network:read`, `privilege`, `exec:arbitrary`,
-  `exec:project`, `exec:file`, `exec:remote`, `shell-state`. `network:read` only reads, from a host already set up:
+  `exec:project`, `exec:file`, `exec:remote`, `shell-state`, `secrets:read`. `secrets:read` reads what is likely a
+  secret: the environment as a whole (`printenv`, `env` or `export -p` alone, `declare -p`, `set` alone, `ps e`), a
+  file that holds credentials, read, sourced or redirected (`.env` and its variants but templates like
+  `.env.example`, `.envrc`, SSH private keys, `*.pem`, `*.key`, `.netrc`, `.npmrc`, `~/.aws/credentials`,
+  `~/.kube/config`, gcloud and Azure credentials, `*.tfstate`, `/proc/*/environ`), a variable named like one expanded
+  anywhere in a command but `test` (an upper-case name with a word `TOKEN`, `SECRET`, `PASSWORD`, `PASSPHRASE`,
+  `CREDENTIALS` or `APIKEY`, or ending in `KEY`: `$GITHUB_TOKEN`, `$OPENAI_API_KEY`), and what a tool prints of its own
+  (`kubectl get secret -o yaml`, `kubectl config view --raw`, `helm get values`, `terraform output -json`, `terraform
+  state pull`). A file named only by a word known at run time (`cat "$f"`) isn't known to be one. `network:read` only reads, from a host already set up:
   `git fetch` and `git ls-remote` from a remote given by its name (or none), and the `gh` commands that look
   (`gh pr view`, `gh run list`, `gh search`). They have `network` instead once the command line may say where to go:
   a URL or a path, `git -c`, `--git-dir`, `gh -R HOST/OWNER/REPO`, `--web`, an argument only known at run time, or an
@@ -152,7 +160,15 @@ history (`push --force`, `--delete`, `--mirror`, `--prune`). `sed` and `awk` run
 Of the network, `network:read` runs: `git fetch`, `git ls-remote`, and gh's commands that look at pull requests,
 issues, runs, releases, repositories and search. A fetch that forces or deletes local refs asks, and so do `git pull`,
 `git remote add` and `set-url` (they write `.git/config`), `gh api`, and a proxy, `GH_HOST` or `GH_REPO` set on the
-command line (sensitive variables).
+command line (sensitive variables). It asks about reading secrets (`secrets:read`).
+`kubectl` and `helm` run when they only read the cluster and the chart repositories their config already names
+(`kubectl get`, `logs`, `describe`, `diff`, a `--dry-run`, `helm list`, `status`, `template`), and ask when they change
+it (`network`: `apply`, `delete`, `install`, `upgrade`), run something in a container (`exec:remote`: `kubectl exec`,
+`run`, `debug`, `cp`), open an editor, run a plugin (a word they don't know), print a Secret, change the user's
+kubeconfig or helm config, or go to a server, kubeconfig or chart URL of their own. `terraform init`, `validate`,
+`plan`, `fmt` and the state commands that only list run: they run the project's providers and `external` data sources
+as project code (`exec:project`). `apply`, `destroy`, `import`, `test`, the state changes and `login` ask, and so do
+`output -json`, `output NAME`, `show -json`, `state pull`, `state show` and `console`, which print secrets.
 It allows project code (`exec:project`) as it does git hooks: the scripts, tests and builds `npm`, `pnpm`, `bun` and
 `cargo` run (`npm test`, `bun typecheck`, `cargo build`), and the tools those scripts run (`tsc`, `biome`, `oxlint`,
 `oxfmt`, `eslint`, `prettier`, `vitest`, `jest`, `tsdown`, `vite`), unless they also install, publish, delete, write
@@ -365,7 +381,12 @@ bun run checks   # tsc, then bun test
 - **`network:read` trusts the remote.** A fetch goes where the repository's config says, and tells that host which
   refs it asked for and which commits it has; gh's reads send their arguments (a search, a branch name) to the host gh
   is signed in to. Neither sends file contents, but both are a way to pass a few words to a host that was set up
-  before the command ran.
+  before the command ran. So are kubectl's and helm's reads, and `terraform plan`, whose providers and data sources
+  call whatever the project's configuration names, with the user's credentials.
+- **`secrets:read` is known by name.** A file is a secret by its name or where it is, and a variable by its name: a
+  secret in `config.json`, in a variable named `DB_URL`, or read through a word only known at run time (`cat "$f"`)
+  isn't one. A kubeconfig's and terraform's own credentials are used, not read, by the commands that reach a cluster
+  or a provider.
 - **What a specified program writes is what its spec says.** With `fs`, a file is unknown once a redirection, a spec's
   write, a work tree git rewrites, or a program that may write anything may have reached it. A program whose spec
   names some of its writes but misses others can still change a hook or put a symlink in place before a later command

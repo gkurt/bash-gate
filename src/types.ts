@@ -20,7 +20,10 @@ export type Arg =
  * - `exec:project` runs code the project defines (package scripts, Makefiles, git hooks);
  * - `exec:file` runs a script or program file that isn't a system program;
  * - `exec:remote` runs a command on another machine;
- * - `shell-state` changes how later commands resolve (`PATH`, `hash -p`, `enable`).
+ * - `shell-state` changes how later commands resolve (`PATH`, `hash -p`, `enable`);
+ * - `secrets:read` reads what is likely a secret: the environment as a whole (`printenv`, `env`, `export -p`), a file
+ *   that holds credentials (`.env`, `~/.ssh/id_*`, `~/.aws/credentials`, `*.pem`), a variable named like one
+ *   (`$GITHUB_TOKEN`), or a tool's own (`kubectl get secret -o yaml`, `terraform output -json`).
  */
 export type Effect =
   | 'fs:read'
@@ -33,7 +36,8 @@ export type Effect =
   | 'exec:project'
   | 'exec:file'
   | 'exec:remote'
-  | 'shell-state';
+  | 'shell-state'
+  | 'secrets:read';
 
 export interface Invocation {
   /** The program as it resolves (the file's name when given as a path), or `null` when the command word is dynamic. */

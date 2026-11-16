@@ -41,6 +41,10 @@ export const recommended: Policy = {
     allow('npm|pnpm|bun|cargo|tsc|tsgo|biome|oxlint|oxfmt|eslint|prettier|vitest|jest|tsdown|vite', {
       effects: ['exec:project', 'fs:read', 'fs:write', 'network:read'],
     }),
+    // What kubectl and helm read from the cluster and repositories already set up, and terraform's init, validate and
+    // plan, which run the project's providers. What changes a cluster or infrastructure has `network`, and what runs in a
+    // container `exec:remote`.
+    allow('kubectl|helm|terraform', { effects: ['network:read', 'fs:read', 'fs:write', 'exec:project'] }),
     // Only those of gh's commands that read: the others in these groups have `network`.
     allow('gh pr|issue|run|workflow|release|repo|search|label|cache|ruleset|discussion|project|org|status', {
       effects: ['network:read'],
@@ -52,6 +56,7 @@ export const recommended: Policy = {
     }),
     deny('rm', { options: ['--no-preserve-root'], reason: 'Lets rm delete /' }),
     ask({ effects: ['exec:arbitrary', 'exec:file', 'exec:remote', 'privilege', 'network', 'fs:delete'] }),
+    ask({ effects: ['secrets:read'], reason: 'Reads secrets: the environment, a credentials file or a variable named like one' }),
     // Relative globs match from where the script starts, so `..` is anything outside it, `~` included. A path that can't
     // be placed against the start (no absolute `cwd`, or `~` with no `HOME`) may be outside it. Home itself isn't
     // named: most projects are in it.

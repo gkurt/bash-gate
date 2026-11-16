@@ -148,7 +148,12 @@ execs kill the process, and so does any x32 system call.
   `awk` are on the recommended allowlist, so how their scripts are read is trusted too: a sed script only in the
   forms every sed reads alike, an awk program by the tokens it can't run a command or write a file without. So is
   `network:read`, which the recommended policy doesn't ask about: that `git fetch`, `git ls-remote` and gh's reading
-  commands, given no URL, host or config of their own, call only the hosts the repository and gh were set up with. Where GNU
+  commands, given no URL, host or config of their own, call only the hosts the repository and gh were set up with, and
+  that kubectl's and helm's reading commands, given no server, kubeconfig or chart URL of their own, reach only the
+  cluster and repositories their config names. Checked against kubectl 1.35, Helm 3 and 4, and terraform 1.17 docs:
+  which of their commands only read, which change a cluster or infrastructure, which run a plugin, and which print
+  secrets (`secrets:read`). Which files and variables hold secrets is a list of names: one named otherwise isn't
+  known to be one. Where GNU
   coreutils and uutils (Ubuntu's since 25.10) read a wrapper's arguments differently, the command it runs is unknown,
   or, where each reading is known, both are walked (`env -- X=1 - cmd`).
   For npm, pnpm and bun, the specs say which of their own commands beat a script of the same name, which words they

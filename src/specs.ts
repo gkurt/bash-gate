@@ -2660,6 +2660,1244 @@ const gh: CommandSpec = {
   finish: finishGh,
 };
 
+/** Output formats that print an object's data, a Secret's included: every one but the tables and `-o name`. */
+const showsData =
+  /^(yaml|json|jsonpath|jsonpath-as-json|jsonpath-file|go-template|go-template-file|template|templatefile|custom-columns|custom-columns-file|kyaml)\b/;
+
+/** Whether the resources a kubectl command names may include Secrets: by name, by file, or only known at run time. */
+function maySecrets(parsed: Parsed): boolean {
+  if (parsed.maybeOptions || parsed.unknownOptions.length > 0) return true;
+  if (parsed.options['--filename'] || parsed.options['--kustomize']) return true;
+  return parsed.positionals.some(
+    (arg) => arg.kind === 'dynamic' || arg.value.split(',').some((name) => /^secrets?($|[./])/i.test(name.trim())),
+  );
+}
+
+/**
+ * kubectl: what it reads from the cluster its kubeconfig names is `network:read`, what it changes there `network`, and
+ * what it runs in a container `exec:remote`. A word it doesn't know runs a `kubectl-<word>` plugin from PATH, or a
+ * kuberc alias. Printing a Secret's data is `secrets:read`.
+ */
+function finishKubectl(parsed: Parsed): void {
+  const path = parsed.subcommands.join(' ');
+  if (parsed.unknownSubcommand && (path === '' || path === 'create')) parsed.effects.add('exec:arbitrary');
+  // A dry run sends nothing to change (`client`), or only asks the server what it would do (`server`). What it reads
+  // from a URL it still fetches.
+  const dryRun = parsed.options['--dry-run']?.at(-1);
+  const dry = dryRun !== undefined && dryRun !== true && dryRun.kind === 'static' && /^(client|server)$/.test(dryRun.value);
+  if (dry && !parsed.effects.has('exec:remote') && parsed.effects.delete('network')) parsed.effects.add('network:read');
+  for (const value of [...(parsed.options['--filename'] ?? []), ...(parsed.options['--kustomize'] ?? [])])
+    if (value === true || value.kind === 'dynamic' || /^[a-z][a-z0-9+.-]*:\/\//i.test(value.value)) parsed.effects.add('network');
+  const output = parsed.options['--output']?.at(-1);
+  const shows =
+    parsed.options['--template'] !== undefined ||
+    (output !== undefined && (output === true || output.kind === 'dynamic' || showsData.test(output.value)));
+  const raw = parsed.options['--raw']?.at(-1);
+  if (path === 'get' && raw !== undefined && (raw === true || raw.kind === 'dynamic' || /secrets/i.test(raw.value)))
+    parsed.effects.add('secrets:read');
+  if (path === 'get' && shows && maySecrets(parsed)) parsed.effects.add('secrets:read');
+  if (path === 'apply view-last-applied' && maySecrets(parsed)) parsed.effects.add('secrets:read');
+  if (path === 'config view' && (parsed.options['--raw'] || parsed.maybeOptions)) parsed.effects.add('secrets:read');
+  if (path === 'diff' && parsed.options['--show-secrets']) parsed.effects.add('secrets:read');
+  // The kubeconfig and kuberc it changes, where it reads them.
+  const configFile = (option: string, fallback: string) => {
+    const given = parsed.options[option]?.at(-1);
+    parsed.writes.push(given === undefined || given === true ? { kind: 'static', value: fallback } : given);
+  };
+  if (path.startsWith('config ') && parsed.effects.has('fs:write')) configFile('--kubeconfig', '~/.kube/config');
+  if (path === 'kuberc set') configFile('--kuberc', '~/.kube/kuberc');
+  // A server, proxy or kubeconfig of its own is a host not set up.
+  const elsewhere = [
+    '--server',
+    '--proxy-url',
+    '--kubeconfig',
+    '--insecure-skip-tls-verify',
+    '--certificate-authority',
+    '--tls-server-name',
+  ];
+  if (parsed.effects.has('network:read') && elsewhere.some((name) => parsed.options[name])) parsed.effects.add('network');
+}
+
+const kubeFiles = opts(o('-f= --filename=', { role: 'read' }), '-R --recursive', o('-k= --kustomize=', { role: 'read' }));
+const kubeSelect = opts('-l= --selector=', '--field-selector=', '-A --all-namespaces', '--all');
+const kubeOutput = opts(
+  '-o= --output=',
+  o('--template=', { role: 'read' }),
+  '--allow-missing-template-keys',
+  '--show-managed-fields',
+  '--no-headers',
+  '--show-labels',
+  '--show-kind',
+  '-L= --label-columns=',
+  '--sort-by=',
+);
+const kubeChange = opts(
+  '--dry-run=?',
+  '--field-manager=',
+  '--validate=?',
+  '--server-side',
+  '--force-conflicts',
+  '--save-config',
+  '--record',
+  '--overwrite',
+);
+/** Opens `KUBE_EDITOR`, `EDITOR` or `vi` on the objects: a program that reads commands from the script's input. */
+const kubeEdit = {
+  effects: ['network', 'exec:arbitrary'] as Effect[],
+  options: [...kubeFiles, ...kubeOutput, ...kubeChange, ...opts('--windows-line-endings', '--subresource=')],
+};
+const kubeRemote = opts('-c= --container=', '-i --stdin', '-t --tty', '-q --quiet', '--pod-running-timeout=');
+
+const kubectl: CommandSpec = {
+  ...persistent({
+    options: opts(
+      '--as=',
+      '--as-group=',
+      '--as-uid=',
+      '--as-user-extra=',
+      o('--cache-dir=', { role: 'write' }),
+      o('--certificate-authority=', { role: 'read' }),
+      o('--client-certificate=', { role: 'read' }),
+      o('--client-key=', { role: 'read' }),
+      '--cluster=',
+      '--context=',
+      '--disable-compression',
+      '--insecure-skip-tls-verify',
+      // A kubeconfig's users may run a credential plugin; a kuberc's aliases and defaults change what commands do.
+      o('--kubeconfig=', { role: 'read', effects: ['exec:file'] }),
+      o('--kuberc=', { role: 'read', effects: ['exec:file'] }),
+      '--match-server-version',
+      '-n= --namespace=',
+      '--password=',
+      '--profile=',
+      o('--profile-output=', { role: 'write' }),
+      '--proxy-url=',
+      '--request-timeout=',
+      '-s= --server=',
+      '--tls-server-name=',
+      '--token=',
+      '--user=',
+      '--username=',
+      '--version=?',
+      '--warnings-as-errors',
+      '-v= --v=',
+      '--vmodule=',
+      '-h --help',
+    ),
+    subcommands: {
+      alpha: { effects: ['network'] },
+      annotate: {
+        effects: ['network'],
+        options: [...kubeFiles, ...kubeSelect, ...kubeOutput, ...kubeChange, ...opts('--local', '--resource-version=', '--list')],
+      },
+      'api-resources': {
+        effects: ['network:read'],
+        options: opts(
+          '--api-group=',
+          '--cached',
+          '--categories=',
+          '--namespaced=?',
+          '--no-headers',
+          '-o= --output=',
+          '--sort-by=',
+          '--verbs=',
+        ),
+      },
+      'api-versions': { effects: ['network:read'] },
+      apply: {
+        effects: ['network'],
+        options: [
+          ...kubeFiles,
+          ...kubeSelect,
+          ...kubeOutput,
+          ...kubeChange,
+          ...opts(
+            '--prune',
+            '--prune-allowlist=',
+            '--force',
+            '--grace-period=',
+            '--cascade=?',
+            '--wait',
+            '--timeout=',
+            '--overwrite',
+            '--openapi-patch',
+            '--applyset=',
+          ),
+        ],
+        subcommands: {
+          'edit-last-applied': kubeEdit,
+          'set-last-applied': {
+            effects: ['network'],
+            options: [...kubeFiles, ...kubeOutput, ...opts('--create-annotation', '--dry-run=?')],
+          },
+          'view-last-applied': { effects: ['network:read'], options: [...kubeFiles, ...kubeSelect, ...opts('-o= --output=')] },
+        },
+      },
+      attach: { effects: ['exec:remote', 'network'], options: kubeRemote },
+      auth: {
+        subcommands: {
+          'can-i': {
+            effects: ['network:read'],
+            options: opts('-A --all-namespaces', '--list', '--no-headers', '-q --quiet', '--subresource='),
+          },
+          reconcile: {
+            effects: ['network'],
+            options: [...kubeFiles, ...kubeOutput, ...opts('--dry-run=?', '--remove-extra-permissions', '--remove-extra-subjects')],
+          },
+          whoami: { effects: ['network:read'], options: opts('-o= --output=') },
+        },
+      },
+      autoscale: {
+        effects: ['network'],
+        options: [
+          ...kubeFiles,
+          ...kubeOutput,
+          ...kubeChange,
+          ...opts('--cpu=', '--cpu-percent=', '--memory=', '--max=', '--min=', '--name='),
+        ],
+      },
+      certificate: {
+        effects: ['network'],
+        subcommands: each('approve deny', { options: [...kubeFiles, ...kubeOutput, ...opts('--force')] }),
+      },
+      'cluster-info': {
+        effects: ['network:read'],
+        subcommands: {
+          dump: {
+            options: [
+              ...kubeOutput,
+              ...opts('-A --all-namespaces', '--namespaces=', o('--output-directory=', { role: 'write' }), '--pod-running-timeout='),
+            ],
+          },
+        },
+      },
+      completion: {},
+      config: {
+        options: opts(o('--kubeconfig=', { role: 'read' })),
+        subcommands: {
+          ...each('current-context get-clusters get-contexts get-users', { options: opts('--no-headers', '-o= --output=') }),
+          view: { options: [...kubeOutput, ...opts('--flatten', '--merge=?', '--minify', '--raw')] },
+          ...each('delete-cluster delete-context delete-user rename-context set set-cluster set-context unset use-context|use', {
+            effects: ['fs:write'],
+            options: opts(
+              '--set-raw-bytes=?',
+              '--current',
+              '--namespace=',
+              '--cluster=',
+              '--user=',
+              '--embed-certs',
+              o('--certificate-authority=', { role: 'read' }),
+              '--server=',
+              '--tls-server-name=',
+              '--insecure-skip-tls-verify',
+              '--proxy-url=',
+            ),
+          }),
+          // A user's exec plugin runs on every later command that reaches the cluster.
+          'set-credentials': {
+            effects: ['fs:write'],
+            options: opts(
+              '--auth-provider=',
+              '--auth-provider-arg=',
+              o('--client-certificate=', { role: 'read' }),
+              o('--client-key=', { role: 'read' }),
+              '--embed-certs',
+              '--exec-api-version=',
+              '--exec-arg=',
+              '--exec-command=',
+              '--exec-env=',
+              '--exec-interactive-mode=',
+              '--exec-provide-cluster-info',
+              '--password=',
+              '--token=',
+              '--username=',
+            ),
+          },
+        },
+      },
+      cordon: { effects: ['network'], options: [...kubeSelect, ...opts('--dry-run=?')] },
+      cp: { effects: ['exec:remote', 'network', 'fs:read', 'fs:write'], options: opts('-c= --container=', '--no-preserve', '--retries=') },
+      create: {
+        effects: ['network'],
+        options: [
+          ...kubeFiles,
+          ...kubeOutput,
+          ...kubeChange,
+          ...opts('--raw=', '--windows-line-endings'),
+          o('--edit', { effects: ['exec:arbitrary'] }),
+        ],
+        subcommands: {
+          ...each(
+            'clusterrole clusterrolebinding configmap|cm cronjob|cj deployment|deploy ingress|ing job namespace|ns poddisruptionbudget|pdb priorityclass|pc quota|resourcequota role rolebinding serviceaccount|sa',
+            {
+              options: [
+                ...kubeOutput,
+                ...kubeChange,
+                ...opts(
+                  o('--from-file=', { role: 'read' }),
+                  o('--from-env-file=', { role: 'read' }),
+                  '--from-literal=',
+                  '--image=',
+                  '--replicas=',
+                  '--port=',
+                  '--schedule=',
+                  '--restart=',
+                  '--clusterrole=',
+                  '--role=',
+                  '--serviceaccount=',
+                  '--user=',
+                  '--group=',
+                  '--verb=',
+                  '--resource=',
+                  '--rule=',
+                  '--class=',
+                  '--default-backend=',
+                  '--annotation=',
+                  '--hard=',
+                  '--scopes=',
+                  '--selector=',
+                  '--min-available=',
+                  '--max-unavailable=',
+                  '--value=',
+                  '--global-default',
+                  '--description=',
+                  '--preemption-policy=',
+                  '--aggregation-rule=',
+                  '--non-resource-url=',
+                  '--resource-name=',
+                  '--append-hash',
+                ),
+              ],
+            },
+          ),
+          secret: {
+            subcommands: {
+              ...each('generic docker-registry tls', {
+                options: [
+                  ...kubeOutput,
+                  ...kubeChange,
+                  ...opts(
+                    o('--from-file=', { role: 'read' }),
+                    o('--from-env-file=', { role: 'read' }),
+                    '--from-literal=',
+                    '--type=',
+                    '--append-hash',
+                    o('--cert=', { role: 'read' }),
+                    o('--key=', { role: 'read' }),
+                    '--docker-server=',
+                    '--docker-username=',
+                    '--docker-password=',
+                    '--docker-email=',
+                  ),
+                ],
+              }),
+            },
+          },
+          'service|svc': {
+            subcommands: each('clusterip externalname loadbalancer nodeport', {
+              options: [...kubeOutput, ...kubeChange, ...opts('--tcp=', '--node-port=', '--clusterip=', '--external-name=')],
+            }),
+          },
+          // Prints a token it has the cluster issue.
+          token: {
+            effects: ['secrets:read'],
+            options: [
+              ...kubeOutput,
+              ...opts('--audience=', '--bound-object-kind=', '--bound-object-name=', '--bound-object-uid=', '--duration='),
+            ],
+          },
+        },
+      },
+      debug: {
+        effects: ['exec:remote', 'network'],
+        options: [
+          ...kubeRemote,
+          ...kubeFiles,
+          ...kubeOutput,
+          ...opts(
+            '--arguments-only',
+            '--attach=?',
+            '--copy-to=',
+            o('--custom=', { role: 'read' }),
+            '--env=',
+            '--image=',
+            '--image-pull-policy=',
+            '--keep-annotations',
+            '--keep-init-containers=?',
+            '--keep-labels',
+            '--keep-liveness',
+            '--keep-readiness',
+            '--keep-startup',
+            '--profile=',
+            '--replace',
+            '--same-node',
+            '--set-image=',
+            '--share-processes=?',
+            '--target=',
+          ),
+        ],
+      },
+      delete: {
+        effects: ['network', 'fs:delete'],
+        options: [
+          ...kubeFiles,
+          ...kubeSelect,
+          ...kubeOutput,
+          ...opts(
+            '--cascade=?',
+            '--dry-run=?',
+            '--force',
+            '--grace-period=',
+            '--ignore-not-found',
+            '-i --interactive',
+            '--now',
+            '--raw=',
+            '--timeout=',
+            '--wait',
+          ),
+        ],
+      },
+      describe: { effects: ['network:read'], options: [...kubeFiles, ...kubeSelect, ...opts('--chunk-size=', '--show-events=?')] },
+      diff: {
+        effects: ['network:read'],
+        options: [
+          ...kubeFiles,
+          ...kubeSelect,
+          ...opts(
+            '--concurrency=',
+            '--field-manager=',
+            '--force-conflicts',
+            '--prune',
+            '--prune-allowlist=',
+            '--server-side',
+            '--show-managed-fields',
+            '--show-secrets',
+          ),
+        ],
+      },
+      drain: {
+        effects: ['network'],
+        options: [
+          ...kubeSelect,
+          ...opts(
+            '--chunk-size=',
+            '--delete-emptydir-data',
+            '--disable-eviction',
+            '--dry-run=?',
+            '--force',
+            '--grace-period=',
+            '--ignore-daemonsets',
+            '--pod-selector=',
+            '--skip-wait-for-delete-timeout=',
+            '--timeout=',
+          ),
+        ],
+      },
+      edit: kubeEdit,
+      events: {
+        effects: ['network:read'],
+        options: [...kubeOutput, ...opts('-A --all-namespaces', '--chunk-size=', '--for=', '--no-headers', '--types=', '-w --watch')],
+      },
+      exec: { effects: ['exec:remote', 'network'], options: [...kubeRemote, ...kubeFiles] },
+      explain: { effects: ['network:read'], options: opts('--api-version=', '-o= --output=', '--recursive') },
+      expose: {
+        effects: ['network'],
+        options: [
+          ...kubeFiles,
+          ...kubeOutput,
+          ...kubeChange,
+          ...opts(
+            '--cluster-ip=',
+            '--external-ip=',
+            '--labels=',
+            '--load-balancer-ip=',
+            '--name=',
+            '--override-type=',
+            '--overrides=',
+            '--port=',
+            '--protocol=',
+            '--selector=',
+            '--session-affinity=',
+            '--target-port=',
+            '--type=',
+          ),
+        ],
+      },
+      get: {
+        effects: ['network:read'],
+        options: [
+          ...kubeFiles,
+          ...kubeSelect,
+          ...kubeOutput,
+          ...opts(
+            '--chunk-size=',
+            '--ignore-not-found',
+            '--output-watch-events',
+            '--raw=',
+            '--server-print',
+            '--subresource=',
+            '-w --watch',
+            '--watch-only',
+          ),
+        ],
+      },
+      help: {},
+      kuberc: {
+        subcommands: {
+          set: {
+            effects: ['fs:write'],
+            options: opts('--section=', '--command=', '--option=', '--name=', '--prependarg=', '--appendarg=', '--overwrite'),
+          },
+          view: { options: opts('-o= --output=') },
+        },
+      },
+      // Runs plugins and helm only when told to; a remote base or resource is fetched.
+      kustomize: {
+        positionals: 'read',
+        options: opts(
+          o('--enable-alpha-plugins', { effects: ['exec:arbitrary'] }),
+          o('--enable-helm', { effects: ['exec:arbitrary'] }),
+          o('--helm-command=', { effects: ['exec:arbitrary'] }),
+          '--as-current-user',
+          '--env=',
+          '-e',
+          '--load-restrictor=',
+          '--mount=',
+          '--network',
+          '--network-name=',
+          o('-o= --output=', { role: 'write' }),
+          '--reorder=',
+        ),
+        finish(parsed) {
+          if (parsed.positionals.some((arg) => arg.kind === 'dynamic' || /:\/\/|^git@|\.git($|\/)|\?ref=/.test(arg.value)))
+            parsed.effects.add('network');
+        },
+      },
+      label: {
+        effects: ['network'],
+        options: [...kubeFiles, ...kubeSelect, ...kubeOutput, ...kubeChange, ...opts('--local', '--resource-version=', '--list')],
+      },
+      logs: {
+        effects: ['network:read'],
+        options: opts(
+          '-c= --container=',
+          '--all-containers',
+          '--all-pods',
+          '-f --follow',
+          '--ignore-errors',
+          '--insecure-skip-tls-verify-backend',
+          '--limit-bytes=',
+          '--max-log-requests=',
+          '--pod-running-timeout=',
+          '--prefix',
+          '-p --previous',
+          '-l= --selector=',
+          '--since=',
+          '--since-time=',
+          '--tail=',
+          '--timestamps',
+        ),
+      },
+      options: {},
+      patch: {
+        effects: ['network'],
+        options: [
+          ...kubeFiles,
+          ...kubeOutput,
+          ...kubeChange,
+          ...opts('--local', '-p= --patch=', o('--patch-file=', { role: 'read' }), '--subresource=', '--type='),
+        ],
+      },
+      plugin: { subcommands: { list: { options: opts('--name-only') } } },
+      'port-forward': { effects: ['network'], options: opts('--address=', '--pod-running-timeout=') },
+      proxy: {
+        effects: ['network'],
+        options: opts(
+          '--accept-hosts=',
+          '--accept-paths=',
+          '--address=',
+          '--api-prefix=',
+          '--append-server-path',
+          '--disable-filter',
+          '--keepalive=',
+          '-p= --port=',
+          '--reject-methods=',
+          '--reject-paths=',
+          o('-u= --unix-socket=', { role: 'write' }),
+          o('-w= --www=', { role: 'read' }),
+          '-P= --www-prefix=',
+        ),
+      },
+      replace: {
+        effects: ['network'],
+        options: [
+          ...kubeFiles,
+          ...kubeOutput,
+          ...kubeChange,
+          ...opts('--cascade=?', '--force', '--grace-period=', '--raw=', '--subresource=', '--timeout=', '--wait'),
+        ],
+      },
+      rollout: {
+        options: [...kubeFiles, ...kubeSelect, ...kubeOutput],
+        subcommands: {
+          ...each('history status', { effects: ['network:read'], options: opts('--revision=', '--timeout=', '-w --watch') }),
+          ...each('pause restart resume undo', {
+            effects: ['network'],
+            options: opts('--dry-run=?', '--field-manager=', '--to-revision='),
+          }),
+        },
+      },
+      run: {
+        effects: ['exec:remote', 'network'],
+        options: [
+          ...kubeRemote,
+          ...kubeOutput,
+          ...kubeChange,
+          ...opts(
+            '--annotations=',
+            '--attach',
+            '--command',
+            '--env=',
+            '--expose',
+            '--image=',
+            '--image-pull-policy=',
+            '-l= --labels=',
+            '--leave-stdin-open',
+            '--override-type=',
+            '--overrides=',
+            '--port=',
+            '--privileged',
+            '--restart=',
+            '--rm',
+            '--timeout=',
+          ),
+        ],
+      },
+      scale: {
+        effects: ['network'],
+        options: [
+          ...kubeFiles,
+          ...kubeSelect,
+          ...kubeOutput,
+          ...opts('--current-replicas=', '--dry-run=?', '--replicas=', '--resource-version=', '--timeout='),
+        ],
+      },
+      set: {
+        effects: ['network'],
+        options: [
+          ...kubeFiles,
+          ...kubeSelect,
+          ...kubeOutput,
+          ...kubeChange,
+          ...opts(
+            '--local',
+            '-c= --containers=',
+            '-e= --env=',
+            o('--from=', {}),
+            '--keys=',
+            '--list',
+            '--prefix=',
+            '--resolve',
+            '--limits=',
+            '--requests=',
+            '--group=',
+            '--serviceaccount=',
+            '--user=',
+          ),
+        ],
+        subcommands: each('env image resources selector serviceaccount|sa subject', {}),
+      },
+      taint: { effects: ['network'], options: [...kubeSelect, ...kubeOutput, ...kubeChange] },
+      top: {
+        effects: ['network:read'],
+        subcommands: each('node|nodes|no pod|pods|po', {
+          options: opts(
+            '-A --all-namespaces',
+            '--containers',
+            '--no-headers',
+            '-l= --selector=',
+            '--sort-by=',
+            '--show-capacity',
+            '--sum',
+            '--use-protocol-buffers',
+          ),
+        }),
+      },
+      uncordon: { effects: ['network'], options: [...kubeSelect, ...opts('--dry-run=?')] },
+      version: { options: opts('--client', '-o= --output=') },
+      wait: { effects: ['network:read'], options: [...kubeFiles, ...kubeSelect, ...opts('--for=', '--timeout=')] },
+    },
+  }),
+  parse: (args, parsed) => readCobra(kubectl, args, parsed),
+  finish(parsed) {
+    if (parsed.subcommands[0] === 'version' && !parsed.options['--client']) parsed.effects.add('network:read');
+    finishKubectl(parsed);
+  },
+};
+
+/**
+ * helm: a chart named by repository is fetched from one set up (`network:read`), one by URL from anywhere (`network`),
+ * and one by any other scheme through a getter plugin. Installing, upgrading and removing releases change the cluster.
+ * A word it doesn't know runs a plugin.
+ */
+function finishHelm(parsed: Parsed): void {
+  const path = parsed.subcommands.join(' ');
+  if (parsed.subcommands.length === 0 && parsed.unknownSubcommand) parsed.effects.add('exec:arbitrary');
+  const chartCommands = /^(install|upgrade|template|show \w+|pull|lint|package|dependency (build|update))$/;
+  if (chartCommands.test(path)) {
+    for (const arg of parsed.positionals) {
+      if (arg.kind === 'dynamic') parsed.effects.add('network').add('exec:arbitrary');
+      else if (/^(https?|oci):\/\//i.test(arg.value)) parsed.effects.add('network');
+      else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(arg.value)) parsed.effects.add('exec:arbitrary').add('network');
+    }
+  }
+  for (const value of [...(parsed.options['--values'] ?? []), ...(parsed.options['--repo'] ?? [])])
+    if (value === true || value.kind === 'dynamic' || /^[a-z][a-z0-9+.-]*:\/\//i.test(value.value)) parsed.effects.add('network');
+  for (const value of parsed.options['--set-file'] ?? []) {
+    if (value === true) continue;
+    if (value.kind === 'dynamic') parsed.reads.push(value);
+    else for (const pair of value.value.split(',')) parsed.reads.push({ kind: 'static', value: pair.slice(pair.indexOf('=') + 1) });
+  }
+  // The repositories, registry logins and plugins it keeps in the user's configuration.
+  const configFile = (option: string | undefined, fallback: string) => {
+    const given = option === undefined ? undefined : parsed.options[option]?.at(-1);
+    parsed.writes.push(given === undefined || given === true ? { kind: 'static', value: fallback } : given);
+  };
+  if (/^repo (add|remove)$/.test(path)) configFile('--repository-config', '~/.config/helm/repositories.yaml');
+  if (/^registry (login|logout)$/.test(path)) configFile('--registry-config', '~/.config/helm/registry/config.json');
+  if (/^plugin (install|uninstall|update)$/.test(path)) configFile(undefined, '~/.local/share/helm/plugins');
+  const dryRun = parsed.options['--dry-run']?.at(-1);
+  const dry = dryRun !== undefined && !(dryRun !== true && dryRun.kind === 'static' && dryRun.value === 'none');
+  if (dry && /^(install|upgrade|uninstall|rollback)$/.test(path) && parsed.effects.delete('network')) parsed.effects.add('network:read');
+  const elsewhere = ['--kube-apiserver', '--kubeconfig', '--kube-insecure-skip-tls-verify', '--kube-ca-file', '--kube-tls-server-name'];
+  if (parsed.effects.has('network:read') && elsewhere.some((name) => parsed.options[name])) parsed.effects.add('network');
+}
+
+const helmChart = opts(
+  o('-f= --values=', { role: 'read' }),
+  '--set=',
+  '--set-string=',
+  '--set-json=',
+  '--set-literal=',
+  '--set-file=',
+  '--version=',
+  '--devel',
+  '--repo=',
+  '--username=',
+  '--password=',
+  '--pass-credentials',
+  o('--ca-file=', { role: 'read' }),
+  o('--cert-file=', { role: 'read' }),
+  o('--key-file=', { role: 'read' }),
+  o('--keyring=', { role: 'read' }),
+  '--verify',
+  '--insecure-skip-tls-verify',
+  '--plain-http',
+  '--dependency-update',
+);
+const helmRelease = opts(
+  '--atomic',
+  '--rollback-on-failure',
+  '--create-namespace',
+  '--description=',
+  '--disable-openapi-validation',
+  '--dry-run=?',
+  '--enable-dns',
+  '--force',
+  '--force-replace',
+  '--force-conflicts',
+  '--generate-name',
+  '-g',
+  '--hide-notes',
+  '--hide-secret',
+  '--labels=',
+  '--name-template=',
+  '--no-hooks',
+  '-o= --output=',
+  // Helm 3 runs the program it's given; Helm 4 the post-renderer plugin of that name.
+  o('--post-renderer=', { effects: ['exec:arbitrary'] }),
+  '--post-renderer-args=',
+  '--render-subchart-notes',
+  '--replace',
+  '--reset-values',
+  '--reuse-values',
+  '--reset-then-reuse-values',
+  '--server-side=?',
+  '--skip-crds',
+  '--skip-schema-validation',
+  '--take-ownership',
+  '--timeout=',
+  '--wait=?',
+  '--wait-for-jobs',
+  '--max-history=',
+  '-i --install',
+  '--cleanup-on-fail',
+  '--history-max=',
+);
+
+const helm: CommandSpec = {
+  ...persistent({
+    options: opts(
+      '--burst-limit=',
+      '--color= --colour=',
+      o('--content-cache=', { role: 'write' }),
+      '--debug',
+      '-h --help',
+      '--kube-apiserver=',
+      '--kube-as-group=',
+      '--kube-as-user=',
+      o('--kube-ca-file=', { role: 'read' }),
+      '--kube-context=',
+      '--kube-insecure-skip-tls-verify',
+      '--kube-tls-server-name=',
+      '--kube-token=',
+      o('--kubeconfig=', { role: 'read', effects: ['exec:file'] }),
+      '-n= --namespace=',
+      '--qps=',
+      // Names the credential helpers registries are reached through.
+      o('--registry-config=', { role: 'read', effects: ['exec:file'] }),
+      o('--repository-cache=', { role: 'write' }),
+      o('--repository-config=', { role: 'read' }),
+    ),
+    subcommands: {
+      completion: {},
+      create: { effects: ['fs:write'], positionals: 'write', options: opts(o('-p= --starter=', { role: 'read' })) },
+      'dependency|dep|dependencies': {
+        subcommands: {
+          ...each('build update|up', { effects: ['network:read', 'fs:write'], options: [...helmChart, ...opts('--skip-refresh')] }),
+          'list|ls': { options: opts('--max-col-width=') },
+        },
+      },
+      // Prints HELM_KUBETOKEN.
+      env: { effects: ['secrets:read'] },
+      get: {
+        effects: ['network:read'],
+        options: opts('--revision=', '-o= --output=', '--template='),
+        subcommands: {
+          ...each('all hooks manifest', { effects: ['secrets:read'] }),
+          values: { effects: ['secrets:read'], options: opts('-a --all') },
+          ...each('metadata notes', {}),
+        },
+      },
+      help: {},
+      'history|hist': { effects: ['network:read'], options: opts('--max=', '-o= --output=') },
+      install: { effects: ['network'], options: [...helmChart, ...helmRelease] },
+      lint: {
+        positionals: 'read',
+        options: [...helmChart, ...opts('--quiet', '--strict', '--with-subcharts', '--kube-version=', '--skip-schema-validation')],
+      },
+      'list|ls': {
+        effects: ['network:read'],
+        options: opts(
+          '-a --all',
+          '-A --all-namespaces',
+          '-d --date',
+          '--deployed',
+          '--failed',
+          '-f= --filter=',
+          '-m= --max=',
+          '--no-headers',
+          '--offset=',
+          '-o= --output=',
+          '--pending',
+          '-r --reverse',
+          '-l= --selector=',
+          '-q --short',
+          '--superseded',
+          '--time-format=',
+          '--uninstalled',
+          '--uninstalling',
+        ),
+      },
+      package: {
+        effects: ['fs:write'],
+        positionals: 'read',
+        options: [
+          ...helmChart,
+          ...opts(
+            '--app-version=',
+            o('-d= --destination=', { role: 'write' }),
+            o('--key=', {}),
+            o('--passphrase-file=', { role: 'read' }),
+            '--sign',
+            '-u',
+          ),
+        ],
+      },
+      plugin: {
+        subcommands: {
+          // A plugin's install, update and delete hooks run as it's installed, updated or removed.
+          'install|add': {
+            effects: ['network', 'exec:arbitrary', 'fs:write'],
+            options: opts(
+              '--version=',
+              '--verify=?',
+              o('--keyring=', { role: 'read' }),
+              '--insecure-skip-tls-verify',
+              '--plain-http',
+              '--username=',
+              '--password=',
+              o('--ca-file=', { role: 'read' }),
+              o('--cert-file=', { role: 'read' }),
+              o('--key-file=', { role: 'read' }),
+            ),
+          },
+          'list|ls': {},
+          'uninstall|rm|remove': { effects: ['exec:arbitrary', 'fs:write'] },
+          'update|up': { effects: ['network', 'exec:arbitrary', 'fs:write'] },
+          package: {
+            effects: ['fs:write'],
+            options: opts(
+              o('-d= --destination=', { role: 'write' }),
+              '--sign',
+              o('--key=', {}),
+              o('--keyring=', { role: 'read' }),
+              o('--passphrase-file=', { role: 'read' }),
+            ),
+          },
+          verify: { options: opts(o('--keyring=', { role: 'read' })) },
+        },
+      },
+      'pull|fetch': {
+        effects: ['network:read', 'fs:write'],
+        options: [
+          ...helmChart,
+          ...opts(o('-d= --destination=', { role: 'write' }), '--prov', '--untar', o('--untardir=', { role: 'write' })),
+        ],
+      },
+      push: {
+        effects: ['network'],
+        positionals: 'read',
+        options: opts(
+          o('--ca-file=', { role: 'read' }),
+          o('--cert-file=', { role: 'read' }),
+          o('--key-file=', { role: 'read' }),
+          '--insecure-skip-tls-verify',
+          '--plain-http',
+          '--username=',
+          '--password=',
+        ),
+      },
+      registry: {
+        subcommands: each('login logout', {
+          effects: ['network', 'fs:write'],
+          options: opts(
+            '-u= --username=',
+            '-p= --password=',
+            '--password-stdin',
+            '--insecure',
+            o('--ca-file=', { role: 'read' }),
+            o('--cert-file=', { role: 'read' }),
+            o('--key-file=', { role: 'read' }),
+            '--plain-http',
+          ),
+        }),
+      },
+      repo: {
+        subcommands: {
+          add: {
+            effects: ['network', 'fs:write'],
+            options: opts(
+              '--allow-deprecated-repos',
+              o('--ca-file=', { role: 'read' }),
+              o('--cert-file=', { role: 'read' }),
+              o('--key-file=', { role: 'read' }),
+              '--force-update',
+              '--insecure-skip-tls-verify',
+              '--no-update',
+              '--pass-credentials',
+              '--password=',
+              '--password-stdin',
+              '--timeout=',
+              '--username=',
+            ),
+          },
+          index: { effects: ['fs:write'], options: opts(o('--merge=', { role: 'read' }), '--url=', '--json') },
+          'list|ls': { options: opts('-o= --output=') },
+          'remove|rm': { effects: ['fs:write'] },
+          'update|up': { effects: ['network:read', 'fs:write'], options: opts('--fail-on-repo-update-fail', '--timeout=') },
+        },
+      },
+      rollback: {
+        effects: ['network'],
+        options: opts(
+          '--cleanup-on-fail',
+          '--dry-run=?',
+          '--force',
+          '--history-max=',
+          '--no-hooks',
+          '--recreate-pods',
+          '--timeout=',
+          '--wait=?',
+          '--wait-for-jobs',
+          '--rollback-on-failure',
+        ),
+      },
+      search: {
+        subcommands: {
+          hub: {
+            effects: ['network'],
+            options: opts('--endpoint=', '--fail-on-no-result', '--list-repo-url', '--max-col-width=', '-o= --output='),
+          },
+          repo: {
+            options: opts(
+              '--devel',
+              '--fail-on-no-result',
+              '--max-col-width=',
+              '-o= --output=',
+              '-r --regexp',
+              '--version=',
+              '-l --versions',
+            ),
+          },
+        },
+      },
+      'show|inspect': {
+        effects: ['network:read'],
+        options: helmChart,
+        subcommands: each('all chart crds readme values', { options: opts('--jsonpath=') }),
+      },
+      status: { effects: ['network:read'], options: opts('-o= --output=', '--revision=', '--show-desc', '--show-resources') },
+      template: {
+        effects: ['network:read'],
+        options: [
+          ...helmChart,
+          ...helmRelease,
+          ...opts(
+            '-a= --api-versions=',
+            '--include-crds',
+            '--is-upgrade',
+            '--kube-version=',
+            o('--output-dir=', { role: 'write' }),
+            '--release-name',
+            '-s= --show-only=',
+            '--skip-tests',
+            '--validate',
+          ),
+        ],
+      },
+      test: { effects: ['network'], options: opts('--filter=', '--hide-notes', '--logs', '--timeout=') },
+      'uninstall|un|delete|del': {
+        effects: ['network'],
+        options: opts(
+          '--cascade=',
+          '--description=',
+          '--dry-run=?',
+          '--ignore-not-found',
+          '--keep-history',
+          '--no-hooks',
+          '--timeout=',
+          '--wait=?',
+        ),
+      },
+      upgrade: { effects: ['network'], options: [...helmChart, ...helmRelease] },
+      verify: { positionals: 'read', options: opts(o('--keyring=', { role: 'read' })) },
+      version: { options: opts('--short', '--template=') },
+    },
+  }),
+  parse: (args, parsed) => readCobra(helm, args, parsed),
+  finish: finishHelm,
+};
+
+/** terraform's subcommands, read as Go's flag package reads their options: one dash or two, alike. */
+const tfVars = opts(o('--var-file=', { role: 'read' }), '--var=');
+const tfBool = (names: string) => names.split(' ').map((name) => o(`--${name}=?`));
+const tfPlan = [
+  ...tfVars,
+  ...tfBool('compact-warnings destroy detailed-exitcode input json lock minimal-refresh no-color refresh refresh-only'),
+  ...opts(
+    o('--out=', { role: 'write' }),
+    o('--generate-config-out=', { role: 'write' }),
+    '--invoke=',
+    '--lock-timeout=',
+    '--parallelism=',
+    '--replace=',
+    o('--state=', { role: 'read' }),
+    '--target=',
+  ),
+];
+const tfApply = [...tfPlan, ...tfBool('auto-approve'), ...opts(o('--backup=', { role: 'write' }), o('--state-out=', { role: 'write' }))];
+const tfState = opts(o('--state=', { role: 'read' }), '--lock=?', '--lock-timeout=');
+
+const terraformCommands: CommandSpec = {
+  posix: true,
+  subcommands: {
+    apply: { effects: ['exec:project', 'network'], positionals: 'read', options: tfApply },
+    // Prints any expression: state, `nonsensitive(…)`, a local file.
+    console: {
+      effects: ['exec:project', 'network:read', 'secrets:read'],
+      options: [...tfVars, ...opts('--plan=?', o('--state=', { role: 'read' }))],
+    },
+    destroy: { effects: ['exec:project', 'network'], options: tfApply },
+    'workspace|env': {
+      effects: ['network:read'],
+      subcommands: {
+        ...each('list show', {}),
+        select: { effects: ['fs:write'], options: tfBool('or-create') },
+        new: { effects: ['network'], options: [...tfState, ...opts('--state=')] },
+        delete: { effects: ['network'], options: [...tfState, ...tfBool('force')] },
+      },
+    },
+    'force-unlock': { effects: ['network'], options: tfBool('force') },
+    // Rewrites the configuration files it's given in place, unless only checking.
+    fmt: {
+      effects: ['fs:write'],
+      edits: /\.(tf|tfvars|tftest\.hcl|tfquery\.hcl|tfmock\.hcl)$/,
+      positionals: 'write',
+      options: tfBool('check diff list recursive write no-color'),
+    },
+    get: { effects: ['network:read', 'fs:write'], options: tfBool('update no-color test-directory') },
+    graph: { effects: ['exec:project'], options: opts('--plan=', '--type=', '--draw-cycles=?', '--module-depth=') },
+    import: {
+      effects: ['exec:project', 'network'],
+      options: [...tfApply, ...opts('--config=', '--allow-missing-config=?', '--provider=')],
+    },
+    init: {
+      effects: ['network:read', 'fs:write'],
+      options: [
+        ...tfVars,
+        ...tfBool('backend force-copy get input json lock migrate-state no-color reconfigure upgrade ignore-remote-version'),
+        ...opts(
+          o('--backend-config=', { role: 'read' }),
+          '--from-module=',
+          '--lock-timeout=',
+          '--lockfile=',
+          o('--plugin-dir=', { effects: ['exec:file'] }),
+          '--test-directory=',
+        ),
+      ],
+    },
+    login: { effects: ['network', 'fs:write'] },
+    logout: { effects: ['fs:write'] },
+    metadata: { subcommands: { functions: { options: tfBool('json') } } },
+    modules: { options: tfBool('json') },
+    // Prints outputs, sensitive ones in full when given one by name or as JSON or raw.
+    output: { effects: ['network:read'], options: [...tfBool('json raw no-color'), ...opts(o('--state=', { role: 'read' }))] },
+    plan: { effects: ['exec:project', 'network:read'], options: tfPlan },
+    providers: {
+      effects: ['network:read'],
+      options: tfVars,
+      subcommands: {
+        lock: { effects: ['fs:write'], options: [...opts('--fs-mirror=', '--net-mirror=', '--platform=', '--provider=')] },
+        mirror: { effects: ['fs:write'], positionals: 'write', options: opts('--platform=', '--lock-file=?') },
+        schema: { effects: ['exec:project'], options: tfBool('json') },
+      },
+    },
+    query: {
+      effects: ['exec:project', 'network:read'],
+      options: [...tfVars, ...tfBool('json no-color'), ...opts(o('--generate-config-out=', { role: 'write' }))],
+    },
+    refresh: { effects: ['exec:project', 'network'], options: tfApply },
+    show: { effects: ['network:read'], positionals: 'read', options: tfBool('json no-color') },
+    'stacks|cloud|rpcapi': { effects: ['exec:arbitrary', 'network'] },
+    state: {
+      effects: ['network:read'],
+      subcommands: {
+        ...each('list identities', { options: [...tfState, ...opts('--id=')] }),
+        // The state's values: secrets among them.
+        ...each('pull show', { effects: ['secrets:read'], options: tfState }),
+        ...each('mv rm replace-provider', {
+          effects: ['network'],
+          options: [
+            ...tfState,
+            ...tfBool('dry-run auto-approve ignore-remote-version'),
+            ...opts(o('--backup=', { role: 'write' }), o('--state-out=', { role: 'write' })),
+          ],
+        }),
+        push: { effects: ['network'], positionals: 'read', options: [...tfState, ...tfBool('force ignore-remote-version')] },
+      },
+    },
+    taint: {
+      effects: ['network'],
+      options: [...tfState, ...tfBool('allow-missing'), ...opts(o('--backup=', { role: 'write' }), o('--state-out=', { role: 'write' }))],
+    },
+    test: {
+      effects: ['exec:project', 'network'],
+      options: [
+        ...tfVars,
+        ...tfBool('json verbose no-color cloud-run'),
+        ...opts('--filter=', o('--junit-xml=', { role: 'write' }), '--parallelism=', '--test-directory='),
+      ],
+    },
+    untaint: {
+      effects: ['network'],
+      options: [...tfState, ...tfBool('allow-missing'), ...opts(o('--backup=', { role: 'write' }), o('--state-out=', { role: 'write' }))],
+    },
+    validate: { effects: ['exec:project'], options: [...tfVars, ...tfBool('json no-color no-tests'), ...opts('--test-directory=')] },
+    version: { effects: ['network:read'], options: tfBool('json') },
+  },
+};
+
+/**
+ * terraform: `-chdir=DIR` before the command, a `-version` anywhere makes it `version`, and a `-help` prints help. Its
+ * options take one dash or two. Project code runs as its providers, `external` data sources and `local-exec`
+ * provisioners; `plan` only reads.
+ */
+function parseTerraform(args: Arg[], parsed: Parsed): void {
+  const end = args.findIndex((arg) => arg.kind === 'static' && arg.value === '--');
+  const before = end === -1 ? args : args.slice(0, end);
+  if (before.some((arg) => arg.kind === 'static' && /^(-v|-version|--version)$/.test(arg.value))) {
+    parsed.subcommands.push('version');
+    parsed.effects.add('network:read');
+    return;
+  }
+  if (before.some((arg) => arg.kind === 'static' && /^(-h|-help|--help)$/.test(arg.value))) return;
+  let i = 0;
+  for (; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg.kind === 'dynamic') {
+      if (arg.prefix.startsWith('-') || arg.prefix === '') {
+        parsed.maybeOptions = true;
+        parsed.unknownSubcommand = arg;
+        parsed.effects.add('exec:project').add('network');
+        return;
+      }
+      break;
+    }
+    if (!arg.value.startsWith('-')) break;
+    const chdir = /^--?chdir=([\s\S]*)$/.exec(arg.value);
+    // Any other option before the command is an error, and nothing runs.
+    if (!chdir) return;
+    parsed.cwd = { kind: 'static', value: chdir[1]! };
+  }
+  const rest = args
+    .slice(i)
+    .map((arg, j) =>
+      arg.kind === 'static' &&
+      arg.value.length > 1 &&
+      /^-[^-]/.test(arg.value) &&
+      !args.slice(i, i + j).some((a) => a.kind === 'static' && a.value === '--')
+        ? { kind: 'static' as const, value: `-${arg.value}` }
+        : arg,
+    );
+  const cwd = parsed.cwd;
+  Object.assign(parsed, normalize(rest, terraformCommands));
+  if (cwd) parsed.cwd = cwd;
+  if (parsed.subcommands.length === 0) {
+    // No command prints help; one it doesn't know is an error.
+    if (parsed.unknownSubcommand?.kind === 'dynamic') parsed.effects.add('exec:project').add('network');
+    return;
+  }
+  const path = parsed.subcommands.join(' ');
+  if (path === 'output' && (parsed.options['--json'] || parsed.options['--raw'] || parsed.positionals.length > 0 || parsed.maybeOptions))
+    parsed.effects.add('secrets:read');
+  if (path === 'show' && (parsed.options['--json'] || parsed.maybeOptions)) parsed.effects.add('secrets:read');
+  const check =
+    parsed.options['--check'] !== undefined ||
+    parsed.options['--write']?.some((value) => value !== true && value.kind === 'static' && value.value === 'false');
+  if (path === 'fmt' && check) {
+    parsed.effects.delete('fs:write');
+    parsed.writes = [];
+    parsed.reads.push(...parsed.positionals);
+  }
+  if (path === 'fmt' && parsed.positionals.length === 0 && !check) parsed.writes.push({ kind: 'static', value: '.' });
+  if (path === 'login' || path === 'logout') parsed.writes.push({ kind: 'static', value: '~/.terraform.d/credentials.tfrc.json' });
+  // A module copied from elsewhere, or a source on the command line.
+  if (path === 'init' && parsed.options['--from-module']) parsed.effects.add('network');
+}
+
+const terraform: CommandSpec = { parse: parseTerraform };
+
 /** `find`: starting points, then an expression whose actions run commands, delete and write files. */
 const findActions = new Set(['-exec', '-execdir', '-ok', '-okdir']);
 const findTakesOne = new Set(
@@ -4722,6 +5960,9 @@ const programs: Record<string, CommandSpec> = {
   find,
   git,
   gh,
+  kubectl,
+  helm,
+  terraform,
   curl: {
     effects: ['network'],
     options: opts(

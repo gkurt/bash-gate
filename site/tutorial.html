@@ -153,7 +153,8 @@ check('git status', recommended).decision; // 'allow'</pre>
             <li>
               <code>effects</code>: any of <code>fs:read</code>, <code>fs:write</code>, <code>fs:delete</code>, <code>network</code>,
               <code>network:read</code> (<code>git fetch</code>, <code>gh pr view</code>), <code>privilege</code>, <code>exec:*</code>,
-              <code>shell-state</code>.
+              <code>shell-state</code>, <code>secrets:read</code> (<code>printenv</code>, <code>cat .env</code>,
+              <code>$GITHUB_TOKEN</code>).
             </li>
           </ul>
           <p>
