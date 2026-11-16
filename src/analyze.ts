@@ -451,6 +451,12 @@ function copiesThrough(node: CommandNode): boolean {
   if (stdout(node.redirects) === 'file') return false;
   const name = node.name.value.slice(node.name.value.lastIndexOf('/') + 1);
   if (quietReaders.test(name)) return false;
+  // A word in single quotes is its text; one that expands something is only known at run time.
+  const words = node.suffix.flatMap((item) =>
+    item.type === 'Word' ? [/^'[^']*'$/.test(item.text) || !/[$`*?[{~\\]/.test(item.text) ? item.value : undefined] : [],
+  );
+  const lines = passesLines(name, words);
+  if (lines !== undefined) return lines;
   const spec = specFor(name);
   return !spec || !!spec.copies || passesOn.test(name);
 }
@@ -3922,10 +3928,136 @@ function quoted(arg: Arg): string {
   return /^[\w@%+=:,./~-]+$/.test(arg.value) ? arg.value : `'${arg.value.replaceAll("'", String.raw`'\''`)}'`;
 }
 
+/** Options of grep that print no line: only whether, how many, or which files matched. */
+const grepQuiet = /^--(quiet|silent|count|files-with-matches|files-without-match)$/;
+
+/**
+ * Whether grep, sed, awk or jq may print a line (or a value) it reads unchanged, by its words, each `undefined` when
+ * only known at run time: grep's matching lines, sed's lines its script leaves alone, awk's `$0` or a pattern with no
+ * action, jq's input. `undefined` for another program.
+ */
+function passesLines(name: string, words: (string | undefined)[]): boolean | undefined {
+  if (words.includes(undefined)) return /^(e|f)?grep$|^sed$|^[gmn]?awk$|^jq$/.test(name) ? true : undefined;
+  const given = words as string[];
+  const end = given.indexOf('--');
+  const options = end === -1 ? given : given.slice(0, end);
+  if (/^(e|f)?grep$/.test(name)) {
+    const quiet = options.some((word) => {
+      if (grepQuiet.test(word)) return true;
+      if (!/^-[^-]/.test(word)) return false;
+      // A cluster's letters, up to the first that takes a value (`-e PATTERN`, `-m NUM`).
+      const letters = /^[^efmABCdDX]*/.exec(word.slice(1))![0];
+      return /[qclL]/.test(letters);
+    });
+    return !quiet;
+  }
+  if (name === 'sed') {
+    if (options.some((word) => /^(-[^-]*f|--file)/.test(word))) return true;
+    const scripts = options.flatMap((word, i) =>
+      /^(-e|--expression)$/.test(word)
+        ? [given[i + 1] ?? '']
+        : /^(-[^-]*e|--expression=)/.test(word)
+          ? [word.replace(/^(-[^-]*?e|--expression=)/, '')]
+          : [],
+    );
+    const script = scripts.length > 0 ? scripts.join('\n') : (given.find((word) => !word.startsWith('-')) ?? '');
+    const quiet = options.some((word) => /^(-[^-]*n|--quiet|--silent)$/.test(word)) || script.startsWith('#n\n');
+    const inPlace = options.some((word) => /^(-[^-]*i|--in-place)/.test(word));
+    // `p`, `P`, `l`, `w` and `W` print or write a line; `r`, `R` and `e` read one in or run it. Looked for outside
+    // `s` and `y` commands' text and addresses' regular expressions, but in an `s` command's flags.
+    const commands = script.replace(/([sy])(.)((?:\\.|(?!\2).)*)\2((?:\\.|(?!\2).)*)\2/g, '$1').replace(/\\?\/(?:\\.|[^/])*\//g, '');
+    const prints = /[pPlwWrRe]/.test(commands);
+    return prints || (!quiet && !inPlace);
+  }
+  if (/^[gmn]?awk$/.test(name)) {
+    if (options.some((word) => /^(-[^-]*f|--file|-[^-]*[eiE]|--source|--include|--exec)/.test(word))) return true;
+    let program: string | undefined;
+    for (let i = 0; i < given.length; i++) {
+      const word = given[i]!;
+      if (i > end && end !== -1) {
+        program = word;
+        break;
+      }
+      if (/^-[Fv]$|^--(field-separator|assign)$/.test(word)) {
+        i++;
+      } else if (!word.startsWith('-') || word === '-') {
+        program = word;
+        break;
+      }
+    }
+    return program === undefined || awkPassesLines(program);
+  }
+  if (name === 'jq') {
+    if (options.some((word) => /^(--from-file|-[^-]*f)/.test(word))) return true;
+    const takes: Record<string, number> = { '--arg': 2, '--argjson': 2, '--slurpfile': 2, '--rawfile': 2, '--indent': 1, '-L': 1 };
+    let filter: string | undefined;
+    for (let i = 0; i < given.length; i++) {
+      const word = given[i]!;
+      if (takes[word] !== undefined) {
+        i += takes[word];
+      } else if (!word.startsWith('-') || i > end) {
+        filter = word;
+        break;
+      }
+    }
+    // A filter with no path, variable or input in it (`length`, `keys`) prints none of its input's values.
+    return (
+      filter === undefined || /[.$]|\binputs?\b|\benv\b|\bgetpath\b|\bfirst\b|\blast\b|\bto_entries\b|\btostring\b|\btojson\b/.test(filter)
+    );
+  }
+  return undefined;
+}
+
+/** Whether an awk program may print `$0`: it names it, prints with no arguments, or has a pattern with no action. */
+function awkPassesLines(program: string): boolean {
+  // Any field may be the whole line: one with no separator in it (`$1` of `TOKEN=…`).
+  if (program.includes('$')) return true;
+  if (/\bprint\s*($|[;}>|\n])/.test(program)) return true;
+  // A rule with no action prints the line: text at the top level that no `{…}` follows.
+  let depth = 0;
+  let pattern = '';
+  for (let i = 0; i <= program.length; i++) {
+    const c = program[i];
+    if (c === '"' || c === '/') {
+      const close = program.indexOf(c, i + 1);
+      if (close === -1) return true;
+      if (depth === 0) pattern += program.slice(i, close + 1);
+      i = close;
+      continue;
+    }
+    if (c === '{') {
+      if (depth === 0) pattern = '';
+      depth++;
+      continue;
+    }
+    if (c === '}') {
+      depth--;
+      continue;
+    }
+    if (depth > 0) continue;
+    if (c === undefined || c === '\n' || c === ';') {
+      const rule = pattern.trim();
+      if (rule !== '' && !/^(BEGIN|END|BEGINFILE|ENDFILE|function\b.*|@\w+.*)$/.test(rule)) return true;
+      pattern = '';
+      continue;
+    }
+    pattern += c;
+  }
+  return false;
+}
+
 /** Whether it copies what it reads to its output unchanged, by its spec (`cat`), or prints the environment. */
 function copies(program: string | null, argv: Arg[], parsed: Parsed): boolean {
   if (parsed.effects.has('secrets:print')) return true;
   if (printsEnvironment(program, argv, parsed.nested.length > 0)) return true;
+  const lines =
+    program === null
+      ? undefined
+      : passesLines(
+          program,
+          argv.slice(1).map((arg) => (arg.kind === 'static' ? arg.value : undefined)),
+        );
+  if (lines !== undefined) return lines;
   // A copy onto the script's output or the terminal (`cp .env /dev/stdout`); git printing a file, at a revision or as a
   // diff (`git show HEAD:.env`).
   const device = (arg: Arg) => arg.kind === 'static' && outputDevice(arg.value) !== undefined;

@@ -690,3 +690,13 @@ No everyday verdict moved. Open "Needs a decision" items, newest first:
 - `.npmrc` `script-shell` (rounds 39 and 53).
 - grep/sed/awk/jq printing a secret whole versus THREAT_MODEL's "transforms" (round 45).
 - `exec 3< .env; cat <&3` (open).
+
+## Decision round A: grep, sed, awk and jq printing secrets, 2026-11-17, see commit
+The user chose "grep, plus sed/awk/jq that may pass a line whole" (round 45's open item). `passesLines` decides it from the words, for an invocation (`copies`) and a pipeline stage (`copiesThrough`):
+- grep prints unless `-q`, `-c`, `-l` or `-L`, or their long forms.
+- sed prints without `-n` or `-i`, or with `p`, `P`, `l`, `w`, `W`, `r`, `R` or `e` outside `s`/`y` text and addresses.
+- awk prints when its program uses `$`, prints with no arguments, or has a pattern with no action.
+- jq prints when its filter has a path, a variable or input in it.
+- `-f` scripts and words only known at run time count as printing.
+Checked in WSL under `env -i`: `awk '/TOKEN/'`, `awk '{print $1}'`, `sed -n '/TOKEN/p'`, `sed 's/^export //'` and `env | grep FAKE` printed the fake secret whole, while `awk '{print length}'` and `grep -c` didn't.
+Costs: `secrets:print` added to `grep KEY .env`, `cat .env | grep KEY`, `env | grep TOKEN`, and to sed, awk and jq reading a secret as above. `recommended` asks on `secrets:read` already, so no verdict changed. No everyday verdict moved.

@@ -157,8 +157,10 @@ execs kill the process, and so does any x32 system call.
   known to be one. A directory that holds one of them (`~/.ssh`, `~/.config`) is a secret read too, for a program that
   may read it recursively. `secrets:print` trusts that the programs a spec marks `copies` print what they read unchanged, and
   that output redirected to a file, piped into a program that doesn't copy it, or captured by a substitution doesn't
-  reach the script's output; a secret printed by a program that transforms it (`grep`, `awk`, `jq`) is read, not
-  printed. A dry run is lowered by its spec: that `--dry-run` (or `-n`) changes nothing a spec says it would, but for
+  reach the script's output. `grep` prints the lines it matches whole, unless it only tests, counts or names files
+  (`-q`, `-c`, `-l`); `sed`, `awk` and `jq` print a secret when their script may pass a line or value through unchanged
+  (sed without `-n` or with `p`, an awk field or a pattern with no action, a jq path), judged by its text. A secret
+  printed by a program that transforms it (`cut`, `wc`, `tr`, `sort`'s keys) is read, not printed. A dry run is lowered by its spec: that `--dry-run` (or `-n`) changes nothing a spec says it would, but for
   what the spec keeps (`gh pr create --dry-run` may push, `rsync -n` connects). A dry run's own effects, not
   `invocation.dryRun`'s, are what a policy matches. Where GNU
   coreutils and uutils (Ubuntu's since 25.10) read a wrapper's arguments differently, the command it runs is unknown,

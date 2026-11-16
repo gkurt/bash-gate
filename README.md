@@ -155,12 +155,15 @@ const policy: Policy = {
   substitution that read it (`echo "$(cat .env)"`); only its length or a part of it (`${#GITHUB_TOKEN}`, `${x:0:4}`,
   `${x//?/*}`) isn't printed whole. And its standard output isn't redirected to a file (`> f`, `&> f`, `>/dev/null`,
   closed; replayed in order, so `2>&1 > f` and `> f 2>&1` both leave the file), piped only into programs known not to
-  copy it whole (`| wc -l`, `| grep`, `| read`; a copying program, a wrapper running one, a function, a loop, a group
+  copy it whole (`| wc -l`, `| grep -c`, `| read`; a copying program, a wrapper running one, a function, a loop, a group
   or a program the analysis doesn't know pass it on, and a `tee` mid-pipe onto `/dev/stderr` prints it), or captured
   (`$(…)`, `<(…)`, a group or function call redirected), unless it's sent back to the output on purpose (`>&2`, `>&3`,
   `/dev/tty`, `/proc/self/fd/1`, `> >(cat)`). `cat .env` and `cat .env || true` print; `cat .env > /tmp/x`, `cat .env
   | wc -l`, `source .env && deploy`, `curl -H "Authorization: Bearer $GITHUB_TOKEN" …`, `docker run --env-file .env
   app`, `cp .env .env.bak` and `cut -d= -f1 .env` (which transforms what it reads: names only) read but don't print.
+  `grep KEY .env` prints the lines it matches, and `sed`, `awk` and `jq` print when their script may pass a line or
+  value through whole (`sed 's/^export //'`, `awk '{print $2}'`, `jq .token`), not when it can't (`awk '{print
+  length}'`, `jq length`, `sed -i`).
 - A dry run's `effects` are the rehearsal's, the same way in every spec that knows one: it still reads and may still run
   project code (`npm publish --dry-run` runs its lifecycle scripts, which are walked), but doesn't write (save what an
   option of its own names: a log, a plan file), delete or run anything remotely, and `network` becomes `network:read`,
