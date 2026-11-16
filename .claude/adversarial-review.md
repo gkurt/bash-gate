@@ -62,7 +62,7 @@ Drop the rest, and log them as rejected with the reason.
 - Keep `unbash` pinned. Use no `Bun.*` in `src`. Use LF line endings.
 - Update README.md, THREAT_MODEL.md, AGENTS.md and `site/` when behaviour they describe changes. Add or update a
   `.tegami/<slug>.md` entry (see the `changelog` skill). If an entry for unreleased work already covers the area,
-  update it in place.
+  update it in place. Start its body with a `### ` heading: Tegami silently leaves out an entry without one.
 
 ### What you must not decide alone
 

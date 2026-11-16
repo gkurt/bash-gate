@@ -3,6 +3,8 @@ packages:
   'bash-gate': patch
 ---
 
+### More ways Bash shows a secret are `secrets:read`
+
 `secrets:read` catches more ways Bash shows a secret:
 
 - `declare -px NAME` and other `-p` clusters, and `local -p`;

@@ -3,6 +3,8 @@ packages:
   'bash-gate': patch
 ---
 
+### kubectl, helm and terraform ask when a dry run is off, a Secret is printed, or a host is their own
+
 kubectl, helm and terraform ask in more of the cases that change, print or reach something:
 
 - helm's `--dry-run=false` (or `0`), which Go reads as a real run;
