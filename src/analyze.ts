@@ -88,6 +88,8 @@ interface State {
   refs: Set<string>;
   /** Variables that may hold a secret the script read (`t=$GITHUB_TOKEN`, `x=$(cat .env)`, `read l < .env`). */
   secretVars: Set<string>;
+  /** Descriptors the shell opened on files for reading (`exec 3< .env`): what a later `<&3` reads. */
+  inputs: Map<number, Arg[]>;
   /** The shell options in `followed`, by name: on, or `undefined` when it may be either. Absent is off. */
   options: Map<string, boolean | undefined>;
   /** Exported variables and functions that may not be: a shell started now may not get them. */
@@ -561,6 +563,7 @@ export function analyze(source: string, environment: Environment = {}): Analysis
       hashUnknown: false,
       refs: new Set(),
       secretVars: new Set(),
+      inputs: new Map(),
       options: new Map(),
       maybeExported: new Set(),
       maybeExportedFunctions: new Set(),
@@ -843,6 +846,44 @@ class Walker {
   }
 
   /** A file the command reads (Git config, a hook): its text, or `undefined` when it's absent or not known (a finding). */
+  /**
+   * Whether `git checkout WORD`, from `cwd`, may take WORD as a path: something of that name is there (or may be), and
+   * no branch, tag, remote branch or ref in the repository found from `cwd` has it (or one may not). Only with files.
+   */
+  checksOutPath(word: string, cwd: string | undefined, call: Call): boolean {
+    const files = this.files;
+    if (!files) return false;
+    const path = resolvePath(cwd, word, call.home);
+    if (path === undefined) return true;
+    const there = files.realpath(path);
+    if (there === null) return false;
+    if (there === undefined) return true;
+    for (let dir: string | undefined = cwd ?? '.', depth = 0; dir !== undefined && depth < 16; depth++) {
+      const git = dir === '.' ? '.git' : `${dir}/.git`;
+      const head = files.readFile(`${git}/HEAD`);
+      if (head === undefined) return true;
+      if (head === null) {
+        // A `.git` file points elsewhere: what refs that repository has isn't read here.
+        if (files.readFile(git) !== null) return true;
+        const parent = resolvePath(dir, '..');
+        dir = parent === dir || parent === undefined || dir === '.' ? undefined : parent;
+        continue;
+      }
+      const config = files.readFile(`${git}/config`);
+      const packed = files.readFile(`${git}/packed-refs`);
+      if (config === undefined || packed === undefined) return true;
+      const remotes = [...(config ?? '').matchAll(/^\s*\[\s*remote\s+"([^"]*)"\s*\]/gm)].map((match) => match[1]!);
+      const refs = [word, `refs/heads/${word}`, `refs/tags/${word}`, ...remotes.map((remote) => `refs/remotes/${remote}/${word}`)];
+      const packedRefs = new Set((packed ?? '').split('\n').map((line) => line.split(' ')[1]));
+      return !refs.some((ref) => {
+        if (packedRefs.has(ref)) return true;
+        const text = files.readFile(`${git}/${ref}`);
+        return text !== null;
+      });
+    }
+    return true;
+  }
+
   read(path: string, ctx: Context, call: Call): string | undefined {
     // A `~` with HOME unknown (`include.path = ~/x`) is no file the analysis can ask for.
     if (path.startsWith('~')) {
@@ -1264,6 +1305,7 @@ class Walker {
       state.hashUnknown,
       [...state.refs].sort(),
       [...state.secretVars].sort(),
+      [...state.inputs].sort(([a], [b]) => a - b),
       sorted(state.options).map(([name, on]) => [name, on ?? null]),
       [...state.maybeExported].sort(),
       [...state.maybeExportedFunctions].sort(),
@@ -1752,6 +1794,9 @@ class Walker {
     const lookup = lookupIn(state);
     const assignments = command.prefix.filter((item): item is Assignment => item.type === 'Assignment');
     const files = redirections(command.redirects, lookup, this.outputsRead);
+    files.reads.push(...inherited(command.redirects, state.inputs));
+    // `exec` with no command opens (or closes) descriptors for the rest of the script.
+    if (argv0Is(command, 'exec') && command.suffix.every((item) => item.type !== 'Word')) opened(command.redirects, lookup, state.inputs);
     const span = this.span(ctx, command.pos, command.end);
     const argv = command.name ? [...resolveWord(command.name, lookup), ...command.suffix.flatMap((item) => argument(item, lookup))] : [];
     const call: Call = {
@@ -2909,6 +2954,17 @@ class Walker {
     }
     // Which package.json scripts it runs, known before it's recorded: a name no script has is a file or a command.
     const scripts = packageManagers.has(program) ? this.packageScripts(program, cwd, parsed, ctx, call) : undefined;
+    // `git checkout WORD` restores the file or directory WORD, over uncommitted changes, when no ref has that name.
+    const [word] = parsed.positionals;
+    if (
+      program === 'git' &&
+      parsed.subcommands[0] === 'checkout' &&
+      parsed.positionals.length === 1 &&
+      word?.kind === 'static' &&
+      !parsed.options['--force'] &&
+      this.checksOutPath(word.value, cwd, call)
+    )
+      (parsed.options['--force'] ??= []).push(true);
     const recorded = this.emit(ctx, call, program, 'external', argv, parsed, path);
     // Whether the project code it runs (hooks, package scripts) was walked, along with what that code writes.
     let followed = false;
@@ -4385,6 +4441,67 @@ function socket(path: string, partial: boolean): boolean {
   return partial && ['/dev/tcp/', '/dev/udp/'].some((socket) => socket.startsWith(normal));
 }
 
+/** Whether a command's word is `name`, as written. */
+function argv0Is(command: Command, name: string): boolean {
+  return command.name?.text === name;
+}
+
+/** Each redirection's descriptor, and the one it takes (`0` for `<`, `1` for `>`). */
+function descriptorOf(redirect: Extract<Redirection, { type: 'Redirect' }>): number | undefined {
+  const descriptor = redirect.descriptor;
+  if (descriptor && descriptor.type !== 'FileDescriptor') return undefined;
+  return descriptor?.value ?? (redirect.operator.startsWith('<') ? 0 : 1);
+}
+
+/**
+ * What the descriptors `exec` opens read, in `inputs`: a file opened for reading (`3< .env`, `3<> .env`), a copy of one
+ * (`4<&3`), or nothing once closed or opened for writing. A descriptor named by a variable (`{fd}<`) is left to the
+ * `<&$fd` that reads it, whose target is only known at run time.
+ */
+function opened(redirects: readonly Redirection[], lookup: Lookup, inputs: Map<number, Arg[]>): void {
+  for (const redirect of redirects) {
+    if (redirect.type !== 'Redirect') continue;
+    const fd = descriptorOf(redirect);
+    if (fd === undefined) continue;
+    const target = redirect.target;
+    const targets = target ? resolveWord(target, lookup) : [];
+    if (redirect.operator === '<' || redirect.operator === '<>') {
+      inputs.set(fd, targets);
+      continue;
+    }
+    if (redirect.operator === '<&' || redirect.operator === '>&') {
+      const from =
+        targets.length === 1 && targets[0]!.kind === 'static' && /^\d+$/.test(targets[0]!.value) ? Number(targets[0]!.value) : undefined;
+      const copied = from === undefined ? undefined : inputs.get(from);
+      if (copied) inputs.set(fd, copied);
+      else if (from === undefined && targets.some((arg) => arg.kind === 'dynamic')) inputs.set(fd, targets);
+      else inputs.delete(fd);
+      continue;
+    }
+    inputs.delete(fd);
+  }
+}
+
+/**
+ * The files a command reads through descriptors the shell opened before (`exec 3< .env; cat <&3`): one its
+ * redirections copy (`<&3`), and its standard input when it inherits one opened on a file (`exec < .env; cat`).
+ */
+function inherited(redirects: readonly Redirection[], inputs: Map<number, Arg[]>): Arg[] {
+  const reads: Arg[] = [];
+  let stdin = true;
+  for (const redirect of redirects) {
+    if (redirect.type !== 'Redirect') continue;
+    const fd = descriptorOf(redirect);
+    if (fd === 0 && redirect.operator !== '<&') stdin = false;
+    if (redirect.operator !== '<&' && redirect.operator !== '>&') continue;
+    const value = redirect.target && !/[$`]/.test(redirect.target.text) ? redirect.target.value : undefined;
+    if (value !== undefined && /^\d+$/.test(value)) reads.push(...(inputs.get(Number(value)) ?? []));
+    if (fd === 0) stdin = false;
+  }
+  if (stdin) reads.push(...(inputs.get(0) ?? []));
+  return reads;
+}
+
 /** The files redirections read and write, devices left out. A redirection to an fd (`2>&1`) names no file. */
 function redirections(list: readonly Redirection[], lookup: Lookup, outputsRead = false): { reads: Arg[]; writes: Arg[] } {
   const reads: Arg[] = [];
@@ -4747,6 +4864,7 @@ function clone(state: State): State {
     hashUnknown: state.hashUnknown,
     refs: new Set(state.refs),
     secretVars: new Set(state.secretVars),
+    inputs: new Map(state.inputs),
     options: new Map(state.options),
     maybeExported: new Set(state.maybeExported),
     maybeExportedFunctions: new Set(state.maybeExportedFunctions),
@@ -4907,6 +5025,7 @@ function freshState(cwd: string | undefined): State {
     hashUnknown: false,
     refs: new Set(),
     secretVars: new Set(),
+    inputs: new Map(),
     options: new Map(),
     maybeExported: new Set(),
     maybeExportedFunctions: new Set(),
@@ -4997,6 +5116,7 @@ function join(state: State, other: State): void {
   state.hashUnknown ||= other.hashUnknown;
   for (const name of other.refs) state.refs.add(name);
   for (const name of other.secretVars) state.secretVars.add(name);
+  for (const [fd, files] of other.inputs) state.inputs.set(fd, [...(state.inputs.get(fd) ?? []), ...files]);
   for (const name of new Set([...state.options.keys(), ...other.options.keys()]))
     if (option(state, name) !== option(other, name)) state.options.set(name, undefined);
   for (const name of other.disabled) state.disabled.add(name);

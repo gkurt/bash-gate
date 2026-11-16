@@ -1034,6 +1034,11 @@ describe('secrets:print', () => {
     ['echo "${GITHUB_TOKEN:0:4}"', false, 'only a part'],
     ['echo "${GITHUB_TOKEN//?/*}"', false, 'masked'],
     ['cat .env | read -r l', false, 'piped into read, which prints nothing'],
+    ['exec 3< .env; cat <&3', true, 'read through a descriptor the shell opened'],
+    ['exec < .env; cat', true, 'standard input opened on it'],
+    ['exec 3< notes.txt; cat <&3', false, 'a descriptor on another file'],
+    ['exec 3< .env; exec 3<&-; cat <&3', false, 'a descriptor closed before the read'],
+    ['exec 3< .env; exec 3> out; cat <&3', false, 'a descriptor opened again for writing'],
   ];
   for (const [source, expected, what] of cases) {
     test(`${what}: ${JSON.stringify(source)} ${expected ? 'prints' : "doesn't print"}`, () =>

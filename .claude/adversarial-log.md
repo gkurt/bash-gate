@@ -708,3 +708,11 @@ The user chose "Secret when from a substitution or input" (round 54's open item)
 - it's a loop variable over static words and globs, none of them a secret's (`Value.files`, expanded as a `glob` Arg).
 `cat $(echo .env)`, `read f; cat "$f"`, `find . -name .env | xargs cat`, `find ~/.ssh -type f -exec cat {} +` and `cat "$1"` ask. `for f in src/*.ts; do cat "$f"; done` and `cat "$name.ts"` stay allowed.
 Costs: `xargs grep TODO < list` moved from allow to ask (an escapes case, updated). No line in `test/everyday.test.ts` moved. Any read of a path only known at run time with no telling end now asks: `cat "$f"`, `cp "$src" dst`, `grep x "$file"`, `while read f; do cat "$f"; done`.
+
+## Decision round C: the four smaller fixes, 2026-11-17, see commit
+The user approved all four:
+- **`git checkout <word>`:** with files, `checksOutPath` checks whether something of that name is there (`realpath`) and no ref has it. It looks at `refs/heads`, `refs/tags`, each remote's `refs/remotes/<r>/` named in the config, `packed-refs`, and the git directory itself (`HEAD`). If so, it adds `--force`. An unknown answer counts as a path. Without files, nothing changes.
+- **`git rebase --onto`:** asks.
+- **`exec 3< .env; cat <&3`:** `State.inputs` tracks descriptors `exec` opens for reading, and their copies, closes and reopens for writing. `<&N` reads them, and so does a command that inherits standard input opened on a file. Checked in WSL under `env -i`: fd 3, a copy on fd 4, and `exec < .env; cat` printed the fake secret; closed or reopened descriptors failed with "Bad file descriptor".
+- **System paths:** `/bin`, `/sbin`, `/usr`, `/lib`, `/lib32`, `/lib64`, `/etc` and `/boot` (and everything under them) are an ask rule, so a script started at `/` asks too.
+Costs: a project under `/usr/local/src` or `/etc` asks on every write. `git checkout <word>` asks where a file of that name exists and no ref does. The `linked` escapes fixture gained `refs/heads/main`, since its `realpath` answers for every path. No everyday verdict moved.

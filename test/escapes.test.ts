@@ -210,6 +210,11 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ["find . -name '*.tmp' -delete", 'ask', 'find -delete deletes'],
   ["find . -name '*.ts'", 'allow', 'find only looking'],
   ['xargs rm -rf < list', 'ask', 'xargs appends arguments at run time'],
+  ['git rebase --onto HEAD~1 HEAD', 'ask', 'rebase --onto, which drops the commits it leaves out'],
+  ['git rebase main', 'allow', 'a plain rebase'],
+  ['exec 3< .env; cat <&3', 'ask', 'a secret read through a descriptor the shell opened'],
+  ['exec 3< .env; exec 4<&3; cat <&4', 'ask', 'the same, through a copy of it'],
+  ['exec < .env; cat', 'ask', 'standard input opened on a secret, which cat reads'],
   ['xargs grep TODO < list', 'ask', 'xargs running an allowed command on files named by its input, which may be secrets'],
   ['xargs -I{} echo {} < list', 'allow', 'xargs running a command that reads no file'],
   // Decided: a file named only at run time, from a substitution, input, a variable or an argument, may be a secret's.
@@ -1386,6 +1391,7 @@ describe('recommended policy, with a filesystem', () => {
 const deep = `/r/${Array.from({ length: 17 }, (_, i) => `d${i}`).join('/')}`;
 const placed: Record<string, string> = {
   '/w/p/.git/HEAD': 'ref: refs/heads/main\n',
+  '/w/p/.git/refs/heads/main': 'abc\n',
   '/w/p/.git/config': '[core]\n\tbare = false\n',
   '/w/p/package.json': JSON.stringify({ scripts: { test: "alias ls='rm -rf /'\nls" } }),
   '/w/py/.git/HEAD': 'ref: refs/heads/main\n',
@@ -1459,11 +1465,22 @@ describe('recommended policy, in a project under HOME', () => {
     test(`${what}: ${JSON.stringify(source)} → ${decision}`, () => expectDecision(source, decision, homed));
   for (const [source, decision, what] of nowhereCases)
     test(`${what}: ${JSON.stringify(source)} → ${decision}`, () => expectDecision(source, decision, nowhere));
+  for (const [source, decision, what] of fromRootCases)
+    test(`${what}: ${JSON.stringify(source)} → ${decision}`, () => expectDecision(source, decision, fromRoot));
   for (const [source, decision, what] of inHomeCases)
     test(`${what}: ${JSON.stringify(source)} → ${decision}`, () => expectDecision(source, decision, inHome));
   for (const [source, decision, what, environment] of homeLinks)
     test(`${what}: ${JSON.stringify(source)} → ${decision}`, () => expectDecision(source, decision, environment));
 });
+
+/** A script started at `/`, where `..` reaches nothing outside it. */
+const fromRoot: Environment = { cwd: '/', env: { HOME: '/home/me' } };
+const fromRootCases: [source: string, decision: Decision, what: string][] = [
+  ['echo x > /usr/local/bin/git', 'ask', "a program on PATH, which is then trusted as the system's"],
+  ['cp evil usr/lib/x.so', 'ask', 'a system library, by a path relative to /'],
+  ['echo x >> etc/profile', 'ask', 'system configuration'],
+  ['echo x > tmp/out', 'allow', 'a scratch file'],
+];
 
 /** A script started in HOME itself, where `..` doesn't reach HOME's own files. */
 const inHome: Environment = { cwd: '/home/me', env: { HOME: '/home/me' } };
@@ -1672,6 +1689,35 @@ const projectCases: [what: string, source: string, decision: Decision, fs: Envir
       ...repository('/w/p/.git'),
       '/w/p/.gitmodules': '[submodule "sub"]\n\tpath = sub\n',
       ...repository('/w/p/sub/.git', fsmonitor),
+    }),
+  ],
+  [
+    'git checkout of a file no ref names, which restores it over uncommitted changes',
+    'git checkout README.md',
+    'ask',
+    disk({ ...repository('/w/p/.git'), '/w/p/README.md': 'x' }),
+  ],
+  ['the same, a directory', 'git checkout src', 'ask', disk({ ...repository('/w/p/.git'), '/w/p/src/a.ts': 'x' })],
+  [
+    'git checkout of a branch',
+    'git checkout feature',
+    'allow',
+    disk({ ...repository('/w/p/.git'), '/w/p/.git/refs/heads/feature': 'abc\n' }),
+  ],
+  [
+    'git checkout of a branch that is also a file, which git takes as the branch',
+    'git checkout docs',
+    'allow',
+    disk({ ...repository('/w/p/.git'), '/w/p/.git/packed-refs': 'abc refs/heads/docs\n', '/w/p/docs': 'x' }),
+  ],
+  [
+    "git checkout of a remote's branch, which git makes a local one from",
+    'git checkout fix',
+    'allow',
+    disk({
+      ...repository('/w/p/.git', '[remote "origin"]\n\turl = x\n'),
+      '/w/p/.git/refs/remotes/origin/fix': 'abc\n',
+      '/w/p/fix': 'x',
     }),
   ],
   [

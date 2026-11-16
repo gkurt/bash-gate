@@ -34,6 +34,7 @@ export const recommended: Policy = {
     ask('git stash export', { options: ['--to-ref'], reason: 'Moves a ref' }),
     // Aborting or skipping puts back the work tree from before, over a resolution and what's staged.
     ask('git merge|rebase|cherry-pick|revert', { options: ['--abort', '--skip'], reason: 'Discards uncommitted work' }),
+    ask('git rebase', { options: ['--onto'], reason: 'Drops the commits it leaves out of the branch' }),
     ask('git fetch', { options: ['--force', '--update-head-ok', '--refmap', '--prune-tags'], reason: 'Deletes or moves a local ref' }),
     // Package scripts, tests and builds: project code, as git hooks are, with the dependencies cargo and bun fetch as
     // they build or run (`network:read`). Their specs give `exec:arbitrary` to inline
@@ -61,6 +62,29 @@ export const recommended: Policy = {
     // be placed against the start (no absolute `cwd`, or `~` with no `HOME`) may be outside it. Home itself isn't
     // named: most projects are in it.
     ask({ writes: ['..', '../**'], reason: 'Writes outside the working directory' }),
+    // The system's programs, libraries and configuration, even from a script started at `/`: a program written to
+    // `/usr/local/bin` is then trusted as the system's.
+    ask({
+      writes: [
+        '/bin',
+        '/bin/**',
+        '/sbin',
+        '/sbin/**',
+        '/usr',
+        '/usr/**',
+        '/lib',
+        '/lib/**',
+        '/lib32',
+        '/lib32/**',
+        '/lib64',
+        '/lib64/**',
+        '/etc',
+        '/etc/**',
+        '/boot',
+        '/boot/**',
+      ],
+      reason: "Writes the system's programs or configuration",
+    }),
     // The user's own configuration that runs code later, even from a script started in HOME.
     ask({
       // The directories themselves too: `cp -r d/.ssh ~` writes into them under names only known at run time.
