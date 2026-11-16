@@ -777,6 +777,17 @@ const startedCases: [source: string, decision: Decision, what: string][] = [
   ['RIPGREP_CONFIG_PATH=/tmp/x rg foo', 'ask', 'a ripgrep config, which may name a program to run'],
   ['sort -T /home/me/t big', 'ask', 'sort writing temporary files outside the project'],
   ['tree -Lo 2 /home/me/x', 'ask', 'tree reading each letter of a cluster on its own'],
+  // What sh and env -S read otherwise than Bash.
+  ["env -S $'find .\\v-delete'", 'ask', 'env -S splitting at a vertical tab'],
+  ["env -S $'find .\\f-delete\\r'", 'ask', 'the same, at a form feed and a carriage return'],
+  ["env -S '{echo,rm} x'", 'ask', 'env -S, which expands no braces'],
+  ["watch 'ls &>/dev/null rm -rf y'", 'ask', "watch's sh, where &> runs in the background"],
+  ["watch '((rm -rf + y))'", 'ask', "watch's sh, where (( opens two subshells"],
+  ["watch \"echo \\$'A\\\\' ; rm -rf y ; : ' #'\"", 'ask', "watch's sh, which has no $'…'"],
+  ["watch $'alias ls=rm\\nls x'", 'ask', "watch's sh, which expands aliases"],
+  ["git rebase -x '((rm -rf + y))' main", 'ask', "git rebase -x's sh, the same"],
+  ["sh -c 'ls &>/dev/null rm -rf y'", 'ask', 'sh -c, the same'],
+  ['watch \'ls -la; echo ${x:-a} $((1+2)) "$(date)"\'', 'allow', "watch's sh with POSIX syntax only"],
   // A program under another name.
   ['exec -a pkill pgrep -f x', 'ask', 'exec -a, which starts a program under a name it acts on'],
   ['exec -a git-branch git log -D feature', 'ask', 'the same, for git'],

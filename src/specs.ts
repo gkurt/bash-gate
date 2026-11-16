@@ -2768,8 +2768,9 @@ function splitEnv(args: Arg[], uutils: { differs: boolean }, nested = false): Ar
     if (!string) return args;
     if (stopped || nested || splitsAgain(args.slice(i + used))) uutils.differs = true;
     const lookup = () => ({ kind: 'dynamic' as const });
-    // A backslash is env's own escape, none of them the shell's (`\_` separates words, `\c` ends them).
-    const words = string.kind === 'static' && !string.value.includes('\\') ? resolveWords(string.value, lookup) : undefined;
+    // A backslash is env's own escape, none of them the shell's (`\_` separates words, `\c` ends them). env also splits
+    // at \v, \f and \r, where the shell doesn't, and expands no braces.
+    const words = string.kind === 'static' && !/[\\\v\f\r{}]/.test(string.value) ? resolveWords(string.value, lookup) : undefined;
     const split = words ?? [dynamicArg(string.kind === 'static' ? string.value : string.text, 'variable', true, '')];
     return [...args.slice(0, i), ...splitEnv([...split, ...args.slice(i + used)], uutils, true)];
   }

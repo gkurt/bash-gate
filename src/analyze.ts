@@ -232,6 +232,14 @@ interface Call {
   home: string | undefined;
 }
 
+/**
+ * Syntax of Bash's that dash reads otherwise or not at all: `&>`, `|&`, `((` (not `$((`), `$'…'`, `$"…"`, `$[…]`,
+ * `<<<`, process substitution, `[[`, `;&`, brace expansion, `function`, `select`, `coproc`, arrays, and expansions
+ * POSIX doesn't have (`${x:1}`, `${x/a/b}`, `${x^}`, `${x,}`, `${!x}`, `${x@Q}`, `${a[0]}`).
+ */
+const bashOnly =
+  /&>|\|&|(^|[^$])\(\(|\$['"[]|<<<|[<>]\(|\[\[|;;?&|\{[^\s{}]*(,|\.\.)[^\s{}]*\}|(^|[\s;&|(])(function|select|coproc)\s|\w=\(|\$\{(!|\w+(\[|:[\s\d]|\/|\^|,|@))/;
+
 /** Words Bash reads as reserved where a command starts, and expands an alias of. */
 const reservedWords = new Set([
   '!',
@@ -2395,7 +2403,10 @@ class Walker {
       followed = this.gitProject(cwd, parsed, state, ctx, call);
     } else if (scripts) {
       // Run with `sh -c`, which expands aliases.
-      for (const [name, script] of scripts.run) this.code(script, shellState(state, cwd, 'sh'), ctx, call, `${program} ${name}`);
+      for (const [name, script] of scripts.run) {
+        this.dashSyntax(script, ctx, call, `${program} ${name}`);
+        this.code(script, shellState(state, cwd, 'sh'), ctx, call, `${program} ${name}`);
+      }
       followed = scripts.followed;
     } else if (program === 'ssh') {
       for (const value of parsed.options['-o'] ?? []) {
@@ -2438,8 +2449,11 @@ class Walker {
         continue;
       }
       const remote = parsed.effects.has('exec:remote');
-      const shell = remote ? freshState(undefined) : childState(state, cwd, program === 'bash');
+      // Bash runs its own; anything else (`sh -c`, `watch`, `git rebase -x`) hands it to `sh`, which may be dash.
+      const sh = !remote && program !== 'bash';
+      const shell = remote ? freshState(undefined) : sh ? shellState(state, cwd, 'sh') : childState(state, cwd, true);
       if (!remote && specFor(program) === specFor('bash')) this.childOptions(program, parsed, state, shell, ctx, call);
+      if (sh) this.dashSyntax(script.value, ctx, call, program);
       this.code(
         script.value,
         shell,
@@ -2677,6 +2691,7 @@ class Walker {
           this.finding(ctx, 'loads-code', `git hook ${name} runs with a program the analysis doesn't read`, call.span);
           continue;
         }
+        if (shell === 'sh') this.dashSyntax(hook.text, ctx, call, `git hook ${name}`);
         this.code(hook.text, shellState(state, workTree ?? root, shell), ctx, call, `git hook ${name}`);
       }
     };
@@ -2945,6 +2960,14 @@ class Walker {
       late,
       quoted: false,
     });
+  }
+
+  /**
+   * Code `sh` runs is walked as Bash in POSIX mode reads it. Where `sh` is dash, Bash's own syntax means something else
+   * (`&>` runs in the background, `((` opens two subshells, `$'…'` is no string): a finding, as what runs isn't known.
+   */
+  dashSyntax(text: string, ctx: Context, call: Call, label: string): void {
+    if (bashOnly.test(text)) this.finding(ctx, 'unknown-syntax', `${label} runs code \`sh\` may read otherwise than Bash`, call.span);
   }
 
   /**
