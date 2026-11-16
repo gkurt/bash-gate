@@ -549,7 +549,6 @@ const jestOptions = opts(
     '--coverageDirectory=',
     '--coveragePathIgnorePatterns=',
     '--coverageProvider=',
-    '--coverageReporters=',
     '--coverageThreshold=',
     '--debug',
     '--detectLeaks',
@@ -628,6 +627,7 @@ const jestModules = camel(
   '--prettierPath=',
   '--projects=',
   '--reporters=',
+  '--coverageReporters=',
   '--resolver=',
   '--rootDir=',
   '--roots=',
@@ -757,7 +757,7 @@ function finishPush(parsed: Parsed): void {
 
 /** Git config keys whose values git runs, or that change what or where it runs. */
 const gitExecKeys =
-  /^(alias\..*|core\.(pager|editor|sshcommand|fsmonitor|hookspath|askpass|gitproxy|worktree)|sequence\.editor|pager\..*|diff\.external|diff\..*\.(command|textconv)|merge\..*\.driver|filter\..*\.(clean|smudge|process)|credential\.helper|credential\..*\.helper|gpg\.program|gpg\..*\.program|interactive\.difffilter|uploadpack\.packobjectshook|remote\..*\.(uploadpack|receivepack|vcs)|protocol\.(.*\.)?allow|http\.(.*\.)?cookiefile|mergetool\..*\.path|difftool\..*\.path|sendemail\.smtpserver|url\..*|include\.path|includeif\..*|submodule\..*\.update|ssh\.variant|core\.sshcommand|http\..*proxy|web\.browser|browser\..*\.(cmd|path)|man\..*\.(cmd|path)|sendemail\..*cmd|mergetool\..*\.cmd|difftool\..*\.cmd|hook\..*\.command|gpg\.ssh\.defaultkeycommand|trailer\..*\.(command|cmd)|core\.alternaterefscommand|gc\.recentobjectshook|gc\.(.*\.)?(reflogexpire|reflogexpireunreachable|pruneexpire|worktreepruneexpire|rerereresolved|rerereunresolved)|maintenance\..*|help\.(format|browser|htmlpath)|man\.viewer)$/;
+  /^(alias\..*|core\.(pager|editor|sshcommand|fsmonitor|hookspath|askpass|gitproxy|worktree)|sequence\.editor|pager\..*|diff\.external|diff\..*\.(command|textconv)|merge\..*\.driver|filter\..*\.(clean|smudge|process)|credential\.helper|credential\..*\.helper|gpg\.program|gpg\..*\.program|interactive\.difffilter|uploadpack\.packobjectshook|remote\..*\.(uploadpack|receivepack|vcs)|protocol\.(.*\.)?allow|http\.(.*\.)?cookiefile|mergetool\..*\.path|difftool\..*\.path|branch\..*\.mergeoptions|pull\.(twohead|octopus)|sendemail\.smtpserver|url\..*|include\.path|includeif\..*|submodule\..*\.update|ssh\.variant|core\.sshcommand|http\..*proxy|web\.browser|browser\..*\.(cmd|path)|man\..*\.(cmd|path)|sendemail\..*cmd|mergetool\..*\.cmd|difftool\..*\.cmd|hook\..*\.command|gpg\.ssh\.defaultkeycommand|trailer\..*\.(command|cmd)|core\.alternaterefscommand|gc\.recentobjectshook|gc\.(.*\.)?(reflogexpire|reflogexpireunreachable|pruneexpire|worktreepruneexpire|rerereresolved|rerereunresolved)|maintenance\..*|help\.(format|browser|htmlpath)|man\.viewer)$/;
 
 /** Keys whose value is a command git runs with the shell. */
 const gitShellKeys =
@@ -881,6 +881,12 @@ function finishStrategy(parsed: Parsed): void {
   for (const strategy of parsed.options['--strategy'] ?? [])
     if (strategy === true || strategy.kind === 'dynamic' || !mergeStrategies.has(strategy.value)) parsed.effects.add('exec:arbitrary');
 }
+
+/**
+ * Git's editor: GIT_EDITOR, core.editor, VISUAL, EDITOR, or else `vi`, which reads commands from standard input (`:!cmd`)
+ * when that's the script's. What it runs is only known at run time.
+ */
+const editor: Effect[] = ['exec:arbitrary'];
 
 const hooks: Effect[] = ['fs:write', 'exec:project'];
 
@@ -1028,8 +1034,8 @@ const git: CommandSpec = {
         '--fixup=',
         '--squash=',
         '-C= --reuse-message=',
-        '-c= --reedit-message=',
-        '-e --edit',
+        o('-c= --reedit-message=', { effects: editor }),
+        o('-e --edit', { effects: editor }),
         '--no-edit',
         '-S=? --gpg-sign=?',
         '--author=',
@@ -1040,6 +1046,13 @@ const git: CommandSpec = {
         '-s --signoff',
         o('-t= --template=', { role: 'read' }),
       ),
+      finish(parsed) {
+        // Without a message, it opens the editor.
+        const fixup = staticValue(parsed.options['--fixup']?.filter((value) => value !== true).at(-1));
+        const message =
+          given(parsed, '--message', '--file', '--reuse-message', '--no-edit') || (fixup !== undefined && !/^(amend|reword):/.test(fixup));
+        if (!message) for (const effect of editor) parsed.effects.add(effect);
+      },
     },
     push: {
       abbreviations: true,
@@ -1235,6 +1248,7 @@ const git: CommandSpec = {
         '--no-merged=?',
         '--sort=',
         '--format=',
+        o('--edit-description', { effects: editor }),
       ),
       // `-D`, `-M` and `-C` are `--delete`, `--move` and `--copy` with `--force`.
       finish(parsed) {
@@ -1258,8 +1272,15 @@ const git: CommandSpec = {
         '-m= --message=',
         o('-F= --file=', { role: 'read' }),
         '-s --sign',
+        '-u= --local-user=',
+        o('-e --edit', { effects: editor }),
         '-l --list',
       ),
+      // An annotated tag without a message opens the editor.
+      finish(parsed) {
+        const annotated = given(parsed, '--annotate', '--sign', '--local-user');
+        if (annotated && !given(parsed, '--message', '--file')) for (const effect of editor) parsed.effects.add(effect);
+      },
     },
     merge: {
       abbreviations: true,
@@ -1269,7 +1290,9 @@ const git: CommandSpec = {
         '--ff-only',
         '--squash',
         '--abort',
-        '--continue',
+        o('--continue', { effects: editor }),
+        o('-e --edit', { effects: editor }),
+        '--no-edit',
         '-m=',
         '-s= --strategy=',
         '-X= --strategy-option=',
@@ -1283,11 +1306,12 @@ const git: CommandSpec = {
       abbreviations: true,
       effects: hooks,
       options: opts(
-        '-i --interactive',
+        o('-i --interactive', { effects: editor }),
+        o('--edit-todo', { effects: editor }),
         o('-x= --exec=', { role: 'script' }),
         '--onto=',
         '--abort',
-        '--continue',
+        o('--continue', { effects: editor }),
         '--skip',
         '--autosquash',
         '--root',
@@ -1304,9 +1328,10 @@ const git: CommandSpec = {
       effects: hooks,
       options: opts(
         '-n --no-commit',
-        '-e --edit',
+        o('-e --edit', { effects: editor }),
+        '--no-edit',
         '-m= --mainline=',
-        '--continue',
+        o('--continue', { effects: editor }),
         '--abort',
         '--skip',
         '--quit',

@@ -736,6 +736,8 @@ const tree: Record<string, string> = {
   'extern/.git/config': '[protocol]\n\tallow = always\n[remote "origin"]\n\turl = ext::sh -c touch% /tmp/x\n',
   'cookies/.git/HEAD': 'ref: refs/heads/main\n',
   'cookies/.git/config': '[http]\n\tcookieFile = ~/.bashrc\n\tsaveCookies = true\n',
+  'merging/.git/HEAD': 'ref: refs/heads/main\n',
+  'merging/.git/config': '[branch "main"]\n\tmergeOptions = -s evil\n',
 };
 const withFiles: Environment = { fs: { readFile: (path) => tree[path] ?? null, realpath: (path) => path } };
 const filesystemCases: [source: string, decision: Decision, what: string][] = [
@@ -770,6 +772,7 @@ const filesystemCases: [source: string, decision: Decision, what: string][] = [
   ['cd hooked && git commit -n --verify -m x', 'deny', '--verify after --no-verify'],
   ['cd hooked && git push --no-verify --veri origin main', 'deny', '--verify abbreviated after --no-verify, on push'],
   ['cd extern && git fetch origin', 'ask', 'protocol.allow, which lets an ext:: remote run a command'],
+  ['cd merging && git merge other', 'ask', 'branch mergeOptions naming a strategy, which git runs as git-merge-<name>'],
   ['cd cookies && git fetch origin', 'ask', 'http.cookieFile, which git writes the cookies to'],
 ];
 
@@ -991,7 +994,8 @@ const startedCases: [source: string, decision: Decision, what: string][] = [
   ['git cherry-pick --abort', 'ask', 'cherry-pick --abort, the same'],
   ['git cherry-pick --skip', 'ask', 'cherry-pick --skip, the same'],
   ['git revert --abort', 'ask', 'revert --abort, the same'],
-  ['git merge --continue && git rebase --continue', 'allow', 'continuing, which keeps the work'],
+  ['git merge --continue && git rebase --continue', 'ask', 'continuing, which opens the editor for the message'],
+  ['git commit --no-edit', 'allow', 'committing a merge without the editor'],
   ['git config edit', 'ask', 'git config edit, which runs an editor'],
   ['git config edit --global', 'ask', 'the same, on the global config'],
   ['cp -rLT /tmp/evil .', 'ask', 'cp -T, which copies a directory onto the target, .git and all'],
@@ -1010,6 +1014,20 @@ const startedCases: [source: string, decision: Decision, what: string][] = [
   ['rm -rf /repo', 'deny', 'deleting the project by its absolute path'],
   ['cd .. && rm -rf repo', 'deny', 'deleting the project from above'],
   ["declare -n r='a[$(rm -rf /)]'; echo $r", 'deny', "a nameref's subscript, which each read of it runs"],
+  ['Npm_Config_Script_Shell=/tmp/x npm test', 'ask', 'npm config from the environment in any case'],
+  [
+    "printf 'ihello\\033:!rm -rf ~\\n:wq\\n' | TERM=xterm git commit",
+    'ask',
+    "git commit without a message, whose editor reads the script's input",
+  ],
+  ['git commit --amend < k', 'ask', 'the same, amending'],
+  ['git tag -a v1 < k', 'ask', 'an annotated tag without a message'],
+  ['git rebase -i HEAD~1 < k', 'ask', 'an interactive rebase'],
+  ['git merge --edit main < k', 'ask', 'merge --edit'],
+  ['git branch --edit-description < k', 'ask', 'a branch description'],
+  ['git commit -m x && git tag -a v1 -m y', 'allow', 'a commit and tag with messages'],
+  ['jest --coverage --coverageReporters=/tmp/evil.js', 'ask', 'jest coverage reporters, which are modules it loads'],
+  ['PKG_CONFIG=/tmp/x cargo build', 'ask', "the program cargo's build scripts run for pkg-config"],
   ['git stash list --format=%s --output=/home/me/.bashrc', 'ask', 'git stash list, which takes log options, --output among them'],
   ['git stash list --output=.git/hooks/pre-commit', 'ask', 'the same, into .git'],
   ['echo --outDir /home/me/.ssh x.ts > a.txt && tsc @a.txt', 'ask', "tsc's @file, which it reads options from"],
