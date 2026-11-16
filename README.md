@@ -148,7 +148,9 @@ It allows project code (`exec:project`) as it does git hooks: the scripts, tests
 outside the working directory, or run code the analysis can't place. cargo's builds and bun's runs may fetch the
 dependencies they haven't got (`network:read`, which runs). Project code is the project's where the script starts, at
 its real path: another directory's scripts, hooks or tests (`cd .. && npm test`, `bun test /tmp/x.test.ts`, `cd
-link` to elsewhere), or project code run after git rewrote the work tree, are `exec:file` and ask. Without `fs`, a name `pnpm` or `bun run` may run from PATH asks, since no script may have it, and so do words
+link` to elsewhere), another workspace or package (`npm -w ../b test`, `pnpm --filter`, `cargo test -p b`), or project
+code run after git rewrote the work tree, are `exec:file` and ask. A redirection to Bash's `/dev/tcp` or `/dev/udp` is
+`network`. Without `fs`, a name `pnpm` or `bun run` may run from PATH asks, since no script may have it, and so do words
 after a script's name (`npm test -- --config x`), which are appended to a script the analysis can't see.
 `make` isn't followed and asks. Add an ask rule for `exec:project` if project code matters.
 

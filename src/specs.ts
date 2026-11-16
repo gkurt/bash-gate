@@ -837,7 +837,9 @@ function finishCheckout(parsed: Parsed): void {
   const path = parsed.positionals.some((arg) => arg.kind === 'static' && /^\.|\/$|\.\.|\/\.|[\s~^:?*[\\]|\.lock$|^-|^$/.test(arg.value));
   // After `--`, or from a file, words are paths; `-m` and `--conflict` check out paths as they were merged.
   const paths = (parsed.separated === true && parsed.positionals.length > 0) || parsed.positionals.length > 1 || path;
-  const named = ['-B', '--ours', '--theirs', '--pathspec-from-file', '--merge', '--conflict'].some((name) => parsed.options[name]);
+  const named = ['-B', '--ours', '--theirs', '--pathspec-from-file', '--merge', '--conflict', '--patch'].some(
+    (name) => parsed.options[name],
+  );
   if (paths || named) force(parsed);
 }
 
@@ -3738,13 +3740,28 @@ const programs: Record<string, CommandSpec> = {
     options: cargoOptions,
     subcommands: {
       ...each(
-        'build|b check|c test|t run|r bench doc|d clippy metadata tree pkgid locate-project verify-project read-manifest report config version help generate-lockfile',
+        'build|b check|c run|r doc|d clippy metadata tree pkgid locate-project verify-project read-manifest report config version help generate-lockfile',
         { options: cargoOptions },
       ),
       fix: { options: cargoOptions, effects: ['fs:write'] },
       // The words after `--` go to rustfmt: files it rewrites in place, wherever they are.
       fmt: { options: cargoOptions, effects: ['fs:write'], finish: (parsed) => parsed.writes.push(...parsed.positionals) },
       clean: { options: cargoOptions, effects: ['fs:delete'] },
+      // The words after `--` go to the test harness, whose `--logfile` it writes.
+      ...each('test|t bench', {
+        options: cargoOptions,
+        finish: (parsed) => {
+          if (!parsed.separated) return;
+          parsed.positionals.forEach((arg, i) => {
+            const text = arg.kind === 'static' ? arg.value : arg.prefix;
+            if (arg.kind === 'dynamic' && '--logfile'.startsWith(text)) parsed.writes.push(dynamicArg('…', 'placeholder', false, ''));
+            if (text.startsWith('--logfile=')) parsed.writes.push(arg.kind === 'static' ? { kind: 'static', value: text.slice(10) } : arg);
+            const next = parsed.positionals[i + 1];
+            if (arg.kind === 'static' && arg.value === '--logfile' && next) parsed.writes.push(next);
+          });
+          if (parsed.writes.length > 0) parsed.effects.add('fs:write');
+        },
+      }),
       // The words after `--` go to rustc or rustdoc: a linker (`-C linker=`), an output file, plugins.
       ...each('rustc rustdoc', {
         options: cargoOptions,

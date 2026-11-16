@@ -504,6 +504,8 @@ class Walker {
   written: Written = { contents: new Changes(), links: new Changes() };
   /** How many times `written` grew, so code walked before a write is walked again after it. */
   writes = 0;
+  /** Whether git may have rewritten the work tree, for project code run after it without a filesystem to follow. */
+  rewritten = false;
   /** Code in strings by its text: walked again, it defines the same functions, so what it does settles. */
   scripts = new Map<string, ParsedScript>();
   /** What the whole script may write, for code that runs alongside the rest. */
@@ -2425,6 +2427,16 @@ class Walker {
       return real === undefined || realStart === undefined || compare(real, realStart) !== true;
     };
     if (parsed.effects.has('exec:project') && outside(cwd)) parsed.effects.add('exec:file');
+    // What git checked out may hold anything: without files to follow, its project code is no one's.
+    if (parsed.effects.has('exec:project') && program !== 'git' && !this.files && this.rewritten) parsed.effects.add('exec:file');
+    if (program === 'git' && gitWritesTree.test(parsed.subcommands.join(' '))) this.rewritten = true;
+    // A workspace or package another than the one here (`npm -w ../b test`, `cargo test -p b`) is another's code,
+    // unless it's a path inside the project.
+    const selectors = workspaces[program] ?? (program === 'cargo' ? ['--package', '--workspace', '--exclude'] : []);
+    for (const value of selectors.flatMap((name) => parsed.options[name] ?? [])) {
+      const path = value !== true && value.kind === 'static' && /^\.?\.?\//.test(value.value) ? value.value : undefined;
+      if (path === undefined || outside(resolvePath(cwd, path, call.home))) parsed.effects.add('exec:file');
+    }
     // Another repository's config and hooks are its own, whatever the command: `core.fsmonitor` runs on `git status`.
     if (program === 'git') {
       const places = ['--git-dir', '--work-tree'].flatMap((name) => parsed.options[name] ?? []);
@@ -3204,6 +3216,9 @@ class Walker {
     const effects = new Set(parsed.effects);
     if (call.writes.length > 0 || ctx.writes.length > 0) effects.add('fs:write');
     if (call.reads.length > 0 || ctx.reads.length > 0) effects.add('fs:read');
+    // Bash opens `/dev/tcp/host/port` (and udp) as a connection, not a file: a name only known at run time may be one.
+    const redirected = [...call.reads, ...call.writes, ...ctx.reads, ...ctx.writes];
+    if (redirected.some((arg) => socket(arg.kind === 'static' ? arg.value : arg.prefix, arg.kind === 'dynamic'))) effects.add('network');
     const open = call.open || ctx.open;
     const invocation: Invocation = {
       program,
@@ -3517,6 +3532,13 @@ function argument(item: Command['suffix'][number], lookup: Lookup): Arg[] {
 function assignmentValue(assignment: Assignment, lookup: Lookup): Value {
   if (assignment.value.type === 'ArrayValue' || assignment.append || assignment.index) return { kind: 'dynamic' };
   return resolveValue(assignment.value, lookup);
+}
+
+/** Whether a redirection to `path` (or, `partial`, to a path that starts so) may be Bash's `/dev/tcp` or `/dev/udp`. */
+function socket(path: string, partial: boolean): boolean {
+  const normal = path.replace(/\/+/g, '/');
+  if (/^\/dev\/(tcp|udp)\//.test(normal)) return true;
+  return partial && ['/dev/tcp/', '/dev/udp/'].some((socket) => socket.startsWith(normal));
 }
 
 /** The files redirections read and write, devices left out. A redirection to an fd (`2>&1`) names no file. */
