@@ -257,9 +257,12 @@ export function isOption(value: string): boolean {
   return value.length > 1 && value.startsWith('-');
 }
 
-/** A dynamic word that may begin an option: one with no static start, or one that starts with `-`. */
+/**
+ * A dynamic word that may begin an option: one with no static start, one that starts with `-`, or one that may split,
+ * whose later words may be options whatever its start (`HEAD$x` with `x=' --output=f'`).
+ */
 function mayBeOption(arg: Extract<Arg, { kind: 'dynamic' }>): boolean {
-  return arg.prefix === '' || arg.prefix.startsWith('-');
+  return arg.prefix === '' || arg.prefix.startsWith('-') || arg.split;
 }
 
 /** A word only known at run time that may be no word at all, or several. */
@@ -284,6 +287,7 @@ function readOption(args: Arg[], i: number, spec: CommandSpec | undefined, parse
     if (attached !== undefined) optionValue = { kind: 'static', value: attached };
     else if (takes && option.value === true && i + 1 < args.length) optionValue = args[++i]!;
     record(parsed, option, optionValue);
+    if (optionValue === args[i] && mayBeSeveral(optionValue)) parsed.maybeOptions = true;
     return i;
   }
   for (let j = 1; j < value.length; j++) {
@@ -302,6 +306,8 @@ function readOption(args: Arg[], i: number, spec: CommandSpec | undefined, parse
     if (rest) optionValue = { kind: 'static', value: rest };
     else if (option.value === true && i + 1 < args.length) optionValue = args[++i]!;
     record(parsed, option, optionValue);
+    // A value that may split leaves words after it, which may be options (`-n a$x` with `x=' -f'`).
+    if (optionValue === args[i] && mayBeSeveral(optionValue)) parsed.maybeOptions = true;
     break;
   }
   return i;

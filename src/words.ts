@@ -240,6 +240,7 @@ function expandBraces(text: string, lookup: Lookup): Alternative[] | undefined {
   const items = splitTopLevel(inner);
   if (items.length < 2) {
     const sequence = expandSequence(inner);
+    if (sequence === null) return undefined;
     if (!sequence) return [[{ kind: 'text', value: text, split: false }]];
     return sequence.map((value) => [{ kind: 'text', value, split: false }]);
   }
@@ -415,12 +416,17 @@ function braceItems(text: string): string[] | undefined {
   const inner = text.slice(1, -1);
   const items = splitTopLevel(inner);
   if (items.length >= 2) return items;
-  return expandSequence(inner)?.map((value) => value.replaceAll(/[^A-Za-z0-9]/g, '\\$&'));
+  const sequence = expandSequence(inner);
+  // Too many to list: as many copies as make the word count as dynamic.
+  if (sequence === null) return Array.from({ length: maxAlternatives + 1 }, () => text);
+  return sequence?.map((value) => value.replaceAll(/[^A-Za-z0-9]/g, '\\$&'));
 }
 
 /**
- * What `$'…'` stands for. unbash drops a backslash and newline in it, which Bash keeps: they're no escape there. So
- * each such backslash is escaped and the whole string decoded at once, as a NUL (`\c `, `\0`) ends all of it.
+ * What `$'…'` stands for. unbash drops a backslash and newline in it, which Bash keeps: they're no escape there. And it
+ * keeps `\x{…}` as text, which Bash reads as one byte from any number of hex digits (`\x{2d}` is `-`, `\x{141}` is
+ * `A`, `\x{}` a NUL). So each such backslash is escaped, each `\x{…}` rewritten as `\xHH`, and the whole string
+ * decoded at once, as a NUL (`\c `, `\0`) ends all of it.
  */
 function ansiC(part: AnsiCQuotedPart): string {
   const inner = part.text.slice(2, -1);
@@ -431,6 +437,15 @@ function ansiC(part: AnsiCQuotedPart): string {
     if (inner[i + 1] === '\n') {
       escaped += `${inner.slice(start, i)}\\\\`;
       start = i + 1;
+    } else if (inner.startsWith('x{', i + 1)) {
+      const digits = /^[0-9A-Fa-f]*/.exec(inner.slice(i + 3))![0];
+      let byte = 0;
+      for (const digit of digits) byte = (byte * 16 + Number.parseInt(digit, 16)) & 0xff;
+      const end = i + 3 + digits.length + (inner[i + 3 + digits.length] === '}' ? 1 : 0);
+      escaped += `${inner.slice(start, i)}\\x${byte.toString(16).padStart(2, '0')}`;
+      start = end;
+      i = end - 1;
+      continue;
     }
     i++;
   }
@@ -479,20 +494,27 @@ function splitTopLevel(text: string): string[] {
   return items;
 }
 
-/** `1..3`, `a..e`, `10..1..3`: the values of a sequence expression, or `undefined` when it isn't one. */
-function expandSequence(text: string): string[] | undefined {
-  const numeric = /^(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?$/.exec(text);
-  const letters = /^([a-zA-Z])\.\.([a-zA-Z])(?:\.\.(-?\d+))?$/.exec(text);
+/**
+ * `1..3`, `a..e`, `10..1..3`, `+1..2`: the values of a sequence expression, `undefined` when it isn't one, and `null`
+ * when it makes more than `maxAlternatives`. An end written with a leading zero (`01`, `-01`) pads every value to the
+ * longer end's width, as `printf %0*d` does.
+ */
+function expandSequence(text: string): string[] | null | undefined {
+  const numeric = /^([+-]?\d+)\.\.([+-]?\d+)(?:\.\.([+-]?\d+))?$/.exec(text);
+  const letters = /^([a-zA-Z])\.\.([a-zA-Z])(?:\.\.([+-]?\d+))?$/.exec(text);
   const match = numeric ?? letters;
   if (!match) return undefined;
   const from = numeric ? Number(match[1]) : match[1]!.charCodeAt(0);
   const to = numeric ? Number(match[2]) : match[2]!.charCodeAt(0);
   const size = Math.abs(Number(match[3] ?? 1));
   const step = size > 0 ? size : 1;
-  if (Math.abs(to - from) / step >= maxAlternatives) return undefined;
+  if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || Math.abs(to - from) / step >= maxAlternatives) return null;
+  const padded = numeric && (/^-?0\d/.test(match[1]!) || /^-?0\d/.test(match[2]!));
+  const width = padded ? Math.max(match[1]!.length, match[2]!.length) : 0;
+  const format = (n: number) => (n < 0 ? `-${String(-n).padStart(width - 1, '0')}` : String(n).padStart(width, '0'));
   const values: string[] = [];
   for (let n = from; from <= to ? n <= to : n >= to; n += from <= to ? step : -step)
-    values.push(numeric ? String(n) : String.fromCharCode(n));
+    values.push(numeric ? format(n) : String.fromCharCode(n));
 
   return values;
 }

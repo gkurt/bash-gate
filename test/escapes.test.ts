@@ -620,6 +620,27 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ],
   ['git worktree list', 'allow', 'listing work trees'],
   ['git worktree add ../w', 'ask', 'a work tree checked out elsewhere'],
+
+  // Words Bash reads differently from how the parser leaves them.
+  ["$'\\x{72}m' -rf /", 'deny', 'ANSI-C \\x{…}, one byte from any number of hex digits'],
+  ["$'\\x{4172}m' -rf /", 'deny', 'ANSI-C \\x{…} with more digits than a byte holds, which keeps the last byte'],
+  ['echo "${x:-$\'\\x{24}(rm -rf /)\'}"', 'deny', 'ANSI-C \\x{…} making a substitution in a default value'],
+  ["find . $'\\x{2d}exec' rm -rf / \\;", 'deny', 'ANSI-C \\x{…} making an option'],
+  ['find . -e{x..x..+1}ec rm -rf / \\;', 'deny', 'a brace sequence whose step has a + sign'],
+  ['rm -{r..r..+1}f /', 'deny', 'the same, making an option'],
+  ['rm -rf /{+1..1}', 'deny', 'a brace sequence whose start has a + sign'],
+  ['rm -rf /{00..0}', 'deny', 'a brace sequence padded with zeros'],
+  ["find . -exec echo $(printf ' ; -delete')", 'ask', 'a word in the command find runs that may end it'],
+  ['rm -rf /x{1..300}', 'ask', 'a brace sequence too long to list'],
+  ['env -S "find . -name .\\_-exec rm -rf / {} +"', 'ask', "env -S's own escapes, where \\_ separates words"],
+  ["find . -name a$(printf ' -exec rm -rf / {} +')", 'ask', 'a word that may split into options after a static start'],
+  ["git log HEAD$(printf ' --output=%s' /etc/x)", 'ask', 'the same, for an option that writes a file'],
+  ['a=echo; a=rm export a; $a -rf /', 'deny', 'a temporary variable a builtin exports, which Bash keeps'],
+  ['a=echo; a=rm declare -r a; $a -rf /', 'deny', 'the same, made read-only'],
+  ['a=echo; a=rm command export a; $a -rf /', 'deny', 'the same, through command'],
+  ['f() { export a; }; a=echo; a=rm f; $a -rf /', 'ask', 'the same, from a function, which Bash 5.2 keeps and 5.3 takes back'],
+  ["a=echo; a=rm eval 'export a'; $a -rf /", 'ask', 'the same, from code eval reads'],
+  ['a=echo; a=rm declare a; $a -rf /', 'allow', 'a temporary variable declare only names, which Bash takes back'],
 ];
 
 /**
@@ -674,6 +695,8 @@ const startedCases: [source: string, decision: Decision, what: string][] = [
   ['cd /tmp && echo hi > x', 'ask', 'writing after leaving the project'],
   ['echo hi > ~/.bashrc', 'ask', 'writing to home'],
   ['echo hi > .git/config', 'ask', 'writing the Git config'],
+  ['PWD=/home/me; echo hi > ~+/.bashrc', 'ask', '~+, which is $PWD, not the working directory'],
+  ['read PWD <<< /home/me; echo hi > ~+/.bashrc', 'ask', 'the same, with PWD read'],
   ['rm -rf /repo', 'deny', 'deleting the project by its absolute path'],
   ['cd .. && rm -rf repo', 'deny', 'deleting the project from above'],
 ];

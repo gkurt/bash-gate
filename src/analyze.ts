@@ -189,6 +189,13 @@ interface Context {
    */
   temporary?: Set<string>;
   /**
+   * Those of `temporary` a builtin exported or made read-only, for the command they're around (at `depth`, in
+   * `calls`). Run as that command (`x=a export x`, `x=a command export x`), Bash keeps them after it, with the value
+   * they have then (`true`). Run in code it reads (`eval`, `source`) Bash takes them back, and in a function it calls,
+   * Bash 5.2 keeps them and 5.3 doesn't (`false`): the value is only known at run time.
+   */
+  kept?: { depth: number; calls: FunctionNode[]; names: Map<string, boolean> };
+  /**
    * Text Bash parses only as it expands it (a here-document's body, a subscript or arithmetic expanded again): in POSIX
    * mode, its substitutions are parsed without aliases. Code parsed later (`eval`) has them again.
    */
@@ -232,7 +239,7 @@ const setOptions = new Set(
  * (prompt strings and `PROMPT_COMMAND` are walked as code instead).
  */
 const sensitive =
-  /^(PATH|EXECIGNORE|BASH_ENV|ENV|IFS|SHELLOPTS|BASHOPTS|BASH_LOADABLES_PATH|TEXTDOMAIN|TEXTDOMAINDIR|CDPATH|HOME|ZDOTDIR|TMPDIR|XDG_CONFIG_HOME|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_[A-Z_]+|GH_(PAGER|EDITOR|BROWSER|CONFIG_DIR|PATH|HOST|REPO)|(HTTPS?|ALL)_PROXY|(https?|all)_proxy|BROWSER|PAGER|MANPAGER|EDITOR|VISUAL|LESSOPEN|LESSCLOSE|NODE_OPTIONS|NODE_PATH|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|SSH_ASKPASS|SUDO_ASKPASS|npm_config_\w+|NPM_CONFIG_\w+)$/;
+  /^(PATH|PWD|EXECIGNORE|BASH_ENV|ENV|IFS|SHELLOPTS|BASHOPTS|BASH_LOADABLES_PATH|TEXTDOMAIN|TEXTDOMAINDIR|CDPATH|HOME|ZDOTDIR|TMPDIR|XDG_CONFIG_HOME|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_[A-Z_]+|GH_(PAGER|EDITOR|BROWSER|CONFIG_DIR|PATH|HOST|REPO)|(HTTPS?|ALL)_PROXY|(https?|all)_proxy|BROWSER|PAGER|MANPAGER|EDITOR|VISUAL|LESSOPEN|LESSCLOSE|NODE_OPTIONS|NODE_PATH|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|SSH_ASKPASS|SUDO_ASKPASS|npm_config_\w+|NPM_CONFIG_\w+)$/;
 
 /** Files a redirection may name without touching the file system. */
 const devices = /^\/dev\/(null|stdin|stdout|stderr|tty|fd\/\d+)$/;
@@ -1372,8 +1379,15 @@ class Walker {
     }
     this.wrote(files.writes, call, 'contents');
     const opens = files.writes.length > 0 || files.reads.length > 0;
+    const stays = new Map<string, boolean>();
     const inner =
-      argv.length > 0 && temporary.size > 0 ? { ...ctx, temporary: new Set([...(ctx.temporary ?? []), ...temporary.keys()]) } : ctx;
+      argv.length > 0 && temporary.size > 0
+        ? {
+            ...ctx,
+            temporary: new Set([...(ctx.temporary ?? []), ...temporary.keys()]),
+            kept: { depth: ctx.depth, calls: ctx.calls, names: stays },
+          }
+        : ctx;
     // A file Bash can't open stops the command before it runs, along with what it would change (`alias x=y <nofile`).
     if (argv.length > 0 && opens) settle(state, [clone(state), this.branch(state, inner, (s, c) => this.dispatch(argv, s, c, call))]);
     else if (argv.length > 0) this.dispatch(argv, state, inner, call);
@@ -1381,7 +1395,14 @@ class Walker {
       // Gone after it: what was there before is back, unless POSIX mode keeps them (after a special builtin). What a
       // builtin or function assigned to one of them (`z=a declare z=b`) is gone too, unless it went global
       // (`declare -g`, `export`): the value is only known at run time.
+      for (const name of stays.keys()) if (!temporary.has(name)) ctx.kept?.names.set(name, false);
       for (const [name, value] of temporary) {
+        // Exported or read-only, it stays with its value, unless a file Bash couldn't open stopped the command.
+        const stay = stays.get(name);
+        if (stay !== undefined) {
+          if (opens || !stay) state.vars.set(name, { kind: 'dynamic' });
+          continue;
+        }
         const back = before.get(name);
         const kept = state.posix === false ? back : back && sameValue(back, value) ? back : { kind: 'dynamic' as const };
         if (!sameValue(state.vars.get(name), value)) state.vars.set(name, { kind: 'dynamic' });
@@ -1839,6 +1860,9 @@ class Walker {
             state.exported.add(variable);
             state.maybeExported.delete(variable);
           }
+          const exports = (name === 'export' && !flags.includes('n')) || name === 'readonly' || /[xr]/.test(flags);
+          if (exports && ctx.temporary?.has(variable))
+            ctx.kept?.names.set(variable, ctx.kept.depth === ctx.depth && ctx.kept.calls === ctx.calls);
           if (flags.includes('i')) state.integers.add(variable);
           // One of -u, -l and -c sets it; two of them together, or +u, +l or +c, turn it off.
           const cases = new Set((['u', 'l', 'c'] as const).filter((flag) => flags.includes(flag)));

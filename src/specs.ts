@@ -1394,7 +1394,7 @@ function codespaceArgs(parsed: Parsed, valued: string): { options: Parsed['optio
   const { options } = normalize(args.slice(0, i), { options: opts(...valued.split('').map((letter) => `-${letter}=`)) });
   const rest = args.slice(i);
   const next = rest[0];
-  if (options['-F'] || (next?.kind === 'dynamic' && (next.prefix === '' || next.prefix.startsWith('-')))) {
+  if (options['-F'] || (next?.kind === 'dynamic' && (next.prefix === '' || next.prefix.startsWith('-') || next.split))) {
     parsed.maybeOptions = true;
     parsed.effects.add('exec:arbitrary');
   }
@@ -2446,6 +2446,9 @@ const find: CommandSpec = {
     o('-fprint -fprint0 -fls -fprintf', { effects: ['fs:write'] }),
   ),
   parse(args, parsed) {
+    // A word that may split may hold any part of the expression, wherever it is: a test's value or a command's
+    // argument (`-name a$x` or `-exec echo $x` with `x=' ; -delete'`).
+    if (args.some((arg) => arg.kind === 'dynamic' && arg.split)) parsed.maybeOptions = true;
     let i = 0;
     for (; i < args.length; i++) {
       const value = staticValue(args[i]);
@@ -2601,7 +2604,8 @@ function splitEnv(args: Arg[], uutils: { differs: boolean }, nested = false): Ar
     if (!string) return args;
     if (stopped || nested || splitsAgain(args.slice(i + used))) uutils.differs = true;
     const lookup = () => ({ kind: 'dynamic' as const });
-    const words = string.kind === 'static' ? resolveWords(string.value, lookup) : undefined;
+    // A backslash is env's own escape, none of them the shell's (`\_` separates words, `\c` ends them).
+    const words = string.kind === 'static' && !string.value.includes('\\') ? resolveWords(string.value, lookup) : undefined;
     const split = words ?? [dynamicArg(string.kind === 'static' ? string.value : string.text, 'variable', true, '')];
     return [...args.slice(0, i), ...splitEnv([...split, ...args.slice(i + used)], uutils, true)];
   }
