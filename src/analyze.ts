@@ -311,7 +311,7 @@ const setOptions = new Set(
  * (prompt strings and `PROMPT_COMMAND` are walked as code instead).
  */
 const sensitive =
-  /^(PATH|PWD|POSIXLY_CORRECT|RIPGREP_CONFIG_PATH|BASH_FUNC_.+|EXECIGNORE|BASH_ENV|ENV|IFS|SHELLOPTS|BASHOPTS|BASH_LOADABLES_PATH|TEXTDOMAIN|TEXTDOMAINDIR|CDPATH|HOME|ZDOTDIR|TMPDIR|XDG_CONFIG_HOME|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_[A-Z0-9_]+|GH_(PAGER|EDITOR|BROWSER|CONFIG_DIR|PATH|HOST|REPO)|(HTTPS?|ALL)_PROXY|(https?|all)_proxy|BROWSER|PAGER|MANPAGER|MANOPT|SHELL|EDITOR|VISUAL|LESS|LESSOPEN|LESSCLOSE|LESSKEY\w*|NODE_OPTIONS|BUN_OPTIONS|CARGO_[A-Z0-9_]+|RUSTC(_WRAPPER|_WORKSPACE_WRAPPER)?|RUSTDOC|RUSTFLAGS|RUSTDOCFLAGS|RUSTUP_TOOLCHAIN|RUSTUP_HOME|NODE_PATH|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|SSH_ASKPASS|SUDO_ASKPASS|npm_config_\w+|NPM_CONFIG_\w+)$/;
+  /^(PATH|PWD|POSIXLY_CORRECT|RIPGREP_CONFIG_PATH|BASH_FUNC_.+|EXECIGNORE|BASH_ENV|ENV|IFS|SHELLOPTS|BASHOPTS|BASH_LOADABLES_PATH|TEXTDOMAIN|TEXTDOMAINDIR|CDPATH|HOME|ZDOTDIR|TMPDIR|XDG_CONFIG_HOME|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_[A-Z0-9_]+|GH_(PAGER|EDITOR|BROWSER|CONFIG_DIR|PATH|HOST|REPO)|(HTTPS?|ALL)_PROXY|(https?|all)_proxy|BROWSER|PAGER|MANPAGER|MANOPT|SHELL|GCONV_PATH|GNUPGHOME|SSLKEYLOGFILE|GNUTLS_KEYLOGFILE|EDITOR|VISUAL|LESS|LESSOPEN|LESSCLOSE|LESSKEY\w*|NODE_OPTIONS|BUN_OPTIONS|CARGO_[A-Z0-9_]+|RUSTC(_WRAPPER|_WORKSPACE_WRAPPER)?|RUSTDOC|RUSTFLAGS|RUSTDOCFLAGS|RUSTUP_TOOLCHAIN|RUSTUP_HOME|NODE_PATH|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|SSH_ASKPASS|SUDO_ASKPASS|npm_config_\w+|NPM_CONFIG_\w+)$/;
 
 /** Files a redirection may name without touching the file system. */
 const devices = /^\/dev\/(null|stdin|stdout|stderr|tty|fd\/\d+)$/;
@@ -1776,7 +1776,7 @@ class Walker {
       case 'continue': {
         // `break n` leaves n loops (all, past the outermost); one Bash refuses (`break 0`) or only known at run
         // time may leave any of them.
-        const count = values.length === 0 ? 1 : values.length === 1 && /^d+$/.test(values[0] ?? '') ? Number(values[0]) : 0;
+        const count = values.length === 0 ? 1 : values.length === 1 && /^\d+$/.test(values[0] ?? '') ? Number(values[0]) : 0;
         const targets = count > 0 ? [ctx.loops[Math.max(0, ctx.loops.length - count)]] : ctx.loops;
         for (const jumps of targets) if (jumps) (name === 'break' ? jumps.breaks : jumps.continues).push(clone(state));
         break;

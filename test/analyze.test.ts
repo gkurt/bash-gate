@@ -143,6 +143,12 @@ describe('options', () => {
     expect(analyze('unshare -r true').invocations[0]!.effects).not.toContain('exec:arbitrary');
   });
 
+  test('script logs to typescript without a file', () => {
+    const [script] = analyze('script -qc ls').invocations;
+    expect(values(script!.writes)).toEqual(['typescript']);
+    expect(values(analyze('script -qc ls log').invocations[0]!.writes)).toEqual(['log']);
+  });
+
   test('enable -p and -d turn no builtin off', () => {
     for (const source of ['enable -n -p printf; printf -v x touch', 'enable -n -d printf; printf -v x touch']) {
       const printf = analyze(source).invocations.find((invocation) => invocation.program === 'printf');

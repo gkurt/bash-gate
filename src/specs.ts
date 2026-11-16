@@ -3159,7 +3159,14 @@ const programs: Record<string, CommandSpec> = {
       nested.argv = [anyWords, ...nested.argv];
     },
   },
-  nohup: { posix: true, abbreviations: true, command: {} },
+  // On a terminal, it writes what the command prints to `nohup.out`, where it runs.
+  nohup: {
+    posix: true,
+    abbreviations: true,
+    command: {},
+    effects: ['fs:write'],
+    finish: (parsed) => parsed.writes.push({ kind: 'static', value: 'nohup.out' }),
+  },
   timeout: {
     abbreviations: true,
     posix: true,
@@ -3206,6 +3213,12 @@ const programs: Record<string, CommandSpec> = {
       '--process-slot-var=',
     ),
     finish(parsed) {
+      // --process-slot-var puts a variable, the slot's number, in what it runs' environment: `PATH` too.
+      for (const name of parsed.options['--process-slot-var'] ?? []) {
+        const known = name === true ? undefined : staticValue(name);
+        if (known === undefined) parsed.effects.add('exec:arbitrary');
+        else parsed.env.push(dynamicArg(`${known}=…`, 'stdin', false, `${known}=`));
+      }
       // With -I R (or -i, whose R is `{}`), each line of input takes R's place in any word of the command, its name too.
       const known = [
         ...(parsed.options['-I'] ?? []).map((value) => (value === true ? undefined : staticValue(value))),
@@ -3397,10 +3410,11 @@ const programs: Record<string, CommandSpec> = {
       o('-B= --log-io=', { role: 'write' }),
     ),
     finish(parsed) {
-      // Without -c, it starts an interactive shell. The positional is where the session is logged.
+      // Without -c, it starts an interactive shell.
       if (!parsed.options['--command']) parsed.effects.add('exec:arbitrary');
-      const log = parsed.positionals[0];
-      if (log && staticValue(log) !== '/dev/null') parsed.writes.push(log);
+      // The positional is where the session is logged, `typescript` without one.
+      const log = parsed.positionals[0] ?? { kind: 'static', value: 'typescript' };
+      if (staticValue(log) !== '/dev/null') parsed.writes.push(log);
       if (parsed.writes.length > 0) parsed.effects.add('fs:write');
     },
   },
