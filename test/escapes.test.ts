@@ -777,6 +777,11 @@ const startedCases: [source: string, decision: Decision, what: string][] = [
   ['RIPGREP_CONFIG_PATH=/tmp/x rg foo', 'ask', 'a ripgrep config, which may name a program to run'],
   ['sort -T /home/me/t big', 'ask', 'sort writing temporary files outside the project'],
   ['tree -Lo 2 /home/me/x', 'ask', 'tree reading each letter of a cluster on its own'],
+  // Braces that are no list or sequence, whose inside Bash still expands and splits.
+  ["x=' ../outside '; touch {$x..}", 'ask', 'braces that are no sequence around a variable that splits'],
+  ["echo hi | tee {$(echo ' /home/me/.bashrc ')..}", 'ask', 'the same, around a substitution'],
+  ['touch {a..}', 'allow', 'braces that are no sequence, around plain text'],
+  ['declare BASH_VERSINFO=echo; $BASH_VERSINFO hi', 'ask', 'a variable Bash keeps read-only from the start'],
   // What sh and env -S read otherwise than Bash.
   ["env -S $'find .\\v-delete'", 'ask', 'env -S splitting at a vertical tab'],
   ["env -S $'find .\\f-delete\\r'", 'ask', 'the same, at a form feed and a carriage return'],

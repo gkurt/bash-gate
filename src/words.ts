@@ -241,7 +241,9 @@ function expandBraces(text: string, lookup: Lookup): Alternative[] | undefined {
   if (items.length < 2) {
     const sequence = expandSequence(inner);
     if (sequence === null) return undefined;
-    if (!sequence) return [[{ kind: 'text', value: text, split: false }]];
+    // No list and no sequence (`{$x..}`): Bash leaves the braces as text but expands, unquotes and splits what's
+    // between them, which only a plain word can be known without.
+    if (!sequence) return /['"\\$`]/.test(text) ? undefined : [[{ kind: 'text', value: text, split: false }]];
     return sequence.map((value) => [{ kind: 'text', value, split: false }]);
   }
   const result: Alternative[] = [];
@@ -515,6 +517,8 @@ function expandSequence(text: string): string[] | null | undefined {
   const values: string[] = [];
   for (let n = from; from <= to ? n <= to : n >= to; n += from <= to ? step : -step)
     values.push(numeric ? format(n) : String.fromCharCode(n));
+  // Between `Z` and `a` are `[`, `\`, `]`, `^`, `_` and a backquote, which Bash makes words of its own way.
+  if (!numeric && values.some((value) => !/^[A-Za-z]$/.test(value))) return null;
 
   return values;
 }
