@@ -1132,3 +1132,17 @@ describe('dry runs', () => {
     );
   }
 });
+
+describe('a tilde in a word shaped like an assignment', () => {
+  // Outside POSIX mode Bash expands it after the `=` or a `:`, as an argument too: HOME may only be known at run time.
+  const argv = (source: string) =>
+    analyze(source, { cwd: '/repo' })
+      .invocations.at(-1)!
+      .argv.map((arg) => arg.kind);
+  test.each([
+    ['echo a=~/a', ['static', 'dynamic']],
+    ['echo A_1=x:~/b', ['static', 'dynamic']],
+    ['declare x=a:~/b; echo "$x"', ['static', 'dynamic']],
+    ['echo core.x=~/a "a=~/b"', ['static', 'static', 'static']],
+  ] as const)('%s', (source, kinds) => expect(argv(source)).toEqual([...kinds]));
+});

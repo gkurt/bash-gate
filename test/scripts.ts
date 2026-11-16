@@ -125,6 +125,7 @@ export const scripts = [
   'x=a; y=b; f() { local x=c; declare y=d; declare -g z=e; cat $x $y; }; f; ls $x $y $z',
   'z=b; f() { declare x -g z=e; }; f; ls "$z"',
   'z=b; declare -e z=c; ls "$z"; declare -l v; v=CAT; $v a; declare -u -l w=cAt; $w b; f() { local -c x=sORT; $x c; }; f',
+  'declare +u -u x=cat; $x a; declare -l +u y=SORT; $y b; declare -u z; declare +l -l z=ls; $z c',
   `export x=a; f() { local x; /bin/bash -c 'ls "$x"'; cat "[$x]"; }; f`,
   'RANDOM=5; ls $RANDOM; OLDPWD=a; cd .; cat "$OLDPWD"; PIPESTATUS=ls; true | true; sort $PIPESTATUS',
   'x=; : ${x:=ls}; $x a; y=cat; declare -n r=y; r=sort; $y b',

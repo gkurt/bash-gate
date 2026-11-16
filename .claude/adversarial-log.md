@@ -569,3 +569,15 @@ Confirmed and fixed:
 Rejected: none. Noted, not a gap: `git push --dry-run` runs the pre-push hook, which stays `exec:project`.
 Costs: `npm --dry-run` before commands that ignore it now gets their real effects (`network`, `fs:write`); `git fetch --dry-run` has `fs:write`; helm `--dependency-update` writes the chart. No everyday verdict moved.
 Needs a decision: none.
+
+## Round 47: src/trace/ and src/cover.ts (fifth pass), 2026-11-16, no commit
+Stopped by a safeguard: the reviewer subagent was terminated early (request ID req_011Ch7Ci35XNkL9jhVnLSZav) before reporting any findings. Not counted as an empty round. The trace area has now been stopped this way before; a later pass may need a narrower brief (cover.ts's matching only, no supervisor internals).
+
+## Round 48: src/words.ts (fifth pass), 2026-11-16, see commit
+The reviewer diffed about 300 word forms against Bash 5.2.21 in WSL under `env -i`; I re-ran the attribute and tilde claims the same way. All 6 new cases (escapes, analyze, and a `test/scripts.ts` script checked against real Bash) fail on 157f4f3.
+Confirmed and fixed:
+- `declare +u -u o=-c; git $o core.fsmonitor='touch PWNED' status` → allow, read as `git -C …`; Bash keeps `-c` (a `+` letter turns that attribute off, in either order) and git ran the fsmonitor command → the case attribute is the set of `-` letters minus the `+` ones (`+u -l` still lowers, verified).
+- `declare x=a:~/b`, `echo a=~/a A_1=~:~/b` → static text; Bash (not in POSIX mode) expands a tilde after the `=` or a `:` of an assignment-shaped argument → such a word is dynamic. No verdict found to move, but it was a wrong static.
+Rejected or not verified: `gh alias set d 'api "\-XDELETE" …'` split with Bash rules where gh uses shlex (gh isn't installed; the verdict asks anyway, as `alias set` writes config). Close calls that already ask through a finding: IFS changes (`getopts … IFS`, `let IFS=5`, `mapfile -t IFS` ask through their own builtin rules only), `$` before a line continuation, changes to a read-only name.
+Costs: an assignment-shaped argument with an unquoted tilde after `=` or `:` is dynamic, so a rule on its value no longer matches it statically. No everyday verdict moved.
+Needs a decision: none.

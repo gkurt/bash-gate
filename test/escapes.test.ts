@@ -177,6 +177,8 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ],
   ["x=$(cat <<E )\ncat <<'EOF'\n$(rm -rf /)\nEOF", 'ask', 'a here-document opened in a substitution and never closed'],
   ['declare -l v; v=RM; $v -rf /', 'deny', 'a variable that lowercases what it is assigned'],
+  ["declare +u -u o=-c; git $o core.fsmonitor='touch PWNED' status", 'ask', '+u with -u, which turns the attribute off'],
+  ['declare -u +u v=rm; $v -rf /', 'deny', 'the same in the other order'],
   ['x=/; declare -e x=./build; rm -rf $x', 'deny', 'declare with an option Bash rejects changes nothing'],
   ['shopt -s expand_aliases\nalias rm=true <missing\nrm -rf /', 'deny', "a builtin that doesn't run when its redirection fails"],
   ['hash x -p /bin/true rm; rm -rf /', 'deny', "hash's options end at its first name"],

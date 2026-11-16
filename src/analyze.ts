@@ -2400,11 +2400,11 @@ class Walker {
           if (flags.includes('i')) state.integers.add(variable);
           if (flags.includes('i') || off.includes('i')) state.maybeIntegers.delete(variable);
           if (off.includes('i')) state.integers.delete(variable);
-          // One of -u, -l and -c sets it; two of them together, or +u, +l or +c, turn it off.
-          const cases = new Set((['u', 'l', 'c'] as const).filter((flag) => flags.includes(flag)));
+          // One of -u, -l and -c sets it, unless a `+` of the same letter takes it away, in either order (`+u -u`); two
+          // of them together turn it off, and so does a `+` alone.
+          const cases = new Set((['u', 'l', 'c'] as const).filter((flag) => flags.includes(flag) && !off.includes(flag)));
           if (cases.size === 1) state.cases.set(variable, [...cases][0]);
-          else if (cases.size > 1 || options.some((option) => option?.startsWith('+') && /[ulc]/.test(option)))
-            state.cases.delete(variable);
+          else if (cases.size > 1 || /[ulc]/.test(off)) state.cases.delete(variable);
           if (flags.includes('n') && name !== 'export' && name !== 'readonly') {
             // A nameref: its value is the name of the variable it stands for, which isn't assigned. (`export -n`
             // takes the export away.) Each read of it reads that variable, subscript and all: `a[$(ls)]` runs `ls`.
@@ -4106,6 +4106,10 @@ function asAssignment(word: Word): Assignment | undefined {
 }
 
 function argument(item: Command['suffix'][number], lookup: Lookup): Arg[] {
+  // Outside POSIX mode Bash expands a tilde after the `=` or a `:` of a word shaped like an assignment, even a plain
+  // argument (`echo a=~/x`, `declare x=a:~/b`): where HOME may be only known at run time.
+  if ((item.type === 'Word' || item.type === 'Assignment') && assignedTilde.test(item.text))
+    return [dynamicArg(item.text, 'variable', false, item.text.slice(0, item.text.indexOf('=') + 1))];
   if (item.type === 'Word') return resolveWord(item, lookup);
   if (item.type !== 'Assignment') return [];
   // As an argument (`alias`, `declare`), Bash expands its braces: `declare v=a{b,c}` declares v twice.
@@ -4117,6 +4121,9 @@ function argument(item: Command['suffix'][number], lookup: Lookup): Arg[] {
   const prefix = `${item.name}${item.append ? '+=' : '='}`;
   return [value.kind === 'static' ? { kind: 'static', value: prefix + value.value } : dynamicArg(item.text, 'variable', false, prefix)];
 }
+
+/** A word shaped like an assignment with an unquoted tilde after its `=` or a `:` (`a=~/x`, `PATH=a:~/bin`). */
+const assignedTilde = /^[A-Za-z_]\w*(\[[^\]]*\])?\+?=([^:'"\\]*:)*~/;
 
 function assignmentValue(assignment: Assignment, lookup: Lookup): Value {
   if (assignment.value.type === 'ArrayValue' || assignment.append || assignment.index) return { kind: 'dynamic' };
