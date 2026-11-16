@@ -55,6 +55,8 @@ runs everything on Linux, then builds and loads `dist/` in Node.
 - A new construct or spec gets a case in `test/escapes.test.ts`. If it changes what runs, it also gets a script in
   `test/scripts.ts`, which `test/bash.test.ts` checks against real Bash and, on x86_64 Linux, `test/trace.test.ts`
   against every exec the kernel sees.
+- `test/everyday.test.ts` pins the verdict `recommended` gives the commands an agent runs all day. A change that moves
+  one is a cost the user decides on, not a test to update.
 - Check Bash semantics in Bash before encoding them, with harmless commands (`echo`).
 - `unbash` stays pinned to an exact version: a parser that disagrees with Bash is the classic bypass.
 
