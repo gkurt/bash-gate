@@ -527,3 +527,20 @@ False positives fixed: `git check-ignore|ls-files|status|add|rm|restore|check-at
 Rejected (kept fail-closed): `cat cert.pem` (`.pem` may be a key); `$CACHE_KEY`; `env | grep …`, `printenv | grep …` (the whole environment goes into the pipe); `cat .npmrc`; `ps user` (procps reads it as BSD `u s e r`, `e` included; it errors here).
 Costs: `test -n "$TOKEN"` now asks (`[ -n "$TOKEN" ]` stays allow); `local` with no names in a function, integer assignments of names that are secrets, and prompt strings with secrets ask. No everyday verdict moved.
 Needs a decision: none.
+
+## Round 44: kubectl, helm and terraform specs (second pass, after 0.4.0's dry runs), 2026-11-16, see commit
+Rerun of the round stopped for the 0.4.0 work. The reviewer cited kubectl, client-go, kustomize, helm and terraform source and docs, and checked in-process only. No Bash claim was involved, so nothing ran in WSL. 17 new escapes cases fail on c5b819a.
+Confirmed and fixed:
+- `kubectl delete|create|replace --raw … --dry-run=server|client` → allow as a dry run; the raw branch (`rawhttp.RawDelete/RawPost/RawPut`) never consults DryRunStrategy → kubectl's dry run keeps `network` with `--raw`.
+- `kubectl run x --image=busybox --detach-keys --dry-run=client -- sh -c id` → allow; pflag gives `--dry-run=client` to the string flag the spec lacks, and the pod runs → `rehearse` gives up the dry run when the command has an unknown option (other than the dry-run option itself, which npm's spec leaves unknown) or maybe-options. This holds in every spec.
+- `kubectl get secret x -v=8`, `describe secret x --v 10` → allow; client-go logs response bodies from V(8) → `-v` of 8 or more (or unknown) with a possible Secret is `secrets:read`/`secrets:print`.
+- `kubectl config view` → allow; RedactSecrets only redacts `datapolicy`-tagged fields, not auth-provider config maps or exec env values → `config view` always reads secrets.
+- `kubectl get -f pod.yaml,https://…`, `helm template . -f v.yaml,https://…` → allow; `-f`/`--values` are string slices split at commas → each item is checked for a URL.
+- `kubectl get -k github.com/evil/repo//base`, `apply -k deploy@evil.example:org/repo`, `kubectl kustomize github.com/evil/repo` → allow; kustomize clones SCP-style addresses and host-first paths → `remoteKustomization`.
+- `helm upgrade rel ./chart --reuse-values --dry-run=server` → allow; the dry run prints the rendered manifest with the stored values, Secrets included unless `--hide-secret` → `secrets:read`/`secrets:print` when the values or lookups come from the cluster.
+- `terraform workspace select -or-create prod2` → allow; it creates the workspace in the backend → `network`.
+- `kubectl config set users.u.exec.command /tmp/evil`, `kubectl kuberc set …` from HOME → allow; `recommended`'s list of user configuration that runs code lacked `~/.kube` → added.
+- `helm repo index ..`, `helm dependency update ../other` → allow with an empty writes list → they write their directory argument (default `.`).
+Rejected (not changed): `TF_LOG=trace` printing provider responses (provider-dependent, uncited); `terraform init -backend-config=/tmp/b.hcl` (a backend file is configuration; reads outside the project are allowed, and the policy, not the spec, places it).
+Costs: `kubectl config view` (any form) asks; dry runs with an option the spec doesn't know ask as the real command; `-v=8`+ on Secrets, comma URL lists, host-named kustomizations, `select -or-create`, writes under `~/.kube`, and helm index or dependency writes outside the project ask. No everyday verdict moved.
+Needs a decision: none.

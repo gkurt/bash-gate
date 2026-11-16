@@ -2724,9 +2724,13 @@ function finishKubectl(parsed: Parsed): void {
   // Any command with print flags prints the objects it names or changes, as the server has them (`label -o yaml`).
   if (shows && maySecrets(parsed)) parsed.effects.add('secrets:read').add('secrets:print');
   if (path === 'apply view-last-applied' && maySecrets(parsed)) parsed.effects.add('secrets:read').add('secrets:print');
-  // `--flatten` skips the redaction, and puts the key and certificate files' contents in.
-  if (path === 'config view' && (parsed.options['--raw'] || parsed.options['--flatten'] || parsed.maybeOptions))
-    parsed.effects.add('secrets:read').add('secrets:print');
+  // `--raw` and `--flatten` skip the redaction, and the redaction itself leaves out an OIDC auth provider's tokens and
+  // an exec plugin's environment.
+  if (path === 'config view') parsed.effects.add('secrets:read').add('secrets:print');
+  // From verbosity 8, client-go logs response bodies: a Secret's data, whatever the output format.
+  const verbosity = parsed.options['--v']?.at(-1);
+  const logsBodies = verbosity !== undefined && (verbosity === true || verbosity.kind === 'dynamic' || !/^[0-7]$/.test(verbosity.value));
+  if (logsBodies && maySecrets(parsed)) parsed.effects.add('secrets:read').add('secrets:print');
   if (path === 'diff' && parsed.options['--show-secrets']) parsed.effects.add('secrets:read').add('secrets:print');
   // The kubeconfig and kuberc it changes, where it reads them.
   const configFile = (option: string, fallback: string) => {
@@ -2738,11 +2742,24 @@ function finishKubectl(parsed: Parsed): void {
   if (parsed.effects.has('network:read') && kubeElsewhere(parsed)) parsed.effects.add('network');
 }
 
-/** A file or kustomization kubectl fetches from a URL: from anywhere. */
+/** A value that may be a URL, or a list of them split at commas (Go's string slices): `-f a.yaml,https://…`. */
+function listsUrl(value: Arg | true): boolean {
+  return value === true || value.kind === 'dynamic' || value.value.split(',').some((item) => /^[a-z][a-z0-9+.-]*:\/\//i.test(item.trim()));
+}
+
+/**
+ * A kustomization kustomize clones: a URL, an SCP-style address (`deploy@host:repo`), or a path whose first part names
+ * a host (`github.com/org/repo`), as a local directory's rarely does.
+ */
+function remoteKustomization(arg: Arg | true): boolean {
+  if (arg === true || arg.kind === 'dynamic') return true;
+  const { value } = arg;
+  return /:\/\/|^[^/]*@[^/]*:|\.git($|\/)|\?ref=/.test(value) || /^[^./~][^/]*\.[^/]*\//.test(value);
+}
+
+/** A file or kustomization kubectl fetches from a URL or a host: from anywhere. */
 function kubeFetches(parsed: Parsed): boolean {
-  return [...(parsed.options['--filename'] ?? []), ...(parsed.options['--kustomize'] ?? [])].some(
-    (value) => value === true || value.kind === 'dynamic' || /^[a-z][a-z0-9+.-]*:\/\//i.test(value.value),
-  );
+  return (parsed.options['--filename'] ?? []).some(listsUrl) || (parsed.options['--kustomize'] ?? []).some(remoteKustomization);
 }
 
 /** A server, proxy or kubeconfig of its own: a host not set up. */
@@ -3202,8 +3219,7 @@ const kubectl: CommandSpec = {
           '--reorder=',
         ),
         finish(parsed) {
-          if (parsed.positionals.some((arg) => arg.kind === 'dynamic' || /:\/\/|^git@|\.git($|\/)|\?ref=/.test(arg.value)))
-            parsed.effects.add('network');
+          if (parsed.positionals.some(remoteKustomization)) parsed.effects.add('network');
         },
       },
       label: {
@@ -3366,7 +3382,8 @@ const kubectl: CommandSpec = {
   dryRun: {
     options: ['--dry-run'],
     values: /^(client|server|unchanged)$/,
-    keeps: (parsed) => (kubeFetches(parsed) || kubeElsewhere(parsed) ? ['network'] : []),
+    // A raw request (`delete --raw`) is sent as it is: the dry run is never asked.
+    keeps: (parsed) => (kubeFetches(parsed) || kubeElsewhere(parsed) || parsed.options['--raw'] ? ['network'] : []),
   },
   parse: (args, parsed) => readCobra(kubectl, args, parsed),
   finish(parsed) {
@@ -3407,6 +3424,17 @@ function finishHelm(parsed: Parsed): void {
   const output = parsed.options['--output']?.at(-1);
   const whole = output !== undefined && (output === true || output.kind === 'dynamic' || /^(json|yaml)$/i.test(output.value));
   if (/^(status|install|upgrade)$/.test(path) && whole) parsed.effects.add('secrets:read').add('secrets:print');
+  // A dry run prints the rendered manifest, Secrets included unless hidden: with the release's stored values
+  // (`--reuse-values`), or what templates look up in the cluster (`--dry-run=server`).
+  const dryRun = parsed.options['--dry-run']?.at(-1);
+  const fromCluster =
+    ['--reuse-values', '--reset-then-reuse-values'].some((name) => parsed.options[name]) ||
+    (dryRun !== undefined && dryRun !== true && (dryRun.kind === 'dynamic' || dryRun.value === 'server'));
+  if (/^(install|upgrade)$/.test(path) && dryRun !== undefined && fromCluster && !parsed.options['--hide-secret'])
+    parsed.effects.add('secrets:read').add('secrets:print');
+  // Where it writes: the index into the directory it's given, the dependencies into the chart's.
+  if (/^(repo index|dependency (build|update))$/.test(path))
+    parsed.writes.push(...(parsed.positionals.length > 0 ? parsed.positionals : [{ kind: 'static' as const, value: '.' }]));
   if (parsed.effects.has('network:read') && helmElsewhere(parsed)) parsed.effects.add('network');
 }
 
@@ -3416,7 +3444,7 @@ const helmChartCommands = /^(install|upgrade|template|show \w+|pull|lint|package
 function helmFetches(parsed: Parsed): boolean {
   const url = (value: Arg | true) => value === true || value.kind === 'dynamic' || /^[a-z][a-z0-9+.-]*:\/\//i.test(value.value);
   const charts = helmChartCommands.test(parsed.subcommands.join(' ')) ? parsed.positionals : [];
-  return [...charts, ...(parsed.options['--values'] ?? []), ...(parsed.options['--repo'] ?? [])].some(url);
+  return [...charts, ...(parsed.options['--repo'] ?? [])].some(url) || (parsed.options['--values'] ?? []).some(listsUrl);
 }
 
 /** A cluster, kubeconfig, or repositories from a file or cache the command names: a host not set up. */
@@ -3972,6 +4000,9 @@ function parseTerraform(args: Arg[], parsed: Parsed): void {
     (value) => value === true || value.kind === 'dynamic' || value.value.includes('='),
   );
   if (path === 'init' && (migrates || settings)) parsed.effects.add('network');
+  // Selecting a workspace that isn't there creates it, in the backend.
+  const creates = parsed.options['--or-create'];
+  if (path === 'workspace select' && creates && !goFalse(creates.at(-1))) parsed.effects.add('network');
   if (path === 'providers lock' && parsed.options['--net-mirror']) parsed.effects.add('network');
 }
 

@@ -71,6 +71,9 @@ export const recommended: Policy = {
         '~/.config/git/**',
         '~/.ssh',
         '~/.ssh/**',
+        // A kubeconfig's exec credential plugins, and kuberc's aliases and defaults.
+        '~/.kube',
+        '~/.kube/**',
         '~/.bashrc',
         '~/.bash_aliases',
         '~/.bash_profile',

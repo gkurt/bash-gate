@@ -481,13 +481,17 @@ function levelsOf(root: CommandSpec, subcommands: string[]): CommandSpec[] {
  * Whether `parsed` is a dry run, by the spec's `dryRun`: then it gets the real command it rehearses (`parsed.dryRun`),
  * and its effects are lowered to the rehearsal's. It still reads and may run project code (`npm publish --dry-run` runs
  * its lifecycle scripts), but writes, deletes and runs nothing remotely, and only reads from the network. What it writes
- * by an option of its own (a log, a plan file) it still writes. A value only known at run time may be no dry run.
+ * by an option of its own (a log, a plan file) it still writes. A value only known at run time may be no dry run, and
+ * so may a command with an option the spec doesn't know, or a word that may be one: it may take the dry-run option as
+ * its value (`--detach-keys --dry-run=client`), or turn it off.
  */
 export function rehearse(root: CommandSpec | undefined, args: Arg[], parsed: Parsed): void {
   if (!root) return;
   const levels = levelsOf(root, parsed.subcommands);
   const spec = levels.findLast((level) => level.dryRun)?.dryRun;
   if (!spec) return;
+  const others = parsed.unknownOptions.filter((option) => !spec.options?.includes(option.split('=')[0]!));
+  if (others.length > 0 || parsed.maybeOptions) return;
   if (spec.options) {
     const values = spec.options.flatMap((name) => parsed.options[name] ?? []);
     const last = values.at(-1);

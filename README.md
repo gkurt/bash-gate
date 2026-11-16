@@ -136,7 +136,8 @@ const policy: Policy = {
   arithmetic (`$(( ))`, a subscript, an offset, `[[ X -eq 0 ]]`, an integer variable's value, and a variable whose
   value names one), but only tested (`[ … ]` with one word, a unary test or a string comparison, `[[ ]]`, `case`; not
   `test`, which leaves its last word in `$_`; not as a number and not under `set -x`), and what a tool prints of its own (`kubectl get secret -o yaml`, any kubectl command printing a Secret
-  with `-o`, `kubectl config view --raw` or `--flatten`, `helm get values`, `helm status -o json`, `terraform output
+  with `-o` or `-v=8` and up, `kubectl config view`, `helm get values`, `helm status -o json`, a helm dry run with
+  `--reuse-values` or `=server` unless `--hide-secret`, `terraform output
   -json`, `terraform state pull`). A file named only by a word known at run time (`cat
   "$f"`), or read by a recursive search (`grep -r`), isn't known to be one. `network:read` only reads, from a host already set up:
   `git fetch` and `git ls-remote` from a remote given by its name (or none), and the `gh` commands that look
@@ -160,7 +161,9 @@ const policy: Policy = {
   unless it still reaches a host the command names (`rsync -n src/ host:/dst`, `kubectl apply -f https://…
   --dry-run=client`) or may still push (`gh pr create --dry-run`). So a policy lets a dry run through on its effects
   without knowing about dry runs, though a rule on options still matches (`recommended` denies `git push --dry-run
-  --force`). A value that turns it off (`--dry-run=false`, `=none`, `=0`), or one only known at run time, is no dry run.
+  --force`). A value that turns it off (`--dry-run=false`, `=none`, `=0`), or one only known at run time, is no dry run,
+  and neither is a command with an option the spec doesn't know, or a word that may be one: it may take the dry-run
+  option as its value (`kubectl run --detach-keys --dry-run=client`). A `kubectl --raw` request ignores the dry run.
   `invocation.dryRun` is the real command it rehearses: `{ text, shape, effects }`, the effects that command would have,
   so a caller can match a later real run by shape and arguments as evidence it was rehearsed. Most are the same command
   without the option: `git push -n`, `git add|rm|mv|fetch -n`, `rsync -n`, `npm --dry-run`, `cargo publish
@@ -195,7 +198,7 @@ analysis.invocations.some((invocation) => matchRule(deny('gh pr merge'), invocat
 `recommended` (`src/recommended.ts`) is a starting point. It allows reading and everyday git, denies force pushes and
 deleting top-level directories, and asks about deleting, network, privilege, code it can't see, writes outside the
 working directory (`..` and `../**`, `~` among them: a path counts as outside unless an absolute `cwd` shows it's inside, so a project under `~` is still the project; a `cwd` that isn't a POSIX absolute path, such as `C:/w/p`, places nothing), writes
-to the user's Git config, shell startup files, `~/.ssh`, `~/.local/bin`, `~/bin` and the npm, bun and cargo user config (even from a script started in `~`, in any case, by a Windows short name, and through a symlink, where HOME really is or where it was when the script started), writes inside a `.git`, and writes to a file named `HEAD` (with `objects` and `refs` beside it, git takes any directory as a
+to the user's Git config, shell startup files, `~/.ssh`, `~/.kube`, `~/.local/bin`, `~/bin` and the npm, bun and cargo user config (even from a script started in `~`, in any case, by a Windows short name, and through a symlink, where HOME really is or where it was when the script started), writes inside a `.git`, and writes to a file named `HEAD` (with `objects` and `refs` beside it, git takes any directory as a
 repository). It asks about git forms that discard uncommitted work or move a ref (`reset --hard`, `branch -f`,
 `checkout -B`, `switch -C`, `switch -m`, `checkout -f`, `checkout -- <path>`, `merge`, `rebase` or `cherry-pick` `--abort` and `--skip`, `stash export --to-ref`, `restore` of the work tree, `fetch --stdin`), and about those that open the editor, which may read commands from the script's input (`commit` without a message, `tag -a` without one, `rebase -i`, `--edit`, `--continue`) and denies those that rewrite or delete remote
 history (`push --force`, `--delete`, `--mirror`, `--prune`). `sed` and `awk` run when their script only edits what they read
@@ -209,11 +212,13 @@ command line (sensitive variables). It asks about reading secrets (`secrets:read
 it (`network`: `apply`, `delete`, `install`, `upgrade`, and a `--dry-run` Go reads as false, `=false` or `=0`), run
 something in a container (`exec:remote`: `kubectl exec`, `run`, `debug`, `cp`), open an editor, run a plugin (a word
 they don't know), print a Secret, change the user's kubeconfig or helm config, or go to a server, kubeconfig, chart
-URL, repository file or cache of their own (`--repository-config`, `--repository-cache`, `XDG_CACHE_HOME`).
+URL, repository file or cache of their own (`--repository-config`, `--repository-cache`, `XDG_CACHE_HOME`), a URL in a
+comma-separated `-f`, or a kustomization a host names (`github.com/org/repo`, `deploy@host:repo`). `helm repo index`
+and `dependency build|update` write into the directory they're given.
 `terraform init`, `validate`, `plan`, `fmt` and the state commands that only list run: they run the project's
 providers and `external` data sources as project code (`exec:project`). `apply`, `destroy`, `import`, `test`, the
 state changes and `login` ask, and so do `init -migrate-state`, `-force-copy` or a `-backend-config=KEY=VALUE`,
-`providers lock -net-mirror`, `fmt -check=false` outside the project, and `output -json`, `output NAME`, `show
+`providers lock -net-mirror`, `workspace select -or-create`, `fmt -check=false` outside the project, and `output -json`, `output NAME`, `show
 -json`, `state pull`, `state show` and `console`, which print secrets.
 It allows project code (`exec:project`) as it does git hooks: the scripts, tests and builds `npm`, `pnpm`, `bun` and
 `cargo` run (`npm test`, `bun typecheck`, `cargo build`), and the tools those scripts run (`tsc`, `biome`, `oxlint`,
