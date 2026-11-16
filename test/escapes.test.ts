@@ -793,6 +793,8 @@ const startedCases: [source: string, decision: Decision, what: string][] = [
   ['git switch --discard-changes other', 'ask', 'switch --discard-changes, the same'],
   ['git checkout HEAD~3 -- .', 'ask', 'checkout of paths from a commit, over local changes'],
   ['git checkout --theirs .', 'ask', 'checkout --theirs, the same'],
+  ['git checkout -- .', 'ask', 'checkout of a path no branch can be named'],
+  ['git checkout -b feature && git checkout main && git checkout feature/x', 'allow', 'checkout of branches'],
   ['git restore .', 'ask', 'restore, which overwrites local changes'],
   ['git restore --staged src/a.ts', 'allow', 'restore of the index only'],
   ['git push --prune origin', 'deny', 'push --prune, which deletes remote branches'],

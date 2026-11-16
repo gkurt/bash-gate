@@ -826,7 +826,10 @@ const force = (parsed: Parsed) => (parsed.options['--force'] ??= []).push(true);
  */
 function finishCheckout(parsed: Parsed): void {
   finishTreePaths(parsed);
-  if (parsed.options['-B'] || parsed.options['--ours'] || parsed.options['--theirs'] || parsed.positionals.length > 1) force(parsed);
+  // A word git refuses as a branch name (`.`, `src/`, `a..b`, `*.ts`) is a path.
+  const path = parsed.positionals.some((arg) => arg.kind === 'static' && /^\.|\/$|\.\.|\/\.|[\s~^:?*[\\]|\.lock$|^-|^$/.test(arg.value));
+  if (parsed.options['-B'] || parsed.options['--ours'] || parsed.options['--theirs'] || parsed.positionals.length > 1 || path)
+    force(parsed);
 }
 
 /** `git switch -C` resets a branch that's there. */
