@@ -188,6 +188,7 @@ function resolvePart(part: WordPart | DoubleQuotedChild, lookup: Lookup, quoted:
     case 'SingleQuoted':
       return [[{ kind: 'text', value: part.value, split: false }]];
     case 'AnsiCQuoted':
+      if (undecodable(part)) return [[{ kind: 'dynamic', reason: 'variable', split: false }]];
       return [[{ kind: 'text', value: ansiC(part), split: false }]];
     case 'DoubleQuoted':
     case 'LocaleString': {
@@ -448,12 +449,39 @@ function ansiC(part: AnsiCQuotedPart): string {
       start = end;
       i = end - 1;
       continue;
+    } else if (outOfRange(inner, i) !== undefined) {
+      // Bash drops a `\U` past Unicode from 0x80000000, and writes bytes of its own below that; the parser keeps the
+      // escape's text. Dropped here, for the code it may hide; a word holding one is only known at run time.
+      const end = i + 2 + /^[0-9A-Fa-f]{1,8}/.exec(inner.slice(i + 2))![0].length;
+      escaped += inner.slice(start, i);
+      start = end;
+      i = end - 1;
+      continue;
     }
     i++;
   }
   if (start === 0) return part.value;
   const [decoded] = parseWord(`$'${escaped}${inner.slice(start)}'`)?.parts ?? [];
   return decoded?.type === 'AnsiCQuoted' ? decoded.value : inner;
+}
+
+/** The value of a `\U` escape at `i` in `$'…'`'s text past U+10FFFF, which Bash doesn't decode as the parser does. */
+function outOfRange(inner: string, i: number): number | undefined {
+  if (inner[i + 1] !== 'U') return undefined;
+  const digits = /^[0-9A-Fa-f]{1,8}/.exec(inner.slice(i + 2))?.[0];
+  const value = digits === undefined ? 0 : Number.parseInt(digits, 16);
+  return value > 0x10ffff ? value : undefined;
+}
+
+/** Whether `$'…'` holds a `\U` Bash writes bytes of its own for (below 0x80000000; above, it drops it). */
+function undecodable(part: AnsiCQuotedPart): boolean {
+  const inner = part.text.slice(2, -1);
+  for (let i = 0; i < inner.length; i++) {
+    if (inner[i] !== '\\') continue;
+    if ((outOfRange(inner, i) ?? 0x80000000) < 0x80000000) return true;
+    i++;
+  }
+  return false;
 }
 
 function parseWord(text: string): Word | undefined {

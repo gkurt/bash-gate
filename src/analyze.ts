@@ -339,6 +339,11 @@ const devices = /^\/dev\/(null|stdin|stdout|stderr|tty|fd\/\d+)$/;
 /** The words a run adds after a command's own (`xargs` appends its input's). */
 const appended = dynamicArg('…', 'stdin', true, '');
 
+/** Variables Bash sets as it starts over what the environment gave (`IFS` it ignores, `SHLVL` it counts up). */
+const startupVariables = new Set(
+  'IFS SHLVL BASH BASH_VERSION BASH_VERSINFO OPTERR OPTIND PS1 PS2 PS4 COMP_WORDBREAKS HOSTTYPE MACHTYPE OSTYPE HOSTNAME'.split(' '),
+);
+
 /** Statically analyses a Bash script: every program it may run, with what, and what the analysis couldn't follow. */
 export function analyze(source: string, environment: Environment = {}): Analysis {
   const script = parse(source);
@@ -347,7 +352,13 @@ export function analyze(source: string, environment: Environment = {}): Analysis
   const given = environment.cwd?.startsWith('/') ? environment.cwd : '.';
   const walk = (silent: boolean, everything?: Written, members?: Map<object, Written>): Walker => {
     const state: State = {
-      vars: new Map(Object.entries(environment.env ?? {}).map(([name, value]) => [name, { kind: 'static', value }])),
+      // Bash sets some itself as it starts, whatever the environment held (`IFS`, `SHLVL` one more): those it doesn't say.
+      vars: new Map(
+        Object.entries(environment.env ?? {}).map(([name, value]): [string, Value] => [
+          name,
+          startupVariables.has(name) ? { kind: 'dynamic' } : { kind: 'static', value },
+        ]),
+      ),
       exported: new Set(Object.keys(environment.env ?? {})),
       functions: new Map(),
       exportedFunctions: new Set(),

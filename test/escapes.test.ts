@@ -1009,6 +1009,10 @@ const startedCases: [source: string, decision: Decision, what: string][] = [
   ['git -c http.cookieFile=../x -c http.saveCookies=true ls-remote origin', 'ask', 'the same, given with -c'],
   ['vite build --outDir src', 'ask', 'vite emptying an outDir named on the command line'],
   ['tsdown -d src', 'ask', 'tsdown cleaning its out-dir'],
+  ["echo hi | tee $'\\UFFFFFFFF'/home/me/.bashrc", 'ask', 'a \\U past Unicode, which Bash drops'],
+  ["$'\\UFFFFFFFF'rm -rf /", 'deny', 'the same, in the command name'],
+  ["git push $'\\U80000000'--force", 'deny', 'the same, from 0x80000000'],
+  ["echo hi > $'\\U00110000'x", 'ask', 'a \\U Bash writes bytes of its own for'],
   ['/proc/self/cwd/../../../usr/bin/ls', 'ask', 'a program path through /proc, which is no system path whatever it folds to'],
   ['/repo/l/../../usr/bin/ls', 'ask', 'a program path with .. after a name, which a symlink may lead elsewhere'],
   ['cargo clippy -- -C linker=/tmp/evil', 'ask', "words after -- that clippy's rustc reads as a linker"],
@@ -1161,7 +1165,7 @@ const inHomeCases: [source: string, decision: Decision, what: string][] = [
   ['echo x >> .npmrc', 'ask', "npm's user config"],
 ];
 
-/** A script started where only its own disk spelling places it. */
+/** Cases with an environment of their own. */
 const homeLinks: [source: string, decision: Decision, what: string, environment: Environment][] = [
   [
     'echo x >> rc',
@@ -1178,6 +1182,12 @@ const homeLinks: [source: string, decision: Decision, what: string, environment:
   ['cd .. && echo x > evil', 'ask', 'a working directory that is no POSIX path', { cwd: 'C:/w/proj' }],
   ['echo x > sub/../../evil', 'ask', 'the same, through ..', { cwd: 'C:/w/proj' }],
   ['cd .. && cp a b', 'ask', 'a relative working directory', { cwd: 'proj' }],
+  [
+    'echo hi | tee a${IFS}/home/me/.bashrc',
+    'ask',
+    'IFS from the environment, which Bash ignores',
+    { cwd: '/home/me/p', env: { HOME: '/home/me', IFS: ',' } },
+  ],
 ];
 
 /** Files by their real path, with the directories they imply and `dirs`, and symlinks (`links`: path → target). */
