@@ -116,6 +116,12 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['s=/; rm -rf {$,}s', 'deny', "a variable's name running out of a brace, which expands first"],
   ["cat 'a\nb' x\\", 'ask', 'a backslash ending the code, which Bash drops after a quoted string over lines'],
   ['shopt -s expand_aliases\nalias ls="rm -rf /"\nl\\\ns', 'deny', 'an alias named across a line continuation, which is gone first'],
+  [
+    'shopt -s expand_aliases\nalias rm=zz\nrm() { :; }\n\\rm -rf /',
+    'deny',
+    "an alias on a name() definition's name, which defines the alias's function",
+  ],
+  ["shopt -s expand_aliases\nalias rm='zz'\n'rm'() { :; }\n'rm' -rf /", 'deny', 'the same, with the name quoted where it runs'],
   ['declare d=(a){/,b}; rm -rf $d', 'ask', "declare's braces that the parser didn't see"],
   ['b=([a[1]=1); # $(rm -rf /) ]=2)', 'deny', 'a subscript whose brackets nest, which Bash reads past `); #`'],
   ['echo "${y:-$\'\\x24(rm -rf /)\'}"', 'deny', 'ANSI-C quoting in a double-quoted default, decoded and then expanded'],
@@ -979,6 +985,17 @@ const startedCases: [source: string, decision: Decision, what: string][] = [
   ['cd ~ && pushd /repo && pushd +1 && echo x >> .bashrc', 'ask', 'pushd +N, which rotates the directory stack'],
   ['rm -rf /repo', 'deny', 'deleting the project by its absolute path'],
   ['cd .. && rm -rf repo', 'deny', 'deleting the project from above'],
+  ['cd /tmp && { d=~+; cd /repo && echo x > $d/evil; }', 'ask', '~+ in an assignment, expanded where the assignment runs'],
+  ['cd /tmp && for d in ~+; do cd /repo && echo x > $d/evil; done', 'ask', 'the same, in a for loop'],
+  ['cd /tmp && { export d=~+; cd /repo && cp a $d/evil; }', 'ask', 'the same, in an export'],
+  ['cd /tmp && { d=~+/x; cd /repo && cd $d && echo x > evil; }', 'ask', 'the same, as a directory'],
+  ['d=~; HOME=/repo; echo x > $d/.bashrc', 'ask', '~ in an assignment is HOME as it was then'],
+  ['d=.; f() { d=/tmp; local d=.; }; f; echo x > $d/evil', 'ask', 'a global assigned before local, which the return keeps'],
+  ['f() { d=/tmp; local d; }; d=.; f; touch $d/evil', 'ask', 'the same, with local and no value'],
+  ['d=.; g() { declare -g d=/tmp; }; d=/tmp g; echo x > $d/evil', 'ask', 'declare -g under a temporary assignment'],
+  ['d=.; d=/tmp declare -g d=/tmp; echo x > $d/evil', 'ask', 'the same, on declare itself'],
+  ['x=.; x=/tmp >$x/evil', 'ask', 'an assignment-only command, which redirects with the new value'],
+  ['x=.; x=~ y=1 >>$x/.bashrc', 'ask', 'the same, with two assignments'],
 ];
 
 function expectDecision(source: string, decision: Decision, environment?: Environment): void {

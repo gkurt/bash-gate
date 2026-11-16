@@ -78,6 +78,7 @@ export const scripts = [
   'shopt -s expand_aliases\nif :; then\nalias rm=cat\nrm -rf x\nfi\nrm y',
   'shopt -s expand_aliases\nf() { ls a; }\nalias ls=cat\nf; ls b; x=$(ls c)',
   'shopt -s expand_aliases\nalias s="sudo "\nalias l="ls -la"\ns l x',
+  'shopt -s expand_aliases\nalias ls=cat\nls() { sort a; }\n\\ls b; cat c',
   // An alias's text is read a word at a time: its first word is checked too, and an alias isn't being read past its text.
   'shopt -s expand_aliases\nalias s="sudo "\nalias l="s -la"\ns l x',
   'shopt -s expand_aliases\nalias e="env "\nalias l="e ls"\nalias m="l -a"\ne l x; e m y\nalias s="e s"\ne s z; e e w',

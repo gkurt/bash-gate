@@ -137,9 +137,21 @@ interface Alias {
  */
 interface Frame {
   locals: Set<string>;
+  /** What each of `locals` was outside when it was made local, which is what the return puts back. */
+  outer: Map<string, Outer>;
   unknown: Set<string>;
   /** `local -`: the `set` options as they were, which the return puts back, and whether it may not have run. */
   saved?: SavedOptions;
+}
+
+/** A variable's value and attributes outside a function call, as `local` found them. */
+interface Outer {
+  value: Value | undefined;
+  exported: boolean;
+  integers: boolean;
+  maybeIntegers: boolean;
+  cased: boolean;
+  case: Case | undefined;
 }
 
 /** POSIX mode, `expand_aliases` and the followed `set` options, as `local -` saves them. */
@@ -822,7 +834,10 @@ class Walker {
         const values = (node.wordlist ?? []).flatMap((word) => resolveWord(word, lookupIn(state)));
         const only = values.length === 1 ? values[0] : undefined;
         // `select` sets the variable to what's chosen, which is nothing for a bad answer, and REPLY to the answer.
-        const value: Value = only?.kind === 'static' && node.type === 'For' ? { kind: 'static', value: only.value } : { kind: 'dynamic' };
+        const value: Value =
+          only?.kind === 'static' && node.type === 'For' && node.wordlist?.length === 1
+            ? tildeExpanded({ kind: 'static', value: only.value }, node.wordlist[0]!.text, state, false)
+            : { kind: 'dynamic' };
         const call = this.at(ctx, state, node);
         state.vars.set(node.name.value, this.assigned(node.name.value, value, state, ctx, call, true));
         if (node.type === 'Select') state.vars.set('REPLY', this.assigned('REPLY', { kind: 'dynamic' }, state, ctx, call, true));
@@ -879,9 +894,26 @@ class Walker {
       case 'Function': {
         // Bash refuses a name with quotes, escapes or expansions in it.
         if (!plain(node.name) || node.name.value.includes('$')) return;
-        state.functions.set(node.name.value, { bodies: [this.body(node, ctx)], maybeUndefined: false });
-        exportAll(state, node.name.value, state.exportedFunctions, state.maybeExportedFunctions);
-        return;
+        const define = (s: State, name: string) => {
+          s.functions.set(name, { bodies: [this.body(node, ctx)], maybeUndefined: false });
+          exportAll(s, name, s.exportedFunctions, s.maybeExportedFunctions);
+        };
+        // The name of `name()` (not `function name`) is a command word, which an alias replaces: `alias rm=zz; rm() …`
+        // defines `zz`.
+        const { table, unknown, expand } = ctx.aliases;
+        const name = node.name.value;
+        const bare = node.pos === node.name.pos && expand !== false;
+        const alias = bare ? table.get(name) : undefined;
+        const span = this.at(ctx, state, node).span;
+        if (bare && unknown && !alias) this.finding(ctx, 'unknown-alias', `\`${name}\` may be an alias defined at run time`, span);
+        if (!alias || active(ctx, node.name.pos).includes(name)) return define(state, name);
+        const renamed = alias.value?.replace(/[ \t]+$/, '');
+        if (renamed === undefined || !/^[\w.:+@%^,/-]+$/.test(renamed)) {
+          this.finding(ctx, 'unknown-alias', `\`${name}\` is an alias, which makes this definition something else`, span);
+          return;
+        }
+        if (expand && !alias.maybe) return define(state, renamed);
+        return settle(state, [this.branch(state, ctx, (s) => define(s, renamed)), this.branch(state, ctx, (s) => define(s, name))]);
       }
       case 'Coproc': {
         this.node(node.body, clone(state), { ...ctx, concurrent: true });
@@ -1468,7 +1500,12 @@ class Walker {
     // of the same name starts with the value (see `Context.temporary`).
     const temporary = new Map<string, Value>();
     for (const assignment of assignments) {
-      const value = assignmentValue(assignment, lookup);
+      const value = tildeExpanded(
+        assignmentValue(assignment, lookup),
+        'text' in assignment.value ? assignment.value.text : undefined,
+        state,
+        true,
+      );
       const stored = this.assigned(assignment.name, value, state, ctx, call, argv.length === 0);
       state.vars.set(assignment.name, stored);
       temporary.set(assignment.name, stored);
@@ -1478,8 +1515,14 @@ class Walker {
       // With `set -x`, Bash expands PS4 to trace each assignment, and the command after them with them in place.
       this.between(state, ctx);
     }
-    this.wrote(files.writes, call, 'contents');
-    const opens = files.writes.length > 0 || files.reads.length > 0;
+    // With no command, Bash assigns first and then redirects, with the new values (`x=/tmp >$x/f`).
+    if (argv.length === 0 && assignments.length > 0) {
+      const after = redirections(command.redirects, lookupIn(state), this.outputsRead);
+      call.writes = after.writes;
+      call.reads = after.reads;
+    }
+    this.wrote(call.writes, call, 'contents');
+    const opens = call.writes.length > 0 || call.reads.length > 0;
     const stays = new Map<string, boolean>();
     const inner =
       argv.length > 0 && temporary.size > 0
@@ -1557,7 +1600,7 @@ class Walker {
         // A loop around the call is out of reach of a `break` in the body.
         const inner = { ...ctx, source, outer, calls: [...ctx.calls, node], aliases, expanding: [], loops: [], returns };
         return this.branch(state, inner, (s, c) => {
-          s.frames = [...s.frames, { locals: new Set(), unknown: new Set() }];
+          s.frames = [...s.frames, { locals: new Set(), outer: new Map(), unknown: new Set() }];
           this.node(node.body, s, c);
           for (const other of returns) join(s, other);
           restore(s, state);
@@ -2036,9 +2079,19 @@ class Walker {
             // `local PATH` leaves PATH empty in the function: commands are looked up in the working directory.
             if (sensitive.test(variable))
               this.finding(ctx, 'sensitive-variable', `${name} ${variable} unsets it inside the function`, call.span);
-            // Maybe local already, it may keep the value it has.
-            const already = frame.unknown.delete(variable);
-            frame.locals.add(variable);
+            // Maybe local already, it may keep the value it has, and what the return puts back is only known at run time.
+            const already = frame.unknown.has(variable);
+            if (!already) {
+              frame.locals.add(variable);
+              frame.outer.set(variable, {
+                value: state.vars.get(variable),
+                exported: state.exported.has(variable),
+                integers: state.integers.has(variable),
+                maybeIntegers: state.maybeIntegers.has(variable),
+                cased: state.cases.has(variable),
+                case: state.cases.get(variable),
+              });
+            }
             // Unset in the shell, while what it starts still sees an exported value from outside. With
             // localvar_inherit (or -I), it starts with the value and attributes it had outside.
             const inherit = already || ctx.temporary?.has(variable) ? undefined : flags.includes('I') || option(state, 'localvar_inherit');
@@ -2060,7 +2113,9 @@ class Walker {
             state.maybeExported.delete(variable);
           }
           const exports = (name === 'export' && !flags.includes('n')) || name === 'readonly' || /[xr]/.test(flags);
-          if (exports && ctx.temporary?.has(variable))
+          // `declare -g` with a value sets the global under the temporary one, which is what's left after it.
+          const global = flags.includes('g') && Boolean(match[2]);
+          if ((exports || global) && ctx.temporary?.has(variable))
             ctx.kept?.names.set(variable, ctx.kept.depth === ctx.depth && ctx.kept.calls === ctx.calls);
           if (flags.includes('i')) state.integers.add(variable);
           if (flags.includes('i') || off.includes('i')) state.maybeIntegers.delete(variable);
@@ -2080,10 +2135,11 @@ class Walker {
           // An element (`x[1]=`, or one `export` refuses), an array (-a, -A, which Bash may refuse to convert), and
           // `(…)`, which is a list for an array, aren't followed.
           const assigned = text.slice(match[0].length);
+          const written = call.command?.suffix.find((item): item is Word => item.type === 'Word' && item.text.startsWith(match[0]))?.text;
           const value: Value =
             match[2] === '+=' || arg.kind === 'dynamic' || match[0].includes('[') || /[aA]/.test(flags) || assigned.startsWith('(')
               ? { kind: 'dynamic' }
-              : { kind: 'static', value: assigned };
+              : tildeExpanded({ kind: 'static', value: assigned }, written?.slice(match[0].length), state, true);
           const stored = match[2] ? this.assigned(variable, value, state, ctx, call, true) : value;
           // -g under a local of the same name changes the global, which the calls that made it local don't put back.
           const shadowed = !locals && flags.includes('g') && state.frames.some((f) => f.locals.has(variable) || f.unknown.has(variable));
@@ -3616,6 +3672,23 @@ function assignmentValue(assignment: Assignment, lookup: Lookup): Value {
   return resolveValue(assignment.value, lookup);
 }
 
+/**
+ * What Bash stores for `value`, written as `raw`: an unquoted `~`, `~+` or `~-` at its start (or, in an assignment,
+ * after a `:`) is expanded as it's assigned, to HOME, the working directory or OLDPWD as they are then, not when the
+ * variable is used. A quoted one (`~"+"`, `~+"/x"`) is kept as it is; one written another way is only known at run time.
+ */
+function tildeExpanded(value: Value, raw: string | undefined, state: State, assignment: boolean): Value {
+  if (value.kind !== 'static') return value;
+  if (assignment && raw?.includes(':~')) return { kind: 'dynamic' };
+  const prefix = (assignment ? /^~[^/:]*/ : /^~[^/]*/).exec(value.value)?.[0];
+  if (prefix === undefined) return value;
+  if (raw === undefined) return { kind: 'dynamic' };
+  const next = raw[prefix.length];
+  if (!raw.startsWith(prefix) || (next !== undefined && next !== '/' && !(assignment && next === ':'))) return value;
+  const base = prefix === '~' ? homeOf(state) : prefix === '~+' ? state.cwd : undefined;
+  return base?.startsWith('/') ? { kind: 'static', value: base + value.value.slice(prefix.length) } : { kind: 'dynamic' };
+}
+
 /** Whether a redirection to `path` (or, `partial`, to a path that starts so) may be Bash's `/dev/tcp` or `/dev/udp`. */
 function socket(path: string, partial: boolean): boolean {
   const normal = path.replace(/\/+/g, '/');
@@ -3762,6 +3835,7 @@ function equal(a: State, b: State): boolean {
       (frame, i) =>
         sameSet(frame.locals, b.frames[i]!.locals) &&
         sameSet(frame.unknown, b.frames[i]!.unknown) &&
+        [...frame.locals].every((name) => sameOuter(frame.outer.get(name), b.frames[i]!.outer.get(name))) &&
         sameSaved(frame.saved, b.frames[i]!.saved),
     ) &&
     sameMap(a.cases, b.cases) &&
@@ -3870,7 +3944,10 @@ function cased(value: Value, how: Case | undefined): Value {
   return { kind: 'static', value: text.slice(0, 1).toUpperCase() + text.slice(1).toLowerCase() };
 }
 
-/** Puts back the variables a function call made local, as they were before it (`outside`), and options `local -` saved. */
+/**
+ * Puts back the variables a function call made local, as they were when `local` ran (a global assigned before it keeps
+ * that value), and options `local -` saved. `outside` is the state the call started in.
+ */
 function restore(state: State, outside: State): void {
   const frame = state.frames.at(-1);
   state.frames = state.frames.slice(0, -1);
@@ -3891,14 +3968,18 @@ function restore(state: State, outside: State): void {
     for (const [name, then] of saved.set) state.options.set(name, back(option(state, name), then));
   }
   for (const variable of frame.locals) {
-    const value = outside.vars.get(variable);
-    if (value) state.vars.set(variable, value);
+    const then = frame.outer.get(variable);
+    if (!then) {
+      frame.unknown.add(variable);
+      continue;
+    }
+    if (then.value) state.vars.set(variable, then.value);
     else state.vars.delete(variable);
     for (const set of ['exported', 'integers', 'maybeIntegers'] as const) {
-      if (outside[set].has(variable)) state[set].add(variable);
+      if (then[set]) state[set].add(variable);
       else state[set].delete(variable);
     }
-    if (outside.cases.has(variable)) state.cases.set(variable, outside.cases.get(variable));
+    if (then.cased) state.cases.set(variable, then.case);
     else state.cases.delete(variable);
   }
   // Put back or not: its value is only known at run time, and an attribute only one way has may be there.
@@ -3938,6 +4019,18 @@ function joinSaved(a: SavedOptions | undefined, b: SavedOptions | undefined): Sa
   };
 }
 
+function sameOuter(a: Outer | undefined, b: Outer | undefined): boolean {
+  if (!a || !b) return a === b;
+  return (
+    sameValue(a.value, b.value) &&
+    a.exported === b.exported &&
+    a.integers === b.integers &&
+    a.maybeIntegers === b.maybeIntegers &&
+    a.cased === b.cased &&
+    a.case === b.case
+  );
+}
+
 function sameSaved(a: SavedOptions | undefined, b: SavedOptions | undefined): boolean {
   if (!a || !b) return a === b;
   return a.posix === b.posix && a.expandAliases === b.expandAliases && a.maybe === b.maybe && sameMap(a.set, b.set);
@@ -3972,6 +4065,7 @@ function clone(state: State): State {
     maybeIntegers: new Set(state.maybeIntegers),
     frames: state.frames.map((frame) => ({
       locals: new Set(frame.locals),
+      outer: new Map(frame.outer),
       unknown: new Set(frame.unknown),
       saved: frame.saved && { ...frame.saved, set: new Map(frame.saved.set) },
     })),
@@ -4163,9 +4257,11 @@ function join(state: State, other: State): void {
   for (const name of other.integers) state.integers.add(name);
   // Local on one way only, a variable may or may not be.
   state.frames.forEach((frame, i) => {
-    const theirs = other.frames[i] ?? { locals: new Set<string>(), unknown: new Set<string>() };
-    for (const name of new Set([...frame.locals, ...theirs.locals]))
-      if (!frame.locals.has(name) || !theirs.locals.has(name)) frame.unknown.add(name);
+    const theirs = other.frames[i] ?? { locals: new Set<string>(), outer: new Map<string, Outer>(), unknown: new Set<string>() };
+    for (const name of new Set([...frame.locals, ...theirs.locals])) {
+      if (!frame.locals.has(name) || !theirs.locals.has(name) || !sameOuter(frame.outer.get(name), theirs.outer.get(name)))
+        frame.unknown.add(name);
+    }
     for (const name of theirs.unknown) frame.unknown.add(name);
     for (const name of frame.unknown) frame.locals.delete(name);
     frame.saved = joinSaved(frame.saved, theirs.saved);
