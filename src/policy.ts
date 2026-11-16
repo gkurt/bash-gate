@@ -109,7 +109,12 @@ const severity: Record<Decision, number> = { allow: 0, ask: 1, deny: 2 };
 
 export function evaluate(analysis: Analysis, policy: Policy): Verdict {
   const reasons: Reason[] = [];
-  for (const invocation of analysis.invocations) if (invocation.kind !== 'function') reasons.push(decide(invocation, policy, analysis));
+  for (const invocation of analysis.invocations) {
+    if (invocation.kind !== 'function') reasons.push(decide(invocation, policy, analysis));
+    // A function's body is judged command by command; the redirections on its call (`f > ../x`) are its own, judged
+    // as they would be on `:`.
+    else if (invocation.effects.length > 0 || invocation.writes.length > 0) reasons.push(decide(redirected(invocation), policy, analysis));
+  }
 
   for (const finding of analysis.findings) {
     reasons.push({
@@ -129,6 +134,12 @@ export function evaluate(analysis: Analysis, policy: Policy): Verdict {
     reasons: reasons.filter((reason) => reason.decision !== 'allow').sort((a, b) => severity[b.decision] - severity[a.decision]),
     analysis,
   };
+}
+
+/** A function call's redirections, as the builtin `:` with them. */
+function redirected(invocation: Invocation): Invocation {
+  const colon: Arg = { kind: 'static', value: ':' };
+  return { ...invocation, program: ':', kind: 'builtin', argv: [colon], subcommands: [], options: {}, positionals: [], shape: ':' };
 }
 
 /** No, maybe, yes. */
