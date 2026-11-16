@@ -2643,10 +2643,13 @@ const find: CommandSpec = {
       else if (value === undefined || !/^-([HLP]|O\d+)$/.test(value)) break;
     }
     const starts: Arg[] = [];
+    // As find's `looks_like_expression`: `-` alone is a path, and so are `)` and `,` first.
+    const expression = (value: string, leading: boolean) =>
+      value.length > 1 ? value.startsWith('-') : value === '(' || value === '!' || ((value === ')' || value === ',') && !leading);
     for (; i < args.length; i++) {
       const arg = args[i]!;
       const value = staticValue(arg);
-      if (value !== undefined && (value.startsWith('-') || value === '(' || value === '!' || value === ',')) break;
+      if (value !== undefined && expression(value, starts.length === 0)) break;
       if (value === undefined) parsed.maybeOptions = true;
       starts.push(arg);
     }
@@ -3460,6 +3463,7 @@ const programs: Record<string, CommandSpec> = {
   ),
   ruby: interpreter(opts(inline('-e='), '-n', '-p', o('-i=?', { effects: ['fs:write'] }), '-r=', '-I=', '-w', '-W=?')),
   npm: {
+    nopt: true,
     options: opts(
       o('--prefix= -C=', { role: 'cwd' }),
       '-w= --workspace=',
@@ -3531,6 +3535,7 @@ const programs: Record<string, CommandSpec> = {
   },
   pnpm: {
     posix: true,
+    nopt: true,
     options: pnpmOptions,
     subcommands: {
       // pnpm's own options come before the script's name; every word after it is the script's.
@@ -3614,7 +3619,8 @@ const programs: Record<string, CommandSpec> = {
             '--no-isolate',
             '--parallel-delay=',
             '--shard=',
-            '--timings=?',
+            // With --update-timings, it rewrites that file.
+            o('--timings=', { role: 'write' }),
             '--update-timings',
           ),
         ],
@@ -4392,6 +4398,10 @@ const programs: Record<string, CommandSpec> = {
       '-w= --check-chars=',
     ),
     finish(parsed) {
+      // `+N` is the old spelling of -s N, and a word only known at run time may be one: any may be the output.
+      const old = (arg: Arg) => (arg.kind === 'static' ? /^\+\d+$/.test(arg.value) : /^\+?\d*$/.test(arg.prefix));
+      if (parsed.positionals.some((arg) => arg.kind === 'dynamic' && old(arg))) parsed.writes.push(...parsed.positionals);
+      parsed.positionals = parsed.positionals.filter((arg) => arg.kind === 'dynamic' || !old(arg));
       const output = parsed.positionals[1];
       if (output) {
         parsed.reads = parsed.reads.filter((arg) => arg !== output);

@@ -22,6 +22,8 @@ export interface CommandSpec {
   verbatim?: boolean;
   /** Options may start with `+` too, which turns them off (a shell's `+x`, `+O name`): they're read as `+x`. */
   plus?: boolean;
+  /** A flag takes a `true` or `false` after it as its value, as nopt reads argv (npm, pnpm): `--color false exec`. */
+  nopt?: boolean;
   /** Long options may be abbreviated to a unique prefix, as `getopt_long` and git allow. */
   abbreviations?: boolean;
   /** Read as Go's pflag reads it (cobra): `-o=value` is `-o` with `value`, a flag's too (`-f=false`). */
@@ -126,7 +128,7 @@ export function normalize(args: Arg[], spec: CommandSpec | undefined): Parsed {
         continue;
       }
       if (isOption(arg.value)) {
-        const last = readOption(args, i, current, parsed);
+        const last = readOption(args, i, current, parsed, !!spec?.nopt);
         // A value that may be no word or several (`nice -n $x cat`) leaves where the command starts unknown.
         if (current?.command && last > i && mayBeSeveral(args[last]!)) {
           parsed.nested.push({ argv: [anyWords, ...args.slice(last + 1)], open: !!current.command.open });
@@ -275,7 +277,17 @@ function mayBeSeveral(arg: Arg): boolean {
   return arg.kind === 'dynamic' && arg.split;
 }
 
-function readOption(args: Arg[], i: number, spec: CommandSpec | undefined, parsed: Parsed): number {
+function readOption(args: Arg[], i: number, spec: CommandSpec | undefined, parsed: Parsed, nopt = false): number {
+  // nopt reads the word after a flag as its value when it's `true` or `false`; one only known at run time may be.
+  const boolean = (at: number): Arg | true => {
+    const next = args[at];
+    if (!nopt || !next) return true;
+    if (next.kind === 'dynamic') {
+      parsed.maybeOptions = true;
+      return true;
+    }
+    return next.value === 'true' || next.value === 'false' ? next : true;
+  };
   const value = (args[i] as Extract<Arg, { kind: 'static' }>).value;
   if (value.startsWith('--')) {
     const equals = value.indexOf('=');
@@ -283,14 +295,16 @@ function readOption(args: Arg[], i: number, spec: CommandSpec | undefined, parse
     const attached = equals < 0 ? undefined : value.slice(equals + 1);
     const option = findLong(spec, name);
     if (!option) {
-      unknown(parsed, name, attached === undefined ? true : { kind: 'static', value: attached });
-      return i;
+      const given = attached === undefined ? boolean(i + 1) : { kind: 'static' as const, value: attached };
+      unknown(parsed, name, given);
+      return attached === undefined && given !== true ? i + 1 : i;
     }
     const takes = (option.value ?? false) !== false && (!option.valued || option.valued.some((spelling) => spelling.startsWith('--')));
     // A flag given a value keeps it: npm reads `--ignore-scripts=false` as false. Only `true` means it's simply on.
     let optionValue: Arg | true = true;
     if (attached !== undefined) optionValue = { kind: 'static', value: attached };
     else if (takes && option.value === true && i + 1 < args.length) optionValue = args[++i]!;
+    else if (!takes && (optionValue = boolean(i + 1)) !== true) i++;
     record(parsed, option, optionValue);
     if (optionValue === args[i] && mayBeSeveral(optionValue)) parsed.maybeOptions = true;
     return i;
@@ -307,7 +321,9 @@ function readOption(args: Arg[], i: number, spec: CommandSpec | undefined, parse
       break;
     }
     if ((option.value ?? false) === false || (option.valued && !option.valued.includes(name))) {
-      record(parsed, option, true);
+      const given = j === value.length - 1 ? boolean(i + 1) : true;
+      if (given !== true) i++;
+      record(parsed, option, given);
       continue;
     }
     const rest = value.slice(j + 1);

@@ -143,6 +143,12 @@ describe('options', () => {
     expect(analyze('unshare -r true').invocations[0]!.effects).not.toContain('exec:arbitrary');
   });
 
+  test("find takes - and a first , as paths, and uniq's +N is no file", () => {
+    expect(values(only('find - ../victim -delete').writes)).toEqual(['-', '../victim']);
+    expect(values(only('find , ../victim -delete').writes)).toEqual([',', '../victim']);
+    expect(values(only('uniq +1 in ../out').writes)).toEqual(['../out']);
+  });
+
   test('script logs to typescript without a file', () => {
     const [script] = analyze('script -qc ls').invocations;
     expect(values(script!.writes)).toEqual(['typescript']);

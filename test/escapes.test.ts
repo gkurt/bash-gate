@@ -903,6 +903,7 @@ const startedCases: [source: string, decision: Decision, what: string][] = [
   ['SSLKEYLOGFILE=../k git ls-remote origin', 'ask', 'SSLKEYLOGFILE, which TLS writes secrets to'],
   ['cd .. && nohup echo hi', 'ask', 'nohup writing nohup.out where it runs'],
   ['nohup echo hi', 'allow', 'nohup in the project'],
+  ['bun test --timings=../t.json --update-timings', 'ask', 'bun test rewriting its timings file outside'],
   ["printf 'y\\n' | git checkout -p", 'ask', 'checkout -p, which discards the hunks it is told'],
   ['git checkout --patch HEAD', 'ask', 'the same, spelled out'],
   ['cargo test -- --logfile ../outside.log', 'ask', "cargo test's harness writing --logfile outside"],
@@ -1182,6 +1183,24 @@ const projectCases: [what: string, source: string, decision: Decision, fs: Envir
         '/w/p/.husky/pre-commit': '#!/usr/bin/env bash\n. "$(dirname -- "$0")/_/husky.sh"\necho hi &>/dev/null rm -rf /\n',
       }),
     ),
+  ],
+  [
+    "pnpm's flag taking false as its value, before the command it runs",
+    'pnpm --color false exec rm -rf ~',
+    'deny',
+    disk({ '/w/p/package.json': '{"name":"p"}' }),
+  ],
+  [
+    'the same, before pack, which runs prepack',
+    'pnpm --stream true pack',
+    'deny',
+    disk({ '/w/p/package.json': '{"name":"p","version":"1.0.0","scripts":{"prepack":"rm -rf ~"}}' }),
+  ],
+  [
+    "npm's --ignore-scripts false, which runs them",
+    'npm version patch --ignore-scripts false',
+    'deny',
+    disk({ '/w/p/package.json': '{"name":"p","version":"1.0.0","scripts":{"preversion":"rm -rf ~"}}' }),
   ],
   [
     'a key package.json gives twice, which bun and npm read differently',
