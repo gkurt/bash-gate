@@ -1590,6 +1590,30 @@ const hooked = (config: string, hooks: Record<string, string>) => ({ ...reposito
 const evilHook = '#!/bin/sh\nrm -rf /\n';
 const projectCases: [what: string, source: string, decision: Decision, fs: Environment['fs'], cwd?: string][] = [
   [
+    "a project .npmrc's script-shell, which runs the scripts instead of sh",
+    'npm test',
+    'ask',
+    disk({ '/w/p/package.json': '{"scripts":{"test":"echo hi"}}', '/w/p/.npmrc': 'script-shell=/elsewhere/prog\n' }),
+  ],
+  [
+    'the same, on pnpm, quoted and from the environment',
+    'pnpm test',
+    'ask',
+    disk({ '/w/p/package.json': '{"scripts":{"test":"echo hi"}}', '/w/p/.npmrc': 'script-shell = "${SHELL_X}"\n' }),
+  ],
+  [
+    'the same, before npm install, which runs lifecycle scripts',
+    'npm install',
+    'ask',
+    disk({ '/w/p/package.json': '{"scripts":{"postinstall":"echo hi"}}', '/w/p/.npmrc': 'script-shell=./tools/run\n' }),
+  ],
+  [
+    'a project .npmrc without one, whose scripts are walked as before',
+    'npm test',
+    'allow',
+    disk({ '/w/p/package.json': '{"scripts":{"test":"echo hi"}}', '/w/p/.npmrc': 'save-exact=true\n' }),
+  ],
+  [
     "pnpm's --color, which takes never as its value",
     'pnpm --color never exec rm -rf ../victim',
     'deny',

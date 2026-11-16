@@ -549,7 +549,7 @@ describe('invocations', () => {
 
   test("a package.json the script writes first isn't the one its scripts are read from", () => {
     const fs = snapshot({
-      files: { '/repo/package.json': JSON.stringify({ scripts: { test: 'cat ok' } }) },
+      files: { '/repo/package.json': JSON.stringify({ scripts: { test: 'cat ok' } }), '/repo/.npmrc': null },
       realpaths: { '/repo': '/repo', '/repo/package.json': '/repo/package.json' },
     });
     const environment = { cwd: '/repo', fs };
@@ -560,7 +560,7 @@ describe('invocations', () => {
 
   test('a command of a pipeline reads what the others may write, but not what it writes itself afterwards', () => {
     const fs = snapshot({
-      files: { '/repo/package.json': JSON.stringify({ scripts: { test: 'cat ok; ./build.sh' } }) },
+      files: { '/repo/package.json': JSON.stringify({ scripts: { test: 'cat ok; ./build.sh' } }), '/repo/.npmrc': null },
       realpaths: { '/repo': '/repo', '/repo/package.json': '/repo/package.json' },
     });
     const findings = (source: string) => analyze(source, { cwd: '/repo', fs }).findings.map((finding) => finding.kind);
@@ -633,8 +633,15 @@ describe('invocations', () => {
       'tsc --OUTFILE package.json && npm test',
     ])
       expect([source, findings(source)]).toEqual([source, ["`/repo/package.json` may be changed by the script before it's read"]]);
-    for (const source of ['oxlint --fix && npm test', 'prettier --write . && npm test', 'vitest run && npm test'])
-      expect([source, findings(source)]).toEqual([source, ["`/repo/package.json` may be changed by project code before it's read"]]);
+    for (const source of ['oxlint --fix && npm test', 'prettier --write . && npm test', 'vitest run && npm test']) {
+      expect([source, findings(source)]).toEqual([
+        source,
+        [
+          "`/repo/package.json` may be changed by project code before it's read",
+          "`/repo/.npmrc` may be changed by project code before it's read",
+        ],
+      ]);
+    }
     // A file of a kind tsc emits is unknown after it, wherever it is: git config may include one.
     expect(findings('git status')).toEqual([]);
     expect(findings('tsc && git status')).toEqual(["`/repo/settings.js` may be changed by the script before it's read"]);

@@ -3462,6 +3462,7 @@ class Walker {
       return unwalked();
     const scripts = this.manifestScripts(cwd, ctx, call);
     if (!scripts) return unwalked();
+    if (!this.scriptShell(program, cwd, parsed, ctx, call)) return unfollowed;
     if (extra.some((arg) => arg.kind !== 'static')) return unwalked();
     const appended = extra.map((arg) => ` '${(arg as Extract<Arg, { kind: 'static' }>).value.replaceAll("'", "'\\''")}'`).join('');
     const [name] = names;
@@ -3503,6 +3504,7 @@ class Walker {
       return { run: version ? [git] : [], followed: false };
     if (flag(parsed, '--ignore-scripts')) return { run: version ? [git] : [], followed: true };
     const scripts = this.manifestScripts(cwd, ctx, call);
+    if (scripts && !this.scriptShell(program, cwd, parsed, ctx, call)) return { run: version ? [git] : [], followed: true };
     for (const name of names) {
       if (name === 'postversion') run.push(git);
       const script = scripts?.[name];
@@ -3510,6 +3512,31 @@ class Walker {
       else if (script !== undefined) this.finding(ctx, 'exec-config', `${program} script ${name} is not a string`, call.span);
     }
     return { run, followed: scripts !== undefined };
+  }
+
+  /**
+   * Whether npm or pnpm runs package scripts with `sh`, as they're walked: not when the project's `.npmrc` names another
+   * `script-shell`. A program it names is `exec:file` (read, not walked); one only known at run time (`${VAR}`) is
+   * `exec:arbitrary`. bun keeps its own shell.
+   */
+  scriptShell(program: string, cwd: string, parsed: Parsed, ctx: Context, call: Call): boolean {
+    if (program !== 'npm' && program !== 'pnpm') return true;
+    const path = `${cwd}/.npmrc`;
+    if (this.files!.readFile(path) === null && this.changed(path, ctx, 'contents') === false) return true;
+    // What the script wrote there, or what isn't known, `read` makes a finding of; what project code wrote is its own.
+    const text = this.read(path, ctx, call);
+    if (text === undefined) return true;
+    const entry = [...text.matchAll(/^[ \t]*script[-_]shell[ \t]*=[ \t]*(.*?)[ \t]*$/gim)].at(-1);
+    if (!entry) return true;
+    const value = entry[1]!.replace(/^(["'])(.*)\1$/, '$2');
+    if (value === '' || value === 'sh' || value === '/bin/sh' || value === '/usr/bin/sh') return true;
+    if (/\$\{/.test(value)) {
+      parsed.effects.add('exec:arbitrary');
+      return false;
+    }
+    parsed.effects.add('exec:file');
+    parsed.reads.push({ kind: 'static', value: value.includes('/') ? (resolvePath(cwd, value, call.home) ?? value) : value });
+    return false;
   }
 
   /** The scripts in the package.json in `cwd`, or `undefined` when they can't be read (a finding says why). */

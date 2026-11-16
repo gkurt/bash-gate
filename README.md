@@ -448,7 +448,8 @@ bun run checks   # tsc, then bun test
   edited: only `fs` shows git reading it. `make` is `exec:project` and Makefiles aren't parsed. Package scripts are
   read from the package.json where the command runs, with the words after the script's name appended, and the
   scripts `npm pack` and `npm version` run are walked too, with the commit `npm version` makes (its hooks run): a workspace's (`--filter`, `-r`, `-w`) aren't followed, nor
-  those bun runs in its own shell (`--shell=bun`), and with no package.json there, one above it may be used, which is
+  those bun runs in its own shell (`--shell=bun`), nor npm's and pnpm's when the project's `.npmrc` names another
+  `script-shell` (that program is `exec:file`, or `exec:arbitrary` when it comes from the environment), and with no package.json there, one above it may be used, which is
   an `exec-config` finding. cargo's build scripts, aliases and `rustc-wrapper` are project code that isn't read.
 - **`network:read` trusts the remote.** A fetch goes where the repository's config says, and tells that host which
   refs it asked for and which commits it has; gh's reads send their arguments (a search, a branch name) to the host gh
