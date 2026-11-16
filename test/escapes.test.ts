@@ -892,6 +892,7 @@ const startedCases: [source: string, decision: Decision, what: string][] = [
   ["jq '{env: .x}' a.json", 'allow', 'an object key named env'],
   ['git check-ignore .env && git ls-files .env && git status .env', 'allow', 'git commands that only name .env'],
   ['cp .env.example .env', 'allow', 'a template copied to .env'],
+  ['cat .env.local.example', 'allow', 'a template of another .env'],
   ['echo $CLAUDE_CODE_MAX_OUTPUT_TOKENS $MAX_TOKENS', 'allow', 'counts of tokens'],
   // kubectl
   ['kubectl get pods -n prod -o wide', 'allow', 'reading the cluster'],

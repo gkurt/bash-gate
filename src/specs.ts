@@ -5931,6 +5931,7 @@ const programs: Record<string, CommandSpec> = {
     },
   },
   uniq: {
+    copies: true,
     ...reader(
       '-c --count',
       '-d --repeated',
@@ -6111,7 +6112,9 @@ const programs: Record<string, CommandSpec> = {
   mv: copy(true),
   ln: { ...copy(false), effects: ['fs:write'] },
   'chmod|chown|chgrp': ownership,
+  // What it reads, it copies to its output, unless `of=` names a file.
   dd: {
+    copies: true,
     effects: ['fs:read'],
     finish(parsed) {
       for (const arg of parsed.positionals) {
@@ -6187,7 +6190,7 @@ const programs: Record<string, CommandSpec> = {
     '-E',
     '-T',
   ),
-  bat: {
+  'bat|batcat': {
     ...reader(
       '-p --plain',
       '-l= --language=',
@@ -6306,26 +6309,35 @@ const programs: Record<string, CommandSpec> = {
     ),
     abbreviations: false,
   },
-  sort: reader(
-    '-k= --key=',
-    '-t= --field-separator=',
-    '-S= --buffer-size=',
-    o('-T= --temporary-directory=', { role: 'write' }),
-    '-n --numeric-sort',
-    '-r --reverse',
-    '-u --unique',
-    '-h --human-numeric-sort',
-    '-f --ignore-case',
-    '-V --version-sort',
-    o('-o= --output=', { role: 'write', effects: ['fs:write'] }),
-    o('--compress-program=', { effects: ['exec:arbitrary'] }),
-  ),
-  'cut|tr|paste|join|fold|fmt|column|expand|unexpand|diff|comm|jq|du|realpath|readlink|basename|dirname': reader(
+  sort: {
+    copies: true,
+    ...reader(
+      '-k= --key=',
+      '-t= --field-separator=',
+      '-S= --buffer-size=',
+      o('-T= --temporary-directory=', { role: 'write' }),
+      '-n --numeric-sort',
+      '-r --reverse',
+      '-u --unique',
+      '-h --human-numeric-sort',
+      '-f --ignore-case',
+      '-V --version-sort',
+      o('-o= --output=', { role: 'write', effects: ['fs:write'] }),
+      o('--compress-program=', { effects: ['exec:arbitrary'] }),
+    ),
+  },
+  'cut|tr|fold|fmt|column|jq|du|realpath|readlink|basename|dirname': reader(
     '-d= --delimiter=',
     '-f= --fields=',
     '-c --count',
     '-L= --level=',
   ),
+  // Each line they read reaches their output whole (`diff` and `comm` with a marker before it), or every byte does.
+  'paste|join|expand|unexpand|diff|comm': { ...reader('-d= --delimiter=', '-f= --fields=', '-c --count'), copies: true },
+  'hexdump|hd|rev|look|pr|zcat|gzcat': {
+    ...reader('-n= --length=', '-s= --skip=', '-e= --format=', o('-f= --format-file=', { role: 'read' })),
+    copies: true,
+  },
   ls: reader(
     '-I= --ignore=',
     '-w= --width=',

@@ -14,7 +14,7 @@ const secretNames =
   /^(\.env(\..+|~)?|\.envrc|\.dev\.vars|id_(rsa|dsa|ecdsa|ed25519)(_sk)?|.+\.(pem|key|p12|pfx|p8|ppk|jks|keystore|kdbx|tfstate|tfstate\.backup|tfvars|tfvars\.json)|\.netrc|_netrc|\.pgpass|\.my\.cnf|\.htpasswd|\.git-credentials|\.npmrc|\.pypirc|\.dockercfg|\.vault-token|\.terraformrc|terraform\.rc|credentials\.tfrc\.json|secring\.gpg|\.s3cfg|\.boto)$/;
 
 /** `.env` files that hold no secret: templates (names and placeholders), and source files named after them. */
-const notSecret = /^\.env\.((example|sample|template|dist|defaults)|(d\.)?[cm]?[jt]sx?|py|rb|go|rs)$/;
+const notSecret = /^\.env(\.[^.]+)*?\.((example|sample|template|dist|defaults)|(d\.)?[cm]?[jt]sx?|py|rb|go|rs)$/;
 
 /** Files named for what they hold in the directory they're in: `.aws/credentials`, `.kube/config`. */
 const secretPaths = new RegExp(
@@ -153,6 +153,8 @@ export interface Expanded {
   name: string;
   indirect: boolean;
   arithmetic: boolean;
+  /** Only its length, a slice or a replacement of it (`${#x}`, `${x:0:4}`, `${x//?/*}`): not the value whole. */
+  partial?: true;
 }
 
 /** The names arithmetic text evaluates: words that aren't numbers (`0x1f`, `16#ff`). */
@@ -181,10 +183,11 @@ export function expandedNames(node: SyntaxNode): Expanded[] {
       const { parameter, prefix, index, operation } = item;
       const listed = operation?.type === 'Names' || index?.value === '@' || index?.value === '*';
       const alternative = operation?.type === 'Default' && operation.operator.endsWith('+');
+      const partial = prefix === '#' || operation?.type === 'Slice' || operation?.type === 'Replace';
       if (prefix === '!') {
         if (!listed) names.push({ name: parameter, indirect: true, arithmetic: inner });
       } else if (!alternative) {
-        names.push({ name: parameter, indirect: false, arithmetic: inner });
+        names.push({ name: parameter, indirect: false, arithmetic: inner, ...(partial && !inner ? { partial: true as const } : {}) });
       }
       if (!listed) evaluated(index?.value);
       if (operation?.type === 'Slice') [operation.offset, operation.length].forEach((word) => evaluated(word?.value));

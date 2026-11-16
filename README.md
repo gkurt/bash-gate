@@ -146,15 +146,21 @@ const policy: Policy = {
   option the spec doesn't know. A rule naming `network` doesn't match `network:read`: name both to cover both.
 - `secrets:print` is `secrets:read` where the secret reaches the script's output whole: the invocation that reads it
   copies what it reads unchanged (a spec's `copies`: `cat`, `tac`, `head`, `tail`, `less`, `more`, `bat`, `nl`,
-  `strings`, `xxd`, `od`, `base64`, `tee`; `echo` and `printf` of a secret variable, but not `printf -v`), prints the
-  environment (`printenv`, `env` with no command, `export -p`, `set`, `declare -p`), or is a tool printing a secret of
-  its own (`kubectl get secret -o yaml`, `terraform output -json`, `helm get values`); and its standard output isn't
-  redirected to a file (`> f`, `&> f`, `>/dev/null`, replayed in order, so `2>&1 > f` and `> f 2>&1` both leave the
-  file; `>&2` and `/dev/stderr` still reach the output), piped into a program that doesn't copy it whole (`| wc -l`,
-  `| grep`; `| cat`, `| head` and `| base64` pass it on), or captured (`$(…)`, `<(…)`, a group or function call
-  redirected). `cat .env` and `cat .env || true` print; `cat .env > /tmp/x`, `cat .env | wc -l`, `source .env &&
-  deploy`, `curl -H "Authorization: Bearer $GITHUB_TOKEN" …`, `docker run --env-file .env app`, `cp .env .env.bak` and
-  `cut -d= -f1 .env` (which transforms what it reads: names only) read but don't print.
+  `strings`, `xxd`, `od`, `hexdump`, `base64`, `rev`, `sort`, `uniq`, `paste`, `join`, `diff`, `comm`, `zcat`, `dd`
+  without `of=`, `tee`; `cp` onto `/dev/stdout`; `git show`, `cat-file` and `diff`; `echo` and `printf` of a secret
+  variable, but not `printf -v`), prints the environment (`printenv`, `env` with no command, `export -p`, `set`,
+  `declare -p`), is a tool printing a secret of its own (`kubectl get secret -o yaml`, `terraform output -json`, `helm
+  get values`), or runs under `set -x`, which traces what it expands. A secret travels through what holds it: a
+  variable assigned it, read into or looped over (`t=$GITHUB_TOKEN; echo "$t"`, `read l < .env; echo "$l"`), and a
+  substitution that read it (`echo "$(cat .env)"`); only its length or a part of it (`${#GITHUB_TOKEN}`, `${x:0:4}`,
+  `${x//?/*}`) isn't printed whole. And its standard output isn't redirected to a file (`> f`, `&> f`, `>/dev/null`,
+  closed; replayed in order, so `2>&1 > f` and `> f 2>&1` both leave the file), piped only into programs known not to
+  copy it whole (`| wc -l`, `| grep`, `| read`; a copying program, a wrapper running one, a function, a loop, a group
+  or a program the analysis doesn't know pass it on, and a `tee` mid-pipe onto `/dev/stderr` prints it), or captured
+  (`$(…)`, `<(…)`, a group or function call redirected), unless it's sent back to the output on purpose (`>&2`, `>&3`,
+  `/dev/tty`, `/proc/self/fd/1`, `> >(cat)`). `cat .env` and `cat .env || true` print; `cat .env > /tmp/x`, `cat .env
+  | wc -l`, `source .env && deploy`, `curl -H "Authorization: Bearer $GITHUB_TOKEN" …`, `docker run --env-file .env
+  app`, `cp .env .env.bak` and `cut -d= -f1 .env` (which transforms what it reads: names only) read but don't print.
 - A dry run's `effects` are the rehearsal's, the same way in every spec that knows one: it still reads and may still run
   project code (`npm publish --dry-run` runs its lifecycle scripts, which are walked), but doesn't write (save what an
   option of its own names: a log, a plan file), delete or run anything remotely, and `network` becomes `network:read`,

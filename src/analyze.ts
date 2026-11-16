@@ -76,6 +76,8 @@ interface State {
   hashUnknown: boolean;
   /** Variables that may be namerefs (`declare -n`): assigning or unsetting one changes another variable. */
   refs: Set<string>;
+  /** Variables that may hold a secret the script read (`t=$GITHUB_TOKEN`, `x=$(cat .env)`, `read l < .env`). */
+  secretVars: Set<string>;
   /** The shell options in `followed`, by name: on, or `undefined` when it may be either. Absent is off. */
   options: Map<string, boolean | undefined>;
   /** Exported variables and functions that may not be: a shell started now may not get them. */
@@ -262,6 +264,8 @@ interface Call {
    * when `set -x` may be on, which shows it even to a test.
    */
   secrets?: true | 'traced';
+  /** The secrets it expands are only in part (`${#GITHUB_TOKEN}`): read, but not printed whole. */
+  partial?: true;
   /** A glob's wildcards may match a leading dot (`dotglob`). */
   dots?: true;
 }
@@ -354,59 +358,103 @@ function reopens(path: string, outputsRead: boolean): boolean {
 }
 
 /**
- * Whether redirections leave standard output somewhere but the script's output: a file, a pipe's other end, closed.
- * Replayed in order, so `>f 2>&1` and `2>&1 >f` differ. `/dev/stderr`, `/dev/tty` and a target only known at run
- * time count as output.
+ * Which of the script's outputs a path is: standard output or error by any spelling (`/dev/stdout`, `/dev/fd/2`,
+ * `/proc/self/fd/1`, `/dev/./stdout`), or the terminal (`/dev/tty`, `/dev/pts/0`).
  */
-function stdoutCaptured(redirects: readonly Redirection[]): boolean {
-  const outputs: Record<number, boolean> = { 1: true, 2: true };
-  /** Whether writing to `path` reaches the script's output: a file doesn't, the terminal and stdout or stderr do. */
-  const reachesOutput = (path: string): boolean => {
-    const device = path.replace(/\/+/g, '/');
-    if (device === '/dev/stdout' || device === '/dev/fd/1') return outputs[1] ?? true;
-    if (device === '/dev/stderr' || device === '/dev/fd/2') return outputs[2] ?? true;
-    return device === '/dev/tty';
+function outputDevice(path: string): 1 | 2 | 'tty' | undefined {
+  const device = path.replace(/\/+/g, '/').replace(/\/(\.\/)+/g, '/');
+  const named: Record<string, 1 | 2> = { '/dev/stdout': 1, '/dev/stderr': 2 };
+  const fd = /^\/(dev\/fd|proc\/(self|thread-self)\/fd)\/([12])$/.exec(device)?.[3];
+  if (fd) return fd === '1' ? 1 : 2;
+  return named[device] ?? (/^\/dev\/(tty|console|pts\/\d+)$/.test(device) ? 'tty' : undefined);
+}
+
+/**
+ * Where redirections leave standard output: `file` somewhere but the script's output (a file, closed), `output` sent
+ * back to it on purpose (`>&2`, `>&3`, `/dev/tty`, `>(…)`), which a capture around the command doesn't take, or
+ * `inherited`. Replayed in order, so `>f 2>&1` and `2>&1 >f` differ. A target only known at run time counts as output.
+ */
+function stdout(redirects: readonly Redirection[]): 'file' | 'output' | 'inherited' {
+  // Where each descriptor goes: the standard output it inherited (a pipe or `$(…)` around it, or the script's), a file,
+  // or the script's output some other way (its error, the terminal, a descriptor opened before).
+  type Place = 'inherited' | 'file' | 'output';
+  const fds: Record<number, Place> = { 1: 'inherited', 2: 'output' };
+  const place = (word: Word | undefined): Place => {
+    // A process substitution (`> >(cat)`) is a command whose own output is the script's.
+    if (!word || /[$`*?[]/.test(word.text) || /^[<>]\(/.test(word.text)) return 'output';
+    const device = outputDevice(word.value);
+    if (device === 'tty') return 'output';
+    return device === undefined ? 'file' : (fds[device] ?? 'output');
   };
   for (const redirect of redirects) {
     if (redirect.type !== 'Redirect') continue;
     const descriptor = redirect.descriptor;
     if (descriptor && descriptor.type !== 'FileDescriptor') continue;
-    const fd = descriptor?.value ?? 1;
-    const word = redirect.target;
-    const target = !word || /[$`*?[]/.test(word.text) ? undefined : word.value;
-    const reaches = target === undefined || reachesOutput(target);
+    const fd = descriptor?.value ?? (redirect.operator.startsWith('<') ? 0 : 1);
+    const target = redirect.target;
     switch (redirect.operator) {
       case '>':
       case '>>':
       case '>|':
-        outputs[fd] = reaches;
+        fds[fd] = place(target);
         break;
       case '&>':
       case '&>>':
-        outputs[1] = outputs[2] = reaches;
+        fds[1] = fds[2] = place(target);
         break;
       case '<>':
-        if (fd !== 0) outputs[fd] = reaches;
+        if (fd !== 0) fds[fd] = place(target);
         break;
       case '>&':
-        if (target === undefined) outputs[fd] = true;
-        else if (target === '-') outputs[fd] = false;
-        else if (/^\d+$/.test(target)) outputs[fd] = outputs[Number(target)] ?? true;
-        else if (!descriptor) outputs[1] = outputs[2] = reaches;
-        else outputs[fd] = reaches;
+      case '<&': {
+        const value = target && !/[$`]/.test(target.text) ? target.value : undefined;
+        if (value === '-') fds[fd] = 'file';
+        else if (value !== undefined && /^\d+$/.test(value)) fds[fd] = fds[Number(value)] ?? 'output';
+        else if (!descriptor && redirect.operator === '>&') fds[1] = fds[2] = place(target);
+        else fds[fd] = 'output';
         break;
+      }
       case '<':
-      case '<&':
       default:
     }
   }
-  return outputs[1] === false;
+  return fds[1] ?? 'output';
 }
 
-/** A pipeline's command that copies its input to the script's output whole: a copying program, not redirected. */
+/** Whether what a command prints is captured, after its own redirections: to a file, or back to the script's output. */
+function captures(ctx: Context, redirects: readonly Redirection[]): boolean {
+  const place = stdout(redirects);
+  return place === 'inherited' ? !!ctx.captured : place === 'file';
+}
+
+/** Builtins that read their input and print none of it. */
+const quietReaders = /^(read|mapfile|readarray|true|false|:)$/;
+
+/** Programs that run another command, whose output they pass on. */
+const passesOn =
+  /^(env|command|builtin|exec|nice|nohup|timeout|sudo|doas|stdbuf|xargs|setsid|time|eval|bash|sh|dash|ksh|mksh|zsh|script|watch|chroot|ionice|taskset|flock|unbuffer)$/;
+
+/**
+ * A pipeline's command that may copy its input to the script's output whole: one not redirected to a file that is a
+ * copying program, a command it runs (`env cat`, `xargs echo`), a function, compound or program the analysis doesn't
+ * know (`| while read l; do echo "$l"; done`), or a name only known at run time. Only a known program that doesn't copy
+ * (`| wc -l`, `| grep`) keeps it.
+ */
 function copiesThrough(node: CommandNode): boolean {
-  if (node.type !== 'Command' || !node.name || /[$`'"\\]/.test(node.name.text)) return false;
-  return !!specFor(node.name.value)?.copies && !stdoutCaptured(node.redirects);
+  if (node.type !== 'Command') return true;
+  if (!node.name) return false;
+  if (/[$`]/.test(node.name.text)) return true;
+  if (stdout(node.redirects) === 'file') return false;
+  const name = node.name.value.slice(node.name.value.lastIndexOf('/') + 1);
+  if (quietReaders.test(name)) return false;
+  const spec = specFor(name);
+  return !spec || !!spec.copies || passesOn.test(name);
+}
+
+/** A `tee` in a pipeline that also writes to the script's output (`tee /dev/stderr`, `tee >(cat >&2)`). */
+function teesToOutput(node: CommandNode): boolean {
+  if (node.type !== 'Command' || node.name?.value !== 'tee') return false;
+  return node.suffix.some((word) => word.type === 'Word' && (/^[<>]\(/.test(word.text) || outputDevice(word.value) !== undefined));
 }
 
 /** Programs whose arguments name files they don't read the contents of. */
@@ -492,6 +540,7 @@ export function analyze(source: string, environment: Environment = {}): Analysis
       hashed: new Map(),
       hashUnknown: false,
       refs: new Set(),
+      secretVars: new Set(),
       options: new Map(),
       maybeExported: new Set(),
       maybeExportedFunctions: new Set(),
@@ -938,7 +987,8 @@ class Walker {
         for (const [i, command] of node.commands.entries()) {
           const shell = together ? clone(state) : state;
           // What it writes into the pipe reaches the output only through programs that copy it whole (`| cat`, `| head`).
-          const piped = i < node.commands.length - 1 && !node.commands.slice(i + 1).every(copiesThrough);
+          const after = node.commands.slice(i + 1);
+          const piped = after.length > 0 && !after.some(teesToOutput) && !after.every(copiesThrough);
           if (together) this.member(node.commands, command, shell, piped ? { ...ctx, captured: true } : ctx);
           else this.node(command, shell, ctx);
           if (!together) continue;
@@ -977,6 +1027,8 @@ class Walker {
       case 'Select': {
         this.substitutions(node.wordlist ?? [], state, ctx);
         this.secretsIn(node.wordlist ?? [], state, ctx, node);
+        if (this.expandsSecret(node.wordlist ?? [], state)) state.secretVars.add(node.name.value);
+        else state.secretVars.delete(node.name.value);
         const values = (node.wordlist ?? []).flatMap((word) => resolveWord(word, lookupIn(state)));
         const only = values.length === 1 ? values[0] : undefined;
         // `select` sets the variable to what's chosen, which is nothing for a bad answer, and REPLY to the answer.
@@ -1052,7 +1104,7 @@ class Walker {
           ...ctx,
           writes: [...ctx.writes, ...files.writes],
           reads: [...ctx.reads, ...files.reads],
-          captured: ctx.captured || stdoutCaptured(node.redirects),
+          captured: captures(ctx, node.redirects),
         };
         if (files.writes.length === 0 && files.reads.length === 0) return this.node(node.command, state, inner);
         // Opened even when nothing in the group runs (`case a in b) ;; esac >f`, `(( 0 )) >f`), as `>f` alone is.
@@ -1182,6 +1234,7 @@ class Walker {
       sorted(state.hashed).map(([name, path]) => [name, path ?? null]),
       state.hashUnknown,
       [...state.refs].sort(),
+      [...state.secretVars].sort(),
       sorted(state.options).map(([name, on]) => [name, on ?? null]),
       [...state.maybeExported].sort(),
       [...state.maybeExportedFunctions].sort(),
@@ -1662,8 +1715,11 @@ class Walker {
 
   simple(parsed: Command, state: State, outer: Context): void {
     const command = rejoined(parsed);
+    // A substitution that read a secret puts it in this command's words (`echo "$(cat .env)"`, `x=$(cat .env)`).
+    const seen = this.analysis.invocations.length;
     this.substitutions([command], state, outer);
-    const ctx = !outer.captured && stdoutCaptured(command.redirects) ? { ...outer, captured: true } : outer;
+    const substituted = this.readSecretSince(seen);
+    const ctx = { ...outer, captured: captures(outer, command.redirects) };
     const lookup = lookupIn(state);
     const assignments = command.prefix.filter((item): item is Assignment => item.type === 'Assignment');
     const files = redirections(command.redirects, lookup, this.outputsRead);
@@ -1678,9 +1734,11 @@ class Walker {
       open: false,
       cwd: state.cwd,
       home: homeOf(state),
-      ...(this.expandsSecret([command], state) || this.assignsSecretInteger(assignments, argv, state)
+      ...(substituted || this.expandsSecret([command], state) || this.assignsSecretInteger(assignments, argv, state)
         ? { secrets: option(state, 'xtrace') === false ? true : 'traced' }
         : {}),
+      // Only its length or a part of it (`${#GITHUB_TOKEN}`, `${GITHUB_TOKEN:0:4}`): read, not printed whole.
+      ...(!substituted && this.expandsSecret([command], state) && !this.expandsSecret([command], state, true) ? { partial: true } : {}),
       // `dotglob`, or a GLOBIGNORE that turns it on: a wildcard matches a leading dot.
       ...(option(state, 'dotglob') !== false || globIgnored(state) ? { dots: true } : {}),
     };
@@ -1695,6 +1753,11 @@ class Walker {
         state,
         true,
       );
+      // Assigned for good, it holds a secret when what it's given expands or substitutes one.
+      if (argv.length === 0) {
+        if (substituted || this.expandsSecret([assignment], state)) state.secretVars.add(assignment.name);
+        else state.secretVars.delete(assignment.name);
+      }
       const stored = this.assigned(assignment.name, value, state, ctx, call, argv.length === 0);
       state.vars.set(assignment.name, stored);
       temporary.set(assignment.name, stored);
@@ -1722,8 +1785,10 @@ class Walker {
           }
         : ctx;
     // A file Bash can't open stops the command before it runs, along with what it would change (`alias x=y <nofile`).
+    const dispatched = this.analysis.invocations.length;
     if (argv.length > 0 && opens) settle(state, [clone(state), this.branch(state, inner, (s, c) => this.dispatch(argv, s, c, call))]);
     else if (argv.length > 0) this.dispatch(argv, state, inner, call);
+    if (argv.length > 0 && this.readSecretSince(dispatched)) this.keepsSecret(argv, state);
     if (argv.length > 0) {
       // Gone after it: what was there before is back, unless POSIX mode keeps them (after a special builtin). What a
       // builtin or function assigned to one of them (`z=a declare z=b`) is gone too, unless it went global
@@ -1745,6 +1810,26 @@ class Walker {
       return;
     }
     if (opens || call.secrets !== undefined) this.emit(ctx, call, ':', 'builtin', [{ kind: 'static', value: ':' }], emptyParsed());
+  }
+
+  /** Whether an invocation emitted since `start` read a secret. */
+  readSecretSince(start: number): boolean {
+    return this.analysis.invocations.slice(start).some((invocation) => invocation.effects.includes('secrets:read'));
+  }
+
+  /**
+   * A builtin that read a secret into variables keeps it there: `read l < .env`, `mapfile a < .env`, `printf -v x
+   * "$GITHUB_TOKEN"`, `declare x="$GITHUB_TOKEN"`. Every name among its words may be one, and so may REPLY and MAPFILE.
+   */
+  keepsSecret(argv: Arg[], state: State): void {
+    const [head, ...args] = argv;
+    if (head?.kind !== 'static' || !/^(read|mapfile|readarray|printf|declare|typeset|local|export|readonly)$/.test(head.value)) return;
+    for (const arg of args) {
+      const name = arg.kind === 'static' ? /^([A-Za-z_]\w*)(\[|\+?=|$)/.exec(arg.value)?.[1] : undefined;
+      if (name) state.secretVars.add(name);
+    }
+    if (head.value === 'read') state.secretVars.add('REPLY');
+    if (/^(mapfile|readarray)$/.test(head.value)) state.secretVars.add('MAPFILE');
   }
 
   /** Runs `argv` as the shell would: an alias, a function, a builtin, or a program. */
@@ -3581,8 +3666,13 @@ class Walker {
     if (redirected.some((arg) => socket(arg.kind === 'static' ? arg.value : arg.prefix, arg.kind === 'dynamic'))) effects.add('network');
     const realpaths = this.files ? this.realpaths([...parsed.positionals, ...reads, ...writes], ctx, call) : undefined;
     if (this.readsSecrets(program, argv, parsed, [...call.reads, ...ctx.reads], call, realpaths)) effects.add('secrets:read');
-    if (effects.has('secrets:read') && copies(program, argv, parsed)) effects.add('secrets:print');
+    // A secret it only expands in part (`echo ${#GITHUB_TOKEN}`) it doesn't print whole, unless it reads one otherwise.
+    const whole =
+      !call.partial || this.readsSecrets(program, argv, parsed, [...call.reads, ...ctx.reads], { ...call, secrets: undefined }, realpaths);
+    if (effects.has('secrets:read') && whole && copies(program, argv, parsed)) effects.add('secrets:print');
     if (ctx.captured) effects.delete('secrets:print');
+    // Under `set -x`, Bash traces each expansion to the script's error output, whatever the command's output does.
+    if (call.secrets === 'traced' && !call.partial) effects.add('secrets:print');
     const open = call.open || ctx.open;
     const invocation: Invocation = {
       program,
@@ -3628,11 +3718,12 @@ class Walker {
    * Whether code expands a variable that may hold a secret: one named like one, a nameref (which may name one), or one
    * named by another's value (`${!x}`) that is, or is only known at run time.
    */
-  expandsSecret(nodes: readonly SyntaxNode[], state: State): boolean {
+  expandsSecret(nodes: readonly SyntaxNode[], state: State, whole = false): boolean {
     const lookup = lookupIn(state);
-    const secret = (name: string) => secretVariable(name) || state.refs.has(name);
+    const secret = (name: string) => secretVariable(name) || state.refs.has(name) || state.secretVars.has(name);
     return nodes.some((node) =>
-      expandedNames(node).some(({ name, indirect, arithmetic }) => {
+      expandedNames(node).some(({ name, indirect, arithmetic, partial }) => {
+        if (whole && partial) return false;
         if (arithmetic) return this.evaluatesSecret(name, state);
         if (!indirect) return secret(name);
         const value = lookup(name);
@@ -3646,7 +3737,7 @@ class Walker {
    * the name is one, or its known value names one in turn (`x=GITHUB_TOKEN; $(( x ))`).
    */
   evaluatesSecret(name: string, state: State, seen = new Set<string>()): boolean {
-    if (secretVariable(name) || state.refs.has(name)) return true;
+    if (secretVariable(name) || state.refs.has(name) || state.secretVars.has(name)) return true;
     const value = lookupIn(state)(name);
     if (value?.kind !== 'static' || seen.has(name) || seen.size > 16) return false;
     return arithmeticNames(value.value).some((inner) => this.evaluatesSecret(inner, state, new Set([...seen, name])));
@@ -3756,9 +3847,15 @@ function quoted(arg: Arg): string {
 function copies(program: string | null, argv: Arg[], parsed: Parsed): boolean {
   if (parsed.effects.has('secrets:print')) return true;
   if (printsEnvironment(program, argv, parsed.nested.length > 0)) return true;
+  // A copy onto the script's output or the terminal (`cp .env /dev/stdout`); git printing a file, at a revision or as a
+  // diff (`git show HEAD:.env`).
+  const device = (arg: Arg) => arg.kind === 'static' && outputDevice(arg.value) !== undefined;
+  if ((program === 'cp' || program === 'install') && parsed.writes.some(device)) return true;
+  if (program === 'git' && /^(show|cat-file|diff)$/.test(parsed.subcommands[0] ?? '') && !parsed.options['--output']) return true;
   if (program === null || !specFor(program)?.copies) return false;
-  // `printf -v name` assigns what it formats rather than printing it.
-  return !(program === 'printf' && parsed.options['-v'] !== undefined);
+  // `printf -v name` assigns what it formats rather than printing it; `dd of=` and `sort -o` write it to a file.
+  if (program === 'printf' && parsed.options['-v'] !== undefined) return false;
+  return !((program === 'dd' && parsed.writes.length > 0) || (program === 'sort' && parsed.options['--output']));
 }
 
 function shape(invocation: Pick<Invocation, 'program' | 'subcommands' | 'options' | 'positionals'>): string {
@@ -4411,6 +4508,7 @@ function clone(state: State): State {
     hashed: new Map(state.hashed),
     hashUnknown: state.hashUnknown,
     refs: new Set(state.refs),
+    secretVars: new Set(state.secretVars),
     options: new Map(state.options),
     maybeExported: new Set(state.maybeExported),
     maybeExportedFunctions: new Set(state.maybeExportedFunctions),
@@ -4570,6 +4668,7 @@ function freshState(cwd: string | undefined): State {
     hashed: new Map(),
     hashUnknown: false,
     refs: new Set(),
+    secretVars: new Set(),
     options: new Map(),
     maybeExported: new Set(),
     maybeExportedFunctions: new Set(),
@@ -4659,6 +4758,7 @@ function join(state: State, other: State): void {
   }
   state.hashUnknown ||= other.hashUnknown;
   for (const name of other.refs) state.refs.add(name);
+  for (const name of other.secretVars) state.secretVars.add(name);
   for (const name of new Set([...state.options.keys(), ...other.options.keys()]))
     if (option(state, name) !== option(other, name)) state.options.set(name, undefined);
   for (const name of other.disabled) state.disabled.add(name);
