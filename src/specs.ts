@@ -2656,6 +2656,11 @@ const find: CommandSpec = {
     let i = 0;
     for (; i < args.length; i++) {
       const value = staticValue(args[i]);
+      // `--` ends them, and the starting points follow (`find -- / -delete`).
+      if (value === '--') {
+        i++;
+        break;
+      }
       if (value === '-D' || value === '-O') i++;
       else if (value === undefined || !/^-([HLP]|O\d+)$/.test(value)) break;
     }

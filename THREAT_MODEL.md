@@ -74,7 +74,8 @@ Out of scope:
   none): a system shell with no options but `set`'s, or one `env` names; anything else, another language included, is
   a finding. Hooks are read again once a command's hooks have all run, since one may write another git runs later. Package scripts are read as `sh` runs them, and so is code other programs
   hand to `sh` (`watch`, `git rebase -x`): as Bash in POSIX mode, with a finding for Bash's own syntax, which dash
-  reads otherwise (`&>`, `((`, `$'…'`, `[[`, brace expansion). The user's and the system's git config are never read, nor husky's
+  reads otherwise (`&>`, `((`, `$'…'`, `[[`, brace expansion) and for builtins dash doesn't have (`declare`, `shopt`,
+  `source`), which it skips. The user's and the system's git config are never read, nor husky's
   user files (`~/.config/husky/init.sh`, `~/.huskyrc`). Hooks husky wrote are followed to the project's own hook in
   `.husky`, only when their text is exactly what husky 7, 8 or 9 writes. gh's stored aliases and config are never read: a first word gh
   doesn't know is code unseen (`exec:arbitrary`), and its pager, editor and browser are what they were. Specs describe other known argument behavior, writes included: a

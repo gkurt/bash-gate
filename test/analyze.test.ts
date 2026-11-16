@@ -255,6 +255,11 @@ describe('invocations', () => {
     expect(rm.maybeOptions).toBe(true);
   });
 
+  test('find -- ends the leading options, and the starting points follow', () => {
+    const find = analyze('find -H -- a ~/.ssh -delete').invocations[0]!;
+    expect(values(find.positionals)).toEqual(['a', '~/.ssh']);
+  });
+
   test('find -exec replaces {} with a placeholder', () => {
     const rm = analyze("find . -exec rm {} ';'").invocations[1]!;
     expect(values(rm.argv)).toEqual(['rm', '<placeholder>']);

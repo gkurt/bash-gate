@@ -262,6 +262,13 @@ interface Call {
 const bashOnly =
   /&>|\|&|(^|[^$])\(\(|\$['"[]|<<<|[<>]\(|\[\[|;;?&|\{[^\s{}]*(,|\.\.)[^\s{}]*\}|(^|[\s;&|(])(function|select|coproc)\s|\w=\(|\$\{(!|\w+(\[|:[\s\d]|\/|\^|,|@))/;
 
+/**
+ * Builtins Bash has and dash doesn't, where a command starts: under dash they're not found and the rest runs on
+ * without what they did (`c=rm; declare c=echo; $c`, `shopt -u expand_aliases`).
+ */
+const bashBuiltins =
+  /(^|[;&|({}\n`]|\$\(|\b(then|do|else|elif|time|!))\s*(declare|typeset|shopt|source|builtin|let|mapfile|readarray|pushd|popd|dirs|enable|compgen|complete|compopt|caller|disown|suspend|logout|help)(?=[\s;&|)]|$)/;
+
 /** Words Bash reads as reserved where a command starts, and expands an alias of. */
 const reservedWords = new Set([
   '!',
@@ -323,7 +330,7 @@ const setOptions = new Set(
  * (prompt strings and `PROMPT_COMMAND` are walked as code instead).
  */
 const sensitive =
-  /^(PATH|PWD|POSIXLY_CORRECT|RIPGREP_CONFIG_PATH|BASH_FUNC_.+|EXECIGNORE|BASH_ENV|ENV|IFS|SHELLOPTS|BASHOPTS|BASH_LOADABLES_PATH|TEXTDOMAIN|TEXTDOMAINDIR|CDPATH|HOME|ZDOTDIR|TMPDIR|XDG_CONFIG_HOME|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_[A-Z0-9_]+|GH_(PAGER|EDITOR|BROWSER|CONFIG_DIR|PATH|HOST|REPO)|(HTTPS?|ALL)_PROXY|(https?|all)_proxy|BROWSER|PAGER|MANPAGER|MANOPT|SHELL|GCONV_PATH|GNUPGHOME|SSLKEYLOGFILE|GNUTLS_KEYLOGFILE|BUN_INSPECT\w*|BIOME_LOG_PATH|(HOST_|TARGET_)?(CC|CXX|CPP|AR|LD|RANLIB)(_\w+)?|(HOST_|TARGET_)?(C|CXX|CPP|LD)FLAGS(_\w+)?|pnpm_config_\w+|PNPM_CONFIG_\w+|EDITOR|VISUAL|LESS|LESSOPEN|LESSCLOSE|LESSKEY\w*|NODE_OPTIONS|BUN_OPTIONS|CARGO_[A-Z0-9_]+|RUSTC(_WRAPPER|_WORKSPACE_WRAPPER)?|RUSTDOC|RUSTFLAGS|RUSTDOCFLAGS|RUSTUP_TOOLCHAIN|RUSTUP_HOME|NODE_PATH|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|SSH_ASKPASS|SUDO_ASKPASS|npm_config_\w+|NPM_CONFIG_\w+|FUNCNEST)$/;
+  /^(PATH|PWD|POSIXLY_CORRECT|RIPGREP_CONFIG_PATH|BASH_FUNC_.+|EXECIGNORE|BASH_ENV|ENV|IFS|SHELLOPTS|BASHOPTS|BASH_LOADABLES_PATH|TEXTDOMAIN|TEXTDOMAINDIR|CDPATH|HOME|ZDOTDIR|TMPDIR|XDG_CONFIG_HOME|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_[A-Z0-9_]+|GH_(PAGER|EDITOR|BROWSER|CONFIG_DIR|PATH|HOST|REPO)|(HTTPS?|ALL)_PROXY|(https?|all)_proxy|BROWSER|PAGER|MANPAGER|MANOPT|SHELL|GCONV_PATH|GNUPGHOME|SSLKEYLOGFILE|GNUTLS_KEYLOGFILE|BUN_INSPECT\w*|BIOME_LOG_PATH|(HOST_|TARGET_)?(CC|CXX|CPP|AR|LD|RANLIB)(_\w+)?|(HOST_|TARGET_)?(C|CXX|CPP|LD)FLAGS(_\w+)?|pnpm_config_\w+|PNPM_CONFIG_\w+|EDITOR|VISUAL|LESS|LESSOPEN|LESSCLOSE|LESSKEY\w*|NODE_OPTIONS|BUN_OPTIONS|CARGO_[A-Z0-9_]+|RUSTC(_WRAPPER|_WORKSPACE_WRAPPER)?|RUSTDOC|RUSTFLAGS|RUSTDOCFLAGS|RUSTUP_TOOLCHAIN|RUSTUP_HOME|NODE_PATH|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|SSH_ASKPASS|SUDO_ASKPASS|npm_config_\w+|NPM_CONFIG_\w+|FUNCNEST|HISTFILE|HISTFILESIZE)$/;
 
 /** Redirections that may leave the shell's output or errors on a file opened for reading: `1<f`, `<>`, `1>&3`. */
 const opensOutputs = /\d<(?![<(])|<>|>&\s*[3-9]/;
@@ -3285,7 +3292,8 @@ class Walker {
    * (`&>` runs in the background, `((` opens two subshells, `$'…'` is no string): a finding, as what runs isn't known.
    */
   dashSyntax(text: string, ctx: Context, call: Call, label: string): void {
-    if (bashOnly.test(text)) this.finding(ctx, 'unknown-syntax', `${label} runs code \`sh\` may read otherwise than Bash`, call.span);
+    if (bashOnly.test(text) || bashBuiltins.test(text))
+      this.finding(ctx, 'unknown-syntax', `${label} runs code \`sh\` may read otherwise than Bash`, call.span);
   }
 
   /**
