@@ -282,6 +282,50 @@ while os.waitpid(sub, os.WNOHANG) == (0, 0):
     expect(result.execs.map(({ covered, refused }) => [covered, refused])).toEqual([[false, true]]);
   });
 
+  test('a relative path is the file it reaches from where the process is', async () => {
+    fresh();
+    mkdirSync(join(work, 'd'));
+    writeFileSync(join(work, 's'), '#!/bin/sh\n', { mode: 0o755 });
+    writeFileSync(join(work, 'd', 's'), '#!/bin/sh\n', { mode: 0o755 });
+    const elsewhere = await run('cd d && ./s', options({ analysis: analyze('./s', { cwd: work }) }));
+    expect(elsewhere.execs.map(({ covered, refused }) => [covered, refused])).toEqual([[false, true]]);
+    const there = await run('cd d && ./s', options());
+    expect(there.execs.map(({ covered, refused }) => [covered, refused])).toEqual([[true, false]]);
+  });
+
+  test("the run's Bash is the system's, whatever PATH finds first", async () => {
+    fresh();
+    writeFileSync(join(work, 'bash'), `#!/bin/sh\ntouch ${join(work, 'ran')}\n`, { mode: 0o755 });
+    await run('sleep 0', options({ env: { PATH: ':/usr/bin:/bin' } }));
+    expect(existsSync(join(work, 'ran'))).toBe(false);
+  });
+
+  test('a new user or mount namespace fails, as chroot and mount do', async () => {
+    fresh();
+    const result = await run('unshare -r sleep 0', options({ env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' } }));
+    expect(result.code).not.toBe(0);
+    expect(result.execs.filter((exec) => exec.argv[0] === 'sleep')).toEqual([]);
+  });
+
+  test("a wrapper's shell runs the code the wrapper was given", async () => {
+    fresh();
+    // The inner shell's code predicted otherwise: being a shell under the wrapper doesn't cover it.
+    const source = `flock lk -c 'bash -c "sleep 0"'`;
+    const analysis = analyze(source, { cwd: work });
+    const inner = analysis.invocations.find((invocation) => invocation.program === 'bash')!;
+    inner.argv = [...inner.argv.slice(0, -1), { kind: 'static', value: 'true' }];
+    const result = await run(source, options({ analysis }));
+    const shells = result.execs.filter((exec) => exec.argv[0] === 'bash');
+    expect(shells.length).toBeGreaterThan(0);
+    expect(shells.filter((exec) => exec.covered)).toEqual([]);
+  });
+
+  test('arguments that are no UTF-8 are covered only by code no one saw', async () => {
+    fresh();
+    const result = await run("/usr/bin/echo $'\\xfe'", options({ analysis: analyze("/usr/bin/echo $'\\xff'", { cwd: work }) }));
+    expect(result.execs.map(({ refused }) => refused)).toEqual([true]);
+  });
+
   test('find passes as many paths as fit to a command ended by {} +', async () => {
     fresh();
     for (const name of ['a', 'b', 'c']) writeFileSync(join(work, name), '');

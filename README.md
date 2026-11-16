@@ -276,7 +276,10 @@ result.execs; // [{ path: '/usr/bin/ls', argv: ['ls'], via: [], covered: true, r
   anything, as in S1: the policy asked about it.
 - While an exec is checked, every other process and thread in the tree is stopped, until the kernel has copied its
   arguments or failed it: nothing in the tree can change what it runs after the check. A clone with `CLONE_UNTRACED`,
-  whose child nothing would stop or wait for, fails with EPERM.
+  whose child nothing would stop or wait for, fails with EPERM. So do a new user or mount namespace, `chroot`, `mount`
+  and `setns`, which would change what a path names, or give a process capabilities over the others (`unshare -r`).
+- A relative path is the file it reaches from where the process really is; the run's Bash is the system's, whatever
+  `PATH` finds first; and the shell a wrapper runs code through must be running the code the wrapper was given.
 - No process in the tree holds `CAP_SYS_PTRACE`, root included. Tools that read other users' processes as root
   (`lsof`) see less.
 - The supervisor (`src/trace/supervisor.c`) is built with the system's C compiler (`$CC`, else `cc`) into

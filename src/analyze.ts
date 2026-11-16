@@ -1782,7 +1782,10 @@ class Walker {
       }
       case '.':
       case 'source':
+        // What it runs isn't seen, nor where it leaves the shell.
         effects.push('exec:file');
+        state.cwd = undefined;
+        state.failedCwd = undefined;
         break;
       case 'break':
       case 'continue': {
@@ -2278,8 +2281,22 @@ class Walker {
    * code, by the others as a substitution.
    */
   callback(code: string | undefined, state: State, ctx: Context, call: Call, name: string): void {
-    if (code === undefined) this.finding(ctx, 'dynamic-script', `${name} -C runs a string only known at run time`, call.span);
-    else this.code(code, clone(state), ctx, call, `${name} -C`, true, name !== 'mapfile');
+    if (code === undefined) {
+      this.finding(ctx, 'dynamic-script', `${name} -C runs a string only known at run time`, call.span);
+    }
+    // mapfile runs its callback in the shell itself, any number of times; compgen in a subshell.
+    else if (name === 'mapfile') {
+      const before = clone(state);
+      settle(state, [clone(state), this.branch(state, ctx, (s, c) => this.code(code, s, c, call, `${name} -C`, true, false))]);
+      // Run again, what it changes changes again: `cd ..` may be any number of levels up.
+      if (state.cwd !== before.cwd) state.cwd = undefined;
+      for (const [variable, value] of state.vars) {
+        const was = before.vars.get(variable);
+        if (!was || !sameValue(was, value)) state.vars.set(variable, { kind: 'dynamic' });
+      }
+    } else {
+      this.code(code, clone(state), ctx, call, `${name} -C`, true, true);
+    }
   }
 
   /**

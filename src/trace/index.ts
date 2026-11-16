@@ -14,7 +14,7 @@ import { analyze, type Environment } from '#src/analyze.ts';
 import { covers, predicting, unseen, wrappers } from '#src/cover.ts';
 import { isSystemPath, resolvePath } from '#src/paths.ts';
 import { specFor } from '#src/specs.ts';
-import type { Analysis, Invocation } from '#src/types.ts';
+import type { Analysis, Arg, Invocation } from '#src/types.ts';
 
 export interface RunOptions extends Environment {
   /** `enforce` (the default) refuses an exec the analysis doesn't cover; `trace` lets it run and reports it. */
@@ -84,7 +84,8 @@ export async function run(source: string, options: RunOptions = {}): Promise<Run
     await new Promise<void>((resolve, reject) => server.once('error', reject).listen(address, resolve));
     const session = new Session(analysis, mode, cwd, (env.PATH ?? '').split(':'));
     server.on('connection', (socket) => (session.attached ? socket.destroy() : session.attach(socket)));
-    const child = spawn(supervisor, [address, 'bash', '--noprofile', '--norc', '-c', source], {
+    // The system's Bash, not one the run's PATH finds first (`./bash` through an empty entry).
+    const child = spawn(supervisor, [address, systemBash(), '--noprofile', '--norc', '-c', source], {
       cwd,
       env,
       stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
@@ -217,7 +218,10 @@ class Session {
     const judged = judge(this.analysis, via, [file, ...argv.slice(1)], { path, ...this.where });
     // A program may act on the name it's started under (`exec -a pkill pgrep`): that name must be predicted too.
     const name = basename(argv[0] ?? file);
-    const covered = judged.covered && (name === file || judge(this.analysis, via, [name, ...argv.slice(1)]).covered);
+    // Bytes that aren't UTF-8 read as U+FFFD, which stands for any of them: only unseen code covers those.
+    const garbled = [path, ...argv].some((text) => text.includes('�'));
+    const named = name === file || judge(this.analysis, via, [name, ...argv.slice(1)]).covered;
+    const covered = garbled ? this.analysis.findings.some((finding) => unseen.has(finding.kind)) : judged.covered && named;
     const { next } = judged;
     const refused = this.mode === 'enforce' && !covered;
     this.execs.push({ pid, path, argv, via, covered, refused });
@@ -244,19 +248,46 @@ function judge(analysis: Analysis, via: string[], argv: string[], at?: Where & {
   if (found.length > 0) return { covered: true, next: after(analysis, via, program, found) };
   // A wrapper that runs its command through a shell (`watch`, `flock -c`): the analysis walked that code under it,
   // with the system's shell. Another file of that name (`SHELL=./bash flock -c`, a `PATH` set in the code) isn't it.
+  // The code it runs is what the wrapper was given (`flock -c CODE`, or `watch`'s words joined), unless that's only known
+  // at run time.
   const wrapper = via.at(-1);
   const system = at === undefined || isSystemPath(at.path.startsWith('/') ? at.path : posix.join(at.cwd, at.path));
+  const code = argv[1] === '-c' ? argv[2] : undefined;
+  const given = (invocation: Invocation) =>
+    invocation.program === wrapper &&
+    startsWith(wrappers(invocation), via.slice(0, -1)) &&
+    (invocation.argv.some((arg) => arg.kind === 'dynamic') ||
+      invocation.argv.some((_, i) =>
+        [1, invocation.argv.length - i].some((count) => joined(invocation.argv.slice(i, i + count)) === code),
+      ));
   if (
     shells.has(program) &&
     system &&
     wrapper !== undefined &&
-    analysis.invocations.some((invocation) => startsWith(wrappers(invocation), via) && invocation.nesting.includes(`${wrapper} -c`))
+    code !== undefined &&
+    analysis.invocations.some((invocation) => startsWith(wrappers(invocation), via) && invocation.nesting.includes(`${wrapper} -c`)) &&
+    analysis.invocations.some(given)
   )
     return { covered: true, next: via };
 
   // Placed apart, only a finding that leaves code unseen accounts for it.
   const covered = at === undefined ? covers(analysis, argv, via) : analysis.findings.some((finding) => unseen.has(finding.kind));
   return { covered, next: null };
+}
+
+/** Static words joined by spaces, as `watch` joins its command's; `undefined` when one is only known at run time. */
+function joined(args: Arg[]): string | undefined {
+  const words: string[] = [];
+  for (const arg of args) {
+    if (arg.kind !== 'static') return undefined;
+    words.push(arg.value);
+  }
+  return words.join(' ');
+}
+
+/** The system's Bash, by its absolute path. */
+function systemBash(): string {
+  return ['/bin/bash', '/usr/bin/bash'].find((path) => existsSync(path)) ?? '/bin/bash';
 }
 
 /** Where `path` really is, or `undefined` when it isn't there. */
@@ -270,8 +301,12 @@ function real(path: string): string | undefined {
 
 /** Whether the file an exec runs is the one the invocation names: its path, or the name found on `PATH`. */
 function placed(invocation: Invocation, at: Where & { path: string }): boolean {
+  // The supervisor reads a relative path from where the process really is: the path is absolute here.
   const run = at.path.startsWith('/') ? posix.normalize(at.path) : posix.normalize(posix.join(at.cwd, at.path));
   if (invocation.path === undefined) return at.path.startsWith('/') && at.search.has(dirname(run));
+  // A relative path from a directory only known at run time may be from any: it's the path as given there.
+  if (invocation.cwd === undefined && !invocation.path.startsWith('/') && !invocation.path.startsWith('~'))
+    return at.path.endsWith(`/${invocation.path}`);
   const cwd = invocation.cwd?.startsWith('/') ? invocation.cwd : posix.join(at.cwd, invocation.cwd ?? '.');
   const named = resolvePath(cwd, invocation.path, invocation.home);
   // The file each leads to: a relative path from a directory a symlink leads elsewhere isn't the one predicted.

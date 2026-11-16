@@ -155,6 +155,13 @@ describe('options', () => {
     expect(values(analyze('script -qc ls log').invocations[0]!.writes)).toEqual(['log']);
   });
 
+  test('source of an unseen file and a mapfile -C callback leave the working directory unknown', () => {
+    for (const source of ['. <(echo "cd d"); touch y', 'source ./env.sh; touch y', "mapfile -C 'cd ..; :' -c 1 < f; touch y"]) {
+      const touch = analyze(source, { cwd: '/repo' }).invocations.find((invocation) => invocation.program === 'touch');
+      expect([source, touch?.cwd]).toEqual([source, undefined]);
+    }
+  });
+
   test('enable -p and -d turn no builtin off', () => {
     for (const source of ['enable -n -p printf; printf -v x touch', 'enable -n -d printf; printf -v x touch']) {
       const printf = analyze(source).invocations.find((invocation) => invocation.program === 'printf');

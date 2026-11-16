@@ -159,7 +159,8 @@ execs kill the process, and so does any x32 system call.
   nothing from an earlier command still running. `bash-gate/trace` does that itself, given the analysis that was
   checked.
 - **For S6, the kernel and the supervisor.** ptrace and seccomp stop every `execve` and `execveat` (x86_64 Linux), and
-  ptrace stops the rest of the tree while one is checked. Memory the kernel writes on its own, rather than for a
+  ptrace stops the rest of the tree while one is checked. Paths mean what they mean outside the tree: a new user or
+  mount namespace, `chroot`, `mount` and `setns` fail, so no process changes what a path names or gains capabilities. Memory the kernel writes on its own, rather than for a
   process it's running, can still change an exec's arguments after the check: asynchronous I/O (`io_uring`, AIO), and
   the words it clears or marks when a process that shares the memory dies (`set_tid_address`, robust futexes). Only a
   program running code of its own can arrange that, and such a program can already exec anything: what it starts

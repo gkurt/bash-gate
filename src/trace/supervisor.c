@@ -51,6 +51,20 @@
 #define I386_CLONE 120
 #define I386_EXECVEAT 358
 #define I386_CLONE3 435
+#define I386_UNSHARE 310
+#define I386_CHROOT 61
+#define I386_MOUNT 21
+#define I386_UMOUNT2 52
+#define I386_PIVOT_ROOT 217
+#define I386_SETNS 346
+/* The new mount API, numbered alike on both. */
+#define NR_OPEN_TREE 428
+#define NR_MOVE_MOUNT 429
+#define NR_FSOPEN 430
+#define NR_FSCONFIG 431
+#define NR_FSMOUNT 432
+#define NR_FSPICK 433
+#define NR_MOUNT_SETATTR 442
 /* What the kernel accepts for argv and the strings in it (MAX_ARG_STRLEN), with room to spare. */
 #define MAX_ARGS (1 << 20)
 #define MAX_STRING (32 * 4096)
@@ -104,39 +118,69 @@ static void flush(void) {
 /*
  * Execs stop for the supervisor. A clone with CLONE_UNTRACED fails with EPERM: its child would be no tracee, so nothing
  * would stop it or wait for it. clone3 hides its flags from the filter, so it fails with ENOSYS and libc falls back to
- * clone.
+ * clone. So do the namespaces and mounts that would change what a path names, or give a process capabilities over the
+ * others (a new user or mount namespace, chroot, mount, setns): an exec is judged by the path the supervisor reads.
  */
-static int install_filter(void) {
-  struct sock_filter filter[] = {
-    /* 0 */ BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
-    /* 1 */ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
-    /* 2 */ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_I386, 9, 19),
-    /* 3: x86_64 and x32 */
-    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
-    /* 4 */ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_execve, 0, 1),
-    /* 5 */ BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRACE | 0),
-    /* 6 */ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_execveat, 0, 1),
-    /* 7 */ BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRACE | 1),
-    /* 8: x32 system calls kill the process. */
-    BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, X32, 13, 0),
-    /* 9 */ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_clone, 7, 0),
-    /* 10 */ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_clone3, 10, 0),
-    /* 11 */ BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
-    /* 12: i386 */
-    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
-    /* 13 */ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, I386_EXECVE, 8, 0),
-    /* 14 */ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, I386_EXECVEAT, 7, 0),
-    /* 15 */ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, I386_CLONE, 1, 0),
-    /* 16 */ BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, I386_CLONE3, 4, 2),
-    /* 17: clone's flags, the low half of its first argument */
-    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[0])),
-    /* 18 */ BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, CLONE_UNTRACED, 1, 0),
-    /* 19 */ BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
-    /* 20 */ BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
-    /* 21 */ BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOSYS),
-    /* 22 */ BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+#define DENIED_CLONE (CLONE_UNTRACED | CLONE_NEWUSER | CLONE_NEWNS)
+#define DENIED_UNSHARE (CLONE_NEWUSER | CLONE_NEWNS)
+
+/* The rules for one system-call table, each check followed by what it returns: the program counter only goes forward. */
+static size_t rules(struct sock_filter *f, size_t n, int x86_64) {
+  const long execve = x86_64 ? __NR_execve : I386_EXECVE, execveat = x86_64 ? __NR_execveat : I386_EXECVEAT;
+  const long clone = x86_64 ? __NR_clone : I386_CLONE, clone3 = x86_64 ? __NR_clone3 : I386_CLONE3;
+  const long unshare = x86_64 ? __NR_unshare : I386_UNSHARE;
+  const long denied[] = {
+    x86_64 ? __NR_chroot : I386_CHROOT,
+    x86_64 ? __NR_mount : I386_MOUNT,
+    x86_64 ? __NR_umount2 : I386_UMOUNT2,
+    x86_64 ? __NR_pivot_root : I386_PIVOT_ROOT,
+    x86_64 ? __NR_setns : I386_SETNS,
+    NR_OPEN_TREE, NR_MOVE_MOUNT, NR_FSOPEN, NR_FSCONFIG, NR_FSMOUNT, NR_FSPICK, NR_MOUNT_SETATTR,
   };
-  struct sock_fprog program = {.len = sizeof filter / sizeof filter[0], .filter = filter};
+  f[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr));
+  if (x86_64) {
+    /* x32 system calls kill the process. */
+    f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, X32, 0, 1);
+    f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS);
+  }
+  /* Only x86_64 execs are read: an i386 one kills the process. */
+  f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (unsigned)execve, 0, 1);
+  f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, x86_64 ? SECCOMP_RET_TRACE | 0 : SECCOMP_RET_KILL_PROCESS);
+  f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (unsigned)execveat, 0, 1);
+  f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, x86_64 ? SECCOMP_RET_TRACE | 1 : SECCOMP_RET_KILL_PROCESS);
+  f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (unsigned)clone3, 0, 1);
+  f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOSYS);
+  for (size_t i = 0; i < sizeof denied / sizeof denied[0]; i++) {
+    f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (unsigned)denied[i], 0, 1);
+    f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM);
+  }
+  /* clone's and unshare's flags, the low half of their first argument. */
+  const long flagged[] = {clone, unshare};
+  const unsigned masks[] = {DENIED_CLONE, DENIED_UNSHARE};
+  for (size_t i = 0; i < 2; i++) {
+    f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (unsigned)flagged[i], 0, 4);
+    f[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[0]));
+    f[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, masks[i], 0, 1);
+    f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM);
+    f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+  }
+  f[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+  return n;
+}
+
+static int install_filter(void) {
+  struct sock_filter filter[128];
+  size_t n = 0;
+  filter[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch));
+  /* x86_64 (and x32), then i386; any other architecture is killed. */
+  size_t x86_64 = n++;
+  n = rules(filter, n, 1);
+  filter[x86_64] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 0, (unsigned char)(n - x86_64 - 1));
+  size_t i386 = n++;
+  n = rules(filter, n, 0);
+  filter[i386] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_I386, 0, (unsigned char)(n - i386 - 1));
+  filter[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS);
+  struct sock_fprog program = {.len = (unsigned short)n, .filter = filter};
   if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) return -1;
   return prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program);
 }
@@ -201,7 +245,8 @@ static int ask(pid_t pid, struct user_regs_struct *regs, int at) {
   char path[PATH_MAX * 2] = "";
   ssize_t length = read_string(mem, path_address, string, PATH_MAX);
   if (length < 0) ok = 0;
-  else if (at && string[0] != '/' && (dirfd != AT_FDCWD || (length == 0 && (flags & AT_EMPTY_PATH)))) {
+  /* A relative path is read from where the process is, or the directory its fd names: the caller can't know either. */
+  else if (string[0] != '/' && (length > 0 || (at && (flags & AT_EMPTY_PATH)))) {
     char link[64];
     if (dirfd == AT_FDCWD) snprintf(link, sizeof link, "/proc/%d/cwd", pid);
     else snprintf(link, sizeof link, "/proc/%d/fd/%d", pid, dirfd);
