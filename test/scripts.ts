@@ -136,6 +136,10 @@ export const scripts = [
   'x=ls; case a in a) x=cat ;& b) $x a ;; esac; (case a in a) cd bin ;;& b) : ;; *) ls b >out ;; esac)',
   'f() { x=cat; return; x=ls; }; f; $x a; g() { for i in 1; do y=sort; return; done; y=ls; }; g; $y b',
   "x=ls; for i in 1; do x=cat; break; x=ls; done; $x a; for i in 1; do for j in 1; do y=sort; break 2; done; y=ls; done; $y b; h() { eval 'z=grep; return'; z=ls; }; h; $z c",
+  "eval() { ls fn; }; set -o posix; eval 'cat builtin'; set +o posix; exec() { sort fn; }; POSIXLY_CORRECT=1 exec cat exec",
+  "shopt -s expand_aliases\nalias ls=cat; unalias -- -a\nls a\nalias -- -x=';sort x'; alias e='echo '\ne -x\nalias /bin/grep=cat\n/bin/grep b",
+  'ls() { cat fn; }; unset -f -v ls; ls a; x=cat; f() { local -I x; $x b; }; f; y=sort; g() { local y; declare -g y=grep; $y c; }; g',
+  "x=ls; PS4='+$($x ps4) '; set -x; x=cat true; x=sort y=1 x=ls",
   "$'\\x{63}\\x{161}t' a; {s..s..+1}ort b; ls c{+0..1} {01..02} {-01..1}",
   'x=ls; x=cat export x; $x a; y=ls; y=sort declare -r y; $y b; w=ls; w=cat declare w; $w d',
 ];

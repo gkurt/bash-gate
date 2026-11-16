@@ -641,6 +641,31 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['f() { export a; }; a=echo; a=rm f; $a -rf /', 'ask', 'the same, from a function, which Bash 5.2 keeps and 5.3 takes back'],
   ["a=echo; a=rm eval 'export a'; $a -rf /", 'ask', 'the same, from code eval reads'],
   ['a=echo; a=rm declare a; $a -rf /', 'allow', 'a temporary variable declare only names, which Bash takes back'],
+
+  // Shell state: what Bash holds when a later command runs.
+  ["eval() { echo hi; }; set -o posix; eval 'rm -rf /'", 'deny', 'a special builtin, found before a function in POSIX mode'],
+  ['exec() { echo hi; }; set -o posix; exec rm -rf /', 'deny', 'the same, for exec'],
+  ["eval() { echo hi; }; POSIXLY_CORRECT=1 eval 'rm -rf /'", 'deny', 'the same, with POSIX mode only around the command'],
+  ["shopt -s expand_aliases; alias fi='fi; rm -rf /'\nif true; then :; fi", 'ask', 'an alias named after a reserved word'],
+  ["shopt -s expand_aliases; alias '{'='{ rm -rf /;'\n{ :; }", 'ask', 'the same, for {'],
+  ["shopt -s expand_aliases; alias -- -x=';rm -rf /'; alias e='echo '\ne -x", 'deny', 'an alias whose name starts with -, after --'],
+  ['shopt -s expand_aliases; alias /bin/rm=echo\n/bin/rm -rf /', 'deny', 'an alias name Bash refuses'],
+  ["shopt -s expand_aliases; alias ls='rm -rf /'; unalias -- -a\nls", 'deny', '-a after --, which is a name to unalias'],
+  ['shopt -s expand_aliases; alias rm=echo; unalias $(echo rm)\nrm -rf /', 'deny', 'an alias removed by a name only known at run time'],
+  ['ls() { rm -rf /; }; unset -f -v ls; ls', 'deny', 'unset refusing -f and -v together'],
+  ['ls() { rm -rf /; }; ls=1; unset ls -f; ls', 'deny', 'unset reading -f after a name as a name'],
+  ['declare -r x=rm\nx=echo\n$x -rf /', 'ask', 'a read-only variable, which an assignment leaves as it is'],
+  ['declare -r x=--output=/etc/x\nunset x\ngit log $x', 'ask', 'a read-only variable, which unset leaves as it is'],
+  ["declare -i x; unset x; x=y; y='a[$(rm -rf /)]'; echo $((x))", 'deny', 'an integer attribute unset takes away'],
+  ["declare -i x; declare +i x; x=y; y='a[$(rm -rf /)]'; echo $((x))", 'deny', 'an integer attribute declare +i takes away'],
+  ["if false; then declare -i x; fi; x=y; y='a[$(rm -rf /)]'; echo $((x))", 'ask', 'an integer attribute that may not have been given'],
+  ['x=--output=/etc/x; f() { local -I x; git log $x; }; f', 'ask', 'local -I, which starts with the value outside'],
+  ['x=echo; f() { local x; declare -g x=rm; }; f; $x -rf /', 'ask', 'declare -g beside a local of the same name'],
+  ['x=echo; f(){ local x=1; g; }; g(){ unset x; x=rm; }; f; $x -rf /', 'ask', "unset of a caller's local, then an assignment"],
+  ['x=echo; f(){ if false; then local x; fi; x=rm; }; f; $x -rf /', 'ask', 'a local that may not have run'],
+  ['x=echo; f(){ ( local x ); x=rm; }; f; $x -rf /', 'deny', 'a local in a subshell'],
+  ["x=echo; PS4='$($x -rf /)+ '; set -x; x=rm true", 'deny', 'PS4 expanded with the temporary environment'],
+  ["x=echo; PS4='$($x -rf /)+ '; set -x; x=rm y=1 x=echo", 'deny', 'PS4 expanded between the assignments of one statement'],
 ];
 
 /**
@@ -683,6 +708,11 @@ const filesystemCases: [source: string, decision: Decision, what: string][] = [
   ['cd husky && git --work-tree=.. status', 'ask', 'a relative core.hooksPath, which git may read from another directory'],
   ['cd watched && git status', 'deny', 'the hook git status runs as it refreshes the index'],
   ['cd watched && git branch b', 'deny', 'the hook any ref update runs'],
+  ['cat() { rm -rf /; }; declare -fx cat; git commit -m x', 'deny', 'a function declare -x exports, which a Bash hook runs'],
+  ["env 'BASH_FUNC_cat%%=() { rm -rf /; }' git commit -m x", 'ask', 'a function given to a hook through the environment'],
+  ['rm() { :; }; export -f rm; cd watched && git status', 'deny', 'a hook that may be no Bash, which runs the program'],
+  ['rm() { :; }; export -f rm; export -nf rm; cd watched && git status', 'deny', 'a function export -n takes back'],
+  ['export -f rm; rm() { :; }; cd watched && git status', 'deny', 'export -f before the function is defined'],
 ];
 
 /** The same, starting in a known absolute directory: relative globs match from it. */
@@ -697,6 +727,8 @@ const startedCases: [source: string, decision: Decision, what: string][] = [
   ['echo hi > .git/config', 'ask', 'writing the Git config'],
   ['PWD=/home/me; echo hi > ~+/.bashrc', 'ask', '~+, which is $PWD, not the working directory'],
   ['read PWD <<< /home/me; echo hi > ~+/.bashrc', 'ask', 'the same, with PWD read'],
+  ['declare -u x; unset x; x=-o; sort $x ~/.bashrc notes.txt', 'ask', 'a case attribute unset takes away'],
+  ['cd ~ && pushd /repo && pushd +1 && echo x >> .bashrc', 'ask', 'pushd +N, which rotates the directory stack'],
   ['rm -rf /repo', 'deny', 'deleting the project by its absolute path'],
   ['cd .. && rm -rf repo', 'deny', 'deleting the project from above'],
 ];

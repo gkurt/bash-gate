@@ -84,6 +84,10 @@ interface State {
   disabled: Set<string>;
   /** Variables with the integer attribute (`declare -i`): what they're assigned is evaluated as arithmetic. */
   integers: Set<string>;
+  /** Those of `integers` that may not have it: what they're assigned is only known at run time. */
+  maybeIntegers: Set<string>;
+  /** The function calls being run, innermost last, and the variables each made local. */
+  frames: Frame[];
   /**
    * Variables whose case Bash changes when they're assigned (`declare -u`, `-l`, `-c`): `undefined` when it may or may
    * not, or differently.
@@ -127,6 +131,15 @@ interface Alias {
   maybe: boolean;
 }
 
+/**
+ * A function call's own variables: `locals` it surely made local, put back when it returns, and `unknown` ones it may
+ * have (`if c; then local x; fi`), or whose global was changed under it (`declare -g`): only known at run time after.
+ */
+interface Frame {
+  locals: Set<string>;
+  unknown: Set<string>;
+}
+
 /** A function definition, with the aliases its body was parsed with. */
 interface Body {
   node: FunctionNode;
@@ -168,8 +181,6 @@ interface Context {
   depth: number;
   /** Function bodies being called, so recursion stops even when a name is redefined. */
   calls: FunctionNode[];
-  /** The variables the innermost of those calls made local: they're put back when it returns. */
-  locals?: Set<string>;
   /** Reached through `env`, `sudo`, `xargs`, `exec`…: no aliases, functions or builtins, only programs. */
   externalOnly: boolean;
   /** Files a compound command's redirections write and read, for each command in it. */
@@ -221,6 +232,49 @@ interface Call {
   home: string | undefined;
 }
 
+/** Words Bash reads as reserved where a command starts, and expands an alias of. */
+const reservedWords = new Set([
+  '!',
+  'case',
+  'coproc',
+  'do',
+  'done',
+  'elif',
+  'else',
+  'esac',
+  'fi',
+  'for',
+  'function',
+  'if',
+  'in',
+  'select',
+  'then',
+  'time',
+  'until',
+  'while',
+  '{',
+  '}',
+  '[[',
+  ']]',
+]);
+/** The builtins POSIX calls special: in POSIX mode, Bash finds them before functions. */
+const specialBuiltins = new Set([
+  'break',
+  ':',
+  '.',
+  'continue',
+  'eval',
+  'exec',
+  'exit',
+  'export',
+  'readonly',
+  'return',
+  'set',
+  'shift',
+  'times',
+  'trap',
+  'unset',
+]);
 const builtins = new Set(
   ': . [ alias bg bind break builtin caller cd command compgen complete compopt continue declare dirs disown echo enable eval exec exit export false fc fg getopts hash help history jobs kill let local logout mapfile popd printf pushd pwd read readarray readonly return set shift shopt source suspend test times trap true type typeset ulimit umask unalias unset wait'.split(
     ' ',
@@ -239,7 +293,7 @@ const setOptions = new Set(
  * (prompt strings and `PROMPT_COMMAND` are walked as code instead).
  */
 const sensitive =
-  /^(PATH|PWD|EXECIGNORE|BASH_ENV|ENV|IFS|SHELLOPTS|BASHOPTS|BASH_LOADABLES_PATH|TEXTDOMAIN|TEXTDOMAINDIR|CDPATH|HOME|ZDOTDIR|TMPDIR|XDG_CONFIG_HOME|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_[A-Z_]+|GH_(PAGER|EDITOR|BROWSER|CONFIG_DIR|PATH|HOST|REPO)|(HTTPS?|ALL)_PROXY|(https?|all)_proxy|BROWSER|PAGER|MANPAGER|EDITOR|VISUAL|LESSOPEN|LESSCLOSE|NODE_OPTIONS|NODE_PATH|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|SSH_ASKPASS|SUDO_ASKPASS|npm_config_\w+|NPM_CONFIG_\w+)$/;
+  /^(PATH|PWD|BASH_FUNC_.+|EXECIGNORE|BASH_ENV|ENV|IFS|SHELLOPTS|BASHOPTS|BASH_LOADABLES_PATH|TEXTDOMAIN|TEXTDOMAINDIR|CDPATH|HOME|ZDOTDIR|TMPDIR|XDG_CONFIG_HOME|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_[A-Z_]+|GH_(PAGER|EDITOR|BROWSER|CONFIG_DIR|PATH|HOST|REPO)|(HTTPS?|ALL)_PROXY|(https?|all)_proxy|BROWSER|PAGER|MANPAGER|EDITOR|VISUAL|LESSOPEN|LESSCLOSE|NODE_OPTIONS|NODE_PATH|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|SSH_ASKPASS|SUDO_ASKPASS|npm_config_\w+|NPM_CONFIG_\w+)$/;
 
 /** Files a redirection may name without touching the file system. */
 const devices = /^\/dev\/(null|stdin|stdout|stderr|tty|fd\/\d+)$/;
@@ -268,6 +322,8 @@ export function analyze(source: string, environment: Environment = {}): Analysis
       maybeExportedFunctions: new Set(),
       disabled: new Set(),
       integers: new Set(startingIntegers),
+      maybeIntegers: new Set(),
+      frames: [],
       cases: new Map(),
       cwd: environment.cwd ?? '.',
       failedCwd: undefined,
@@ -1376,6 +1432,11 @@ class Walker {
       const stored = this.assigned(assignment.name, value, state, ctx, call, argv.length === 0);
       state.vars.set(assignment.name, stored);
       temporary.set(assignment.name, stored);
+      // Bash is in POSIX mode while the command runs, and after it too when it's a special builtin, which keeps the
+      // variable.
+      if (argv.length > 0 && assignment.name === 'POSIXLY_CORRECT') maybePosix(state, true);
+      // With `set -x`, Bash expands PS4 to trace each assignment, and the command after them with them in place.
+      this.between(state, ctx);
     }
     this.wrote(files.writes, call, 'contents');
     const opens = files.writes.length > 0 || files.reads.length > 0;
@@ -1436,7 +1497,10 @@ class Walker {
     }
     const name = head.value;
     if (call.command && !ctx.externalOnly && ctx.aliases.expand !== false && this.alias(name, argv, state, ctx, call)) return;
-    const fn = ctx.externalOnly || call.noFunctions ? undefined : state.functions.get(name);
+    const defined = ctx.externalOnly || call.noFunctions ? undefined : state.functions.get(name);
+    // In POSIX mode, a special builtin is found before a function: one that may be in it may run either.
+    const special = specialBuiltins.has(name) && !state.disabled.has(name) && state.posix !== false;
+    const fn = defined && special && state.posix === true ? undefined : defined && special ? { ...defined, maybeUndefined: true } : defined;
     if (fn) {
       this.emit(ctx, call, name, 'function', argv, emptyParsed());
       const outcomes = fn.bodies.map(({ node, aliases, source, outer }) => {
@@ -1445,14 +1509,14 @@ class Walker {
           return clone(state);
         }
         // The body was parsed, aliases and all, when it was defined.
-        const locals = new Set<string>();
         const returns: State[] = [];
         // A loop around the call is out of reach of a `break` in the body.
-        const inner = { ...ctx, source, outer, calls: [...ctx.calls, node], locals, aliases, expanding: [], loops: [], returns };
+        const inner = { ...ctx, source, outer, calls: [...ctx.calls, node], aliases, expanding: [], loops: [], returns };
         return this.branch(state, inner, (s, c) => {
+          s.frames = [...s.frames, { locals: new Set(), unknown: new Set() }];
           this.node(node.body, s, c);
           for (const other of returns) join(s, other);
-          restore(s, state, locals);
+          restore(s, state);
         });
       });
       settle(state, fn.maybeUndefined ? [...outcomes, clone(state)] : outcomes);
@@ -1702,22 +1766,40 @@ class Walker {
         }
         break;
       }
-      case 'alias':
+      case 'alias': {
         effects.push('shell-state');
-        for (const arg of args) {
+        // Options as getopt reads them: one Bash doesn't know defines nothing. After them, `-x=y` is a name too.
+        const { rest, dynamic, bad } = getopt(values, 'p');
+        if (dynamic) state.aliasesUnknown = true;
+        if (dynamic || bad) break;
+        for (const arg of args.slice(rest)) {
           if (arg.kind === 'dynamic') {
             state.aliasesUnknown = true;
-          } else if (arg.value.includes('=') && !arg.value.startsWith('-')) {
-            const equals = arg.value.indexOf('=');
-            state.aliases.set(arg.value.slice(0, equals), { value: arg.value.slice(equals + 1), maybe: false });
+            continue;
           }
+          const equals = arg.value.indexOf('=');
+          // A name with `/`, an expansion, a quote or a metacharacter is one Bash refuses.
+          if (equals <= 0 || /[/$`'"\\\s()<>;&|]/.test(arg.value.slice(0, equals))) continue;
+          const name = arg.value.slice(0, equals);
+          // Bash expands one named after a reserved word where that word starts a command (`fi`, `{`, `do`), which the
+          // analysis, reading the parsed syntax, doesn't.
+          if (reservedWords.has(name))
+            this.finding(ctx, 'unknown-syntax', `An alias named after the reserved word \`${name}\` changes how code is read`, call.span);
+          state.aliases.set(name, { value: arg.value.slice(equals + 1), maybe: false });
         }
         break;
-      case 'unalias':
+      }
+      case 'unalias': {
         effects.push('shell-state');
-        if (values.includes('-a')) state.aliases.clear();
-        for (const value of values) if (value) state.aliases.delete(value);
+        const { options, rest, dynamic, bad } = getopt(values, 'a');
+        // A name only known at run time may be any of them.
+        if (dynamic || values.slice(rest).includes(undefined))
+          for (const [name, alias] of state.aliases) state.aliases.set(name, { ...alias, maybe: true });
+        if (dynamic || bad) break;
+        if (options.length > 0) state.aliases.clear();
+        for (const value of values.slice(rest)) if (value !== undefined) state.aliases.delete(value);
         break;
+      }
       case 'shopt': {
         if (args.some((arg) => arg.kind === 'dynamic')) {
           this.anyOption(state, ctx, call);
@@ -1763,6 +1845,20 @@ class Walker {
       }
       case 'cd':
       case 'pushd': {
+        if (name === 'pushd') {
+          // -n only changes the stack. With no directory it swaps the top two, and `+N` or `-N` rotates it: both go
+          // to a directory from earlier, which the analysis doesn't keep.
+          const end = values.indexOf('--');
+          const options = end === -1 ? values : values.slice(0, end);
+          if (options.includes('-n')) break;
+          const operands = end === -1 ? values : values.slice(end + 1);
+          const rotates = end === -1 && operands.some((value) => value !== undefined && /^[+-]\d+$/.test(value));
+          if (operands.length === 0 || rotates) {
+            state.failedCwd = { cwd: state.cwd };
+            state.cwd = undefined;
+            break;
+          }
+        }
         const target = values.find((value) => value === undefined || !value.startsWith('-'));
         const arg = args[values.indexOf(target)];
         // Physically (-P, `set -P`), `..` leaves a symlink's target, not the symlink; with cdable_vars, a name that's
@@ -1805,14 +1901,16 @@ class Walker {
           for (const arg of args.slice(end + 1)) {
             const variable = /^[A-Za-z_]\w*/.exec(arg.kind === 'static' ? arg.value : arg.prefix)?.[0];
             if (!variable) continue;
-            state.vars.set(variable, { kind: 'dynamic' });
+            unknownVariable(state, variable);
             state.refs.add(variable);
-            state.integers.add(variable);
-            state.cases.set(variable, undefined);
           }
           break;
         }
         const flags = options.filter((value) => value?.startsWith('-')).join('');
+        const off = options.filter((value) => value?.startsWith('+')).join('');
+        // What a later assignment or `unset` does to one (nothing, past an error) isn't followed.
+        if (name === 'readonly' || flags.includes('r'))
+          this.finding(ctx, 'sensitive-variable', `${name} makes a name read-only, which later changes leave as it is`, call.span);
         // In a function, `local`, and `declare` without -g, make a variable of the call's own, unset until assigned.
         const locals = ctx.calls.length > 0 && (name === 'local' || (name !== 'export' && name !== 'readonly' && !flags.includes('g')));
         for (const arg of args) {
@@ -1835,24 +1933,36 @@ class Walker {
           }
           const variable = match[1]!;
           if (flags.includes('f')) {
-            if (name === 'export') {
-              state.exportedFunctions.add(variable);
+            // `export -f`, `declare -fx`; `export -nf` and `declare +x -f` take it back. One that isn't defined is an
+            // error, which exports nothing.
+            const fn = state.functions.get(variable);
+            if ((name === 'export' && flags.includes('n')) || off.includes('x')) {
+              state.exportedFunctions.delete(variable);
               state.maybeExportedFunctions.delete(variable);
+            } else if (fn && (name === 'export' || flags.includes('x'))) {
+              if (fn.maybeUndefined && !state.exportedFunctions.has(variable)) state.maybeExportedFunctions.add(variable);
+              else if (!fn.maybeUndefined) state.maybeExportedFunctions.delete(variable);
+              state.exportedFunctions.add(variable);
             }
             continue;
           }
-          if (locals && !ctx.locals?.has(variable)) {
+          const frame = state.frames.at(-1);
+          if (locals && frame && !frame.locals.has(variable)) {
             // `local PATH` leaves PATH empty in the function: commands are looked up in the working directory.
             if (sensitive.test(variable))
               this.finding(ctx, 'sensitive-variable', `${name} ${variable} unsets it inside the function`, call.span);
-            ctx.locals?.add(variable);
+            // Maybe local already, it may keep the value it has.
+            const already = frame.unknown.delete(variable);
+            frame.locals.add(variable);
             // Unset in the shell, while what it starts still sees an exported value from outside. With
-            // localvar_inherit, it starts with the value and attributes it had outside.
-            const inherit = ctx.temporary?.has(variable) ? undefined : option(state, 'localvar_inherit');
+            // localvar_inherit (or -I), it starts with the value and attributes it had outside.
+            const inherit = already || ctx.temporary?.has(variable) ? undefined : flags.includes('I') || option(state, 'localvar_inherit');
             const outside = state.vars.get(variable);
             const own: Value = state.exported.has(variable) ? { kind: 'dynamic' } : { kind: 'static', value: '' };
             state.vars.set(variable, inherit === false ? own : inherit && outside ? outside : { kind: 'dynamic' });
             if (inherit === false) state.integers.delete(variable);
+            if (inherit === false) state.maybeIntegers.delete(variable);
+            else if (inherit === undefined && state.integers.has(variable)) state.maybeIntegers.add(variable);
             if (inherit === false) state.cases.delete(variable);
             else if (inherit === undefined && state.cases.has(variable)) state.cases.set(variable, undefined);
           }
@@ -1864,6 +1974,8 @@ class Walker {
           if (exports && ctx.temporary?.has(variable))
             ctx.kept?.names.set(variable, ctx.kept.depth === ctx.depth && ctx.kept.calls === ctx.calls);
           if (flags.includes('i')) state.integers.add(variable);
+          if (flags.includes('i') || off.includes('i')) state.maybeIntegers.delete(variable);
+          if (off.includes('i')) state.integers.delete(variable);
           // One of -u, -l and -c sets it; two of them together, or +u, +l or +c, turn it off.
           const cases = new Set((['u', 'l', 'c'] as const).filter((flag) => flags.includes(flag)));
           if (cases.size === 1) state.cases.set(variable, [...cases][0]);
@@ -1879,20 +1991,34 @@ class Walker {
           const value: Value =
             match[2] === '+=' || arg.kind === 'dynamic' ? { kind: 'dynamic' } : { kind: 'static', value: text.slice(match[0].length) };
           const stored = match[2] ? this.assigned(variable, value, state, ctx, call, true) : value;
-          if (match[2] || value.kind === 'dynamic') state.vars.set(variable, stored);
+          // -g under a local of the same name changes the global, which the calls that made it local don't put back.
+          const shadowed = !locals && flags.includes('g') && state.frames.some((f) => f.locals.has(variable) || f.unknown.has(variable));
+          if (shadowed) {
+            for (const f of state.frames) if (f.locals.delete(variable) || f.unknown.has(variable)) f.unknown.add(variable);
+            state.vars.set(variable, { kind: 'dynamic' });
+          } else if (match[2] || value.kind === 'dynamic') {
+            state.vars.set(variable, stored);
+          }
         }
         break;
       }
       case 'unset': {
-        const functions = values.includes('-f');
-        const variablesOnly = values.includes('-v');
-        const refsThemselves = values.includes('-n');
+        // Options as getopt reads them: a bad one, or -f with -v, unsets nothing. One only known at run time may be
+        // any, before names that may be either.
+        const { options, rest, dynamic, bad } = getopt(values, 'fnv');
+        const letters = options.map(([letter]) => letter).join('');
+        if (bad || (letters.includes('f') && letters.includes('v'))) break;
+        const functions = !dynamic && letters.includes('f');
+        const variablesOnly = !dynamic && letters.includes('v');
+        const refsThemselves = letters.includes('n');
         /** Without -v, a name that's no variable is a function's, which Bash removes instead. */
         const maybeFunction = (fn: string) => {
           const known = state.functions.get(fn);
           if (known) state.functions.set(fn, { ...known, maybeUndefined: true });
+          // Defined again after, it isn't exported.
+          if (state.exportedFunctions.has(fn)) state.maybeExportedFunctions.add(fn);
         };
-        for (const value of values) {
+        for (const value of values.slice(rest)) {
           if (value === undefined) {
             if (!variablesOnly) for (const fn of state.functions.keys()) maybeFunction(fn);
             if (functions) continue;
@@ -1906,6 +2032,8 @@ class Walker {
           if (!functions) this.subscript(value, state, ctx, call);
           if (functions) {
             state.functions.delete(value);
+            state.exportedFunctions.delete(value);
+            state.maybeExportedFunctions.delete(value);
             continue;
           }
           if (!variablesOnly) maybeFunction(value);
@@ -1915,8 +2043,19 @@ class Walker {
           if (sensitive.test(value)) this.finding(ctx, 'sensitive-variable', `Unsetting ${value} changes what runs or how`, call.span);
           // In a function, a variable that isn't its own local may be a caller's: unsetting that one shows the value
           // it hid (unless localvar_unset).
-          const hidden = ctx.calls.length > 0 && !ctx.locals?.has(value);
-          state.vars.set(value, hidden ? { kind: 'dynamic' } : { kind: 'static', value: '' });
+          // A caller's local it unsets is gone: an assignment after it lands outside that call, which may then put
+          // back nothing.
+          const own = state.frames.at(-1);
+          const hidden = ctx.calls.length > 0 && !own?.locals.has(value);
+          if (hidden) for (const frame of state.frames) if (frame !== own && frame.locals.delete(value)) frame.unknown.add(value);
+          if (hidden) {
+            unknownVariable(state, value);
+          } else {
+            state.vars.set(value, { kind: 'static', value: '' });
+            state.integers.delete(value);
+            state.maybeIntegers.delete(value);
+            state.cases.delete(value);
+          }
           // Bash leaves POSIX mode, turning expand_aliases off, even when it wasn't in it.
           if (!functions && value === 'POSIXLY_CORRECT') {
             state.posix = false;
@@ -2196,6 +2335,9 @@ class Walker {
     for (const entry of parsed.env) {
       // env sets a name no shell variable has (`--x=1`) too: no program reads it as one.
       const start = entry.kind === 'static' ? entry.value : entry.prefix;
+      // `BASH_FUNC_name%%`, no variable's name, is a function a Bash it starts defines.
+      if (start.startsWith('BASH_FUNC_'))
+        this.finding(ctx, 'sensitive-variable', `${program} gives a shell it starts a function through the environment`, call.span);
       if (!assignment.test(start)) continue;
       const equals = start.indexOf('=');
       const value: Value = entry.kind === 'static' ? { kind: 'static', value: entry.value.slice(equals + 1) } : { kind: 'dynamic' };
@@ -2278,7 +2420,7 @@ class Walker {
         continue;
       }
       const remote = parsed.effects.has('exec:remote');
-      const shell = remote ? freshState(undefined) : childState(state, cwd);
+      const shell = remote ? freshState(undefined) : childState(state, cwd, program === 'bash');
       if (!remote && specFor(program) === specFor('bash')) this.childOptions(program, parsed, state, shell, ctx, call);
       this.code(
         script.value,
@@ -2826,9 +2968,12 @@ class Walker {
     if (bash && state.cases.has(variable)) value = cased(value, state.cases.get(variable));
     if (!bash || !state.integers.has(variable)) return value;
     // An integer variable evaluates what it's assigned as arithmetic, so that's what it holds.
-    if (value.kind === 'static')
-      return { kind: 'dynamic', ...(this.arithmeticText(value.value, state, ctx, value.value, call.span) ? { numeric: true } : {}) };
-
+    // One that may not have the attribute may hold the text itself, which arithmetic later evaluates as it is then.
+    const sure = !state.maybeIntegers.has(variable);
+    if (value.kind === 'static') {
+      const numeric = this.arithmeticText(value.value, state, ctx, value.value, call.span);
+      return { kind: 'dynamic', ...(numeric && sure ? { numeric: true } : {}) };
+    }
     if (value.numeric) return value;
     this.finding(
       ctx,
@@ -3249,6 +3394,9 @@ function equal(a: State, b: State): boolean {
     sameSet(a.maybeExportedFunctions, b.maybeExportedFunctions) &&
     sameSet(a.disabled, b.disabled) &&
     sameSet(a.integers, b.integers) &&
+    sameSet(a.maybeIntegers, b.maybeIntegers) &&
+    a.frames.length === b.frames.length &&
+    a.frames.every((frame, i) => sameSet(frame.locals, b.frames[i]!.locals) && sameSet(frame.unknown, b.frames[i]!.unknown)) &&
     sameMap(a.cases, b.cases) &&
     a.cwd === b.cwd &&
     !a.failedCwd === !b.failedCwd &&
@@ -3356,18 +3504,38 @@ function cased(value: Value, how: Case | undefined): Value {
 }
 
 /** Puts back the variables a function call made local, as they were before it (`outside`). */
-function restore(state: State, outside: State, locals: Set<string>): void {
-  for (const variable of locals) {
+function restore(state: State, outside: State): void {
+  const frame = state.frames.at(-1);
+  state.frames = state.frames.slice(0, -1);
+  if (!frame) return;
+  for (const variable of frame.locals) {
     const value = outside.vars.get(variable);
     if (value) state.vars.set(variable, value);
     else state.vars.delete(variable);
-    for (const set of ['exported', 'integers'] as const) {
+    for (const set of ['exported', 'integers', 'maybeIntegers'] as const) {
       if (outside[set].has(variable)) state[set].add(variable);
       else state[set].delete(variable);
     }
     if (outside.cases.has(variable)) state.cases.set(variable, outside.cases.get(variable));
     else state.cases.delete(variable);
   }
+  // Put back or not: its value is only known at run time, and an attribute only one way has may be there.
+  for (const variable of frame.unknown) {
+    state.vars.set(variable, { kind: 'dynamic' });
+    if (outside.integers.has(variable) !== state.integers.has(variable) || outside.maybeIntegers.has(variable)) {
+      state.integers.add(variable);
+      state.maybeIntegers.add(variable);
+    }
+    if (outside.cases.get(variable) !== state.cases.get(variable)) state.cases.set(variable, undefined);
+  }
+}
+
+/** A variable whose value and attributes are only known at run time. */
+function unknownVariable(state: State, variable: string): void {
+  state.vars.set(variable, { kind: 'dynamic' });
+  state.integers.add(variable);
+  state.maybeIntegers.add(variable);
+  state.cases.set(variable, undefined);
 }
 
 function clone(state: State): State {
@@ -3388,6 +3556,8 @@ function clone(state: State): State {
     maybeExportedFunctions: new Set(state.maybeExportedFunctions),
     disabled: new Set(state.disabled),
     integers: new Set(state.integers),
+    maybeIntegers: new Set(state.maybeIntegers),
+    frames: state.frames.map((frame) => ({ locals: new Set(frame.locals), unknown: new Set(frame.unknown) })),
     cases: new Map(state.cases),
     cwd: state.cwd,
     failedCwd: state.failedCwd && { ...state.failedCwd },
@@ -3427,8 +3597,12 @@ function either(a: boolean | undefined, b: boolean | undefined): boolean | undef
   return a === true || b === true ? true : a === false && b === false ? false : undefined;
 }
 
-/** A shell started by this one (`bash -c`): exported variables and functions only, aliases off. */
-function childState(state: State, cwd: string | undefined): State {
+/**
+ * A shell started by this one (`bash -c`): exported variables and functions only, aliases off. Only Bash (`bash`)
+ * takes the functions: another (`sh` as dash) runs the program of the same name, so with `bash` false each may or may
+ * not be defined.
+ */
+function childState(state: State, cwd: string | undefined, bash = false): State {
   const child = freshState(cwd);
   for (const name of state.exported) {
     const value = state.vars.get(name);
@@ -3436,7 +3610,7 @@ function childState(state: State, cwd: string | undefined): State {
   }
   for (const name of state.exportedFunctions) {
     const fn = state.functions.get(name);
-    if (fn) child.functions.set(name, state.maybeExportedFunctions.has(name) ? { ...fn, maybeUndefined: true } : fn);
+    if (fn) child.functions.set(name, !bash || state.maybeExportedFunctions.has(name) ? { ...fn, maybeUndefined: true } : fn);
   }
   child.exported = new Set(state.exported);
   child.maybeExported = new Set(state.maybeExported);
@@ -3499,6 +3673,8 @@ function freshState(cwd: string | undefined): State {
     maybeExportedFunctions: new Set(),
     disabled: new Set(),
     integers: new Set(startingIntegers),
+    maybeIntegers: new Set(),
+    frames: [],
     cases: new Map(),
     cwd,
     failedCwd: undefined,
@@ -3541,7 +3717,17 @@ function join(state: State, other: State): void {
   for (const name of other.maybeExported) state.maybeExported.add(name);
   for (const name of other.maybeExportedFunctions) state.maybeExportedFunctions.add(name);
   for (const name of other.exported) state.exported.add(name);
+  for (const name of new Set([...state.integers, ...other.integers]))
+    if (!state.integers.has(name) || !other.integers.has(name) || other.maybeIntegers.has(name)) state.maybeIntegers.add(name);
   for (const name of other.integers) state.integers.add(name);
+  // Local on one way only, a variable may or may not be.
+  state.frames.forEach((frame, i) => {
+    const theirs = other.frames[i] ?? { locals: new Set<string>(), unknown: new Set<string>() };
+    for (const name of new Set([...frame.locals, ...theirs.locals]))
+      if (!frame.locals.has(name) || !theirs.locals.has(name)) frame.unknown.add(name);
+    for (const name of theirs.unknown) frame.unknown.add(name);
+    for (const name of frame.unknown) frame.locals.delete(name);
+  });
   for (const name of new Set([...state.cases.keys(), ...other.cases.keys()]))
     if (state.cases.get(name) !== other.cases.get(name)) state.cases.set(name, undefined);
 
