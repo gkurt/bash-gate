@@ -119,7 +119,7 @@ const policy: Policy = {
   the start, so it may match a deny or ask rule's relative glob. Deny and ask rules also match `.git` and `HEAD` in any
   case, and `.git`'s Windows short name `GIT~1`, as a filesystem that ignores case takes them.
 - `effects`: `fs:read`, `fs:write`, `fs:delete`, `network`, `network:read`, `privilege`, `exec:arbitrary`,
-  `exec:project`, `exec:file`, `exec:remote`, `shell-state`, `secrets:read`. `secrets:read` reads what is likely a
+  `exec:project`, `exec:file`, `exec:remote`, `shell-state`, `secrets:read`, `secrets:print`. `secrets:read` reads what is likely a
   secret: the environment as a whole (`printenv`, `env` or `export -p` alone, `declare -p`, `local -p`, `set` alone,
   `ps e` anywhere in its arguments, `ps -E`, awk's `ENVIRON`, jq's `env`, `$ENV` and `import`, yq's `env()`,
   `strenv()` and `load…()`), a file that holds credentials, read, sourced, redirected, renamed (`mv`, `ln`), matched by
@@ -143,6 +143,38 @@ const policy: Policy = {
   (`gh pr view`, `gh run list`, `gh search`). They have `network` instead once the command line may say where to go:
   a URL or a path, `git -c`, `--git-dir`, `gh -R HOST/OWNER/REPO`, `--web`, an argument only known at run time, or an
   option the spec doesn't know. A rule naming `network` doesn't match `network:read`: name both to cover both.
+- `secrets:print` is `secrets:read` where the secret reaches the script's output whole: the invocation that reads it
+  copies what it reads unchanged (a spec's `copies`: `cat`, `tac`, `head`, `tail`, `less`, `more`, `bat`, `nl`,
+  `strings`, `xxd`, `od`, `base64`, `tee`; `echo` and `printf` of a secret variable, but not `printf -v`), prints the
+  environment (`printenv`, `env` with no command, `export -p`, `set`, `declare -p`), or is a tool printing a secret of
+  its own (`kubectl get secret -o yaml`, `terraform output -json`, `helm get values`); and its standard output isn't
+  redirected to a file (`> f`, `&> f`, `>/dev/null`, replayed in order, so `2>&1 > f` and `> f 2>&1` both leave the
+  file; `>&2` and `/dev/stderr` still reach the output), piped into a program that doesn't copy it whole (`| wc -l`,
+  `| grep`; `| cat`, `| head` and `| base64` pass it on), or captured (`$(…)`, `<(…)`, a group or function call
+  redirected). `cat .env` and `cat .env || true` print; `cat .env > /tmp/x`, `cat .env | wc -l`, `source .env &&
+  deploy`, `curl -H "Authorization: Bearer $GITHUB_TOKEN" …`, `docker run --env-file .env app`, `cp .env .env.bak` and
+  `cut -d= -f1 .env` (which transforms what it reads: names only) read but don't print.
+- A dry run's `effects` are the rehearsal's, the same way in every spec that knows one: it still reads and may still run
+  project code (`npm publish --dry-run` runs its lifecycle scripts, which are walked), but doesn't write (save what an
+  option of its own names: a log, a plan file), delete or run anything remotely, and `network` becomes `network:read`,
+  unless it still reaches a host the command names (`rsync -n src/ host:/dst`, `kubectl apply -f https://…
+  --dry-run=client`) or may still push (`gh pr create --dry-run`). So a policy lets a dry run through on its effects
+  without knowing about dry runs, though a rule on options still matches (`recommended` denies `git push --dry-run
+  --force`). A value that turns it off (`--dry-run=false`, `=none`, `=0`), or one only known at run time, is no dry run.
+  `invocation.dryRun` is the real command it rehearses: `{ text, shape, effects }`, the effects that command would have,
+  so a caller can match a later real run by shape and arguments as evidence it was rehearsed. Most are the same command
+  without the option: `git push -n`, `git add|rm|mv|fetch -n`, `rsync -n`, `npm --dry-run`, `cargo publish
+  --dry-run`, `gh pr create --dry-run`, `gh extension upgrade --dry-run`, kubectl's `--dry-run=client|server`, helm's
+  `--dry-run` and `terraform state mv|rm -dry-run`. `git clean -n` stands for `git clean -f` with the same arguments,
+  since git cleans nothing without `-f` while `clean.requireForce` has its default, true (`-f` or `-i` given are kept).
+  `terraform plan` stands for `terraform apply` with the same arguments but those only a plan takes (`-out`,
+  `-generate-config-out`, `-detailed-exitcode`).
+
+  ```ts
+  analyze('terraform -chdir=infra plan -out tfplan -var x=1').invocations[0].dryRun;
+  // { text: 'terraform -chdir=infra apply -var x=1', shape: 'terraform apply --var=<v>', effects: ['exec:project', 'network'] }
+  ```
+
 - An allow rule never applies to a program given by a non-system path (`./ls`).
 - Findings (`parse-error`, `dynamic-command`, `dynamic-script`, `dynamic-arithmetic`, `sensitive-variable`,
   `exec-config`, `loads-code`, `unknown-alias`, `too-deep`, `unknown-syntax`, `unknown-file`, `project-file`) ask unless

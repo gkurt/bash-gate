@@ -23,7 +23,13 @@ export type Arg =
  * - `shell-state` changes how later commands resolve (`PATH`, `hash -p`, `enable`);
  * - `secrets:read` reads what is likely a secret: the environment as a whole (`printenv`, `env`, `export -p`), a file
  *   that holds credentials (`.env`, `~/.ssh/id_*`, `~/.aws/credentials`, `*.pem`), a variable named like one
- *   (`$GITHUB_TOKEN`), or a tool's own (`kubectl get secret -o yaml`, `terraform output -json`).
+ *   (`$GITHUB_TOKEN`), or a tool's own (`kubectl get secret -o yaml`, `terraform output -json`);
+ * - `secrets:print` also puts that secret whole on the script's output: a program that copies what it reads unchanged
+ *   (`cat .env`, `echo $GITHUB_TOKEN`, `printenv`, `kubectl get secret -o yaml`) whose output isn't redirected to a
+ *   file, piped or captured (`$(…)`). One that transforms what it reads (`grep`, `cut`, `jq`) doesn't.
+ *
+ * A dry run's effects are what the rehearsal does: it reads and may run project code, but doesn't write, delete,
+ * change a remote or run anything remotely (see `Invocation.dryRun`).
  */
 export type Effect =
   | 'fs:read'
@@ -37,7 +43,8 @@ export type Effect =
   | 'exec:file'
   | 'exec:remote'
   | 'shell-state'
-  | 'secrets:read';
+  | 'secrets:read'
+  | 'secrets:print';
 
 export interface Invocation {
   /** The program as it resolves (the file's name when given as a path), or `null` when the command word is dynamic. */
@@ -83,6 +90,12 @@ export interface Invocation {
   nesting: string[];
   /** A normalised form for display and grouping: `git push --force <arg> <arg>`. */
   shape: string;
+  /**
+   * For a dry run (`git push --dry-run`, `kubectl apply --dry-run=server`, `terraform plan`), the real command it
+   * rehearses: its text and shape, and the effects it would have. A caller can match a later real run by shape and
+   * arguments, as evidence that it was rehearsed. `effects` above are the rehearsal's own.
+   */
+  dryRun?: { text: string; shape: string; effects: Effect[] };
   /** Where it is in the source the analysis was given (the outer word for code parsed from a string). */
   span: [number, number];
   text: string;

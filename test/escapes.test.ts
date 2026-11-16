@@ -936,6 +936,15 @@ const startedCases: [source: string, decision: Decision, what: string][] = [
   ['terraform init -plugin-dir=/tmp/plugins', 'ask', 'providers from another directory'],
   ['terraform -version', 'allow', 'version'],
   ['terraform login', 'ask', 'a login'],
+  // Dry runs: what the rehearsal does, not what the real run would.
+  ['kubectl delete -f k8s/ --dry-run=server', 'allow', 'a dry run of a delete'],
+  ['helm uninstall web --dry-run', 'allow', 'a dry run of an uninstall'],
+  ['helm uninstall web --dry-run=false', 'ask', 'a dry run turned off'],
+  ['gh pr create --dry-run --fill', 'ask', 'a dry run that may still push the branch'],
+  ['rsync -avn src/ host:/dst', 'ask', 'a dry run that still connects to a host'],
+  ['git push --dry-run --force origin main', 'deny', 'a dry run of a force push: a rule on options still matches'],
+  ['git push --dry-run origin main', 'allow', 'a dry run of a push'],
+  ['npm --dry-run publish ../other', 'ask', "a dry run that still runs another package's scripts"],
   ['TF_CLI_ARGS_plan=-auto-approve terraform plan', 'ask', 'arguments added through the environment'],
   // Round 42: values Go reads as false, and what prints, writes or reaches a host on the command line.
   ['helm uninstall myrel --dry-run=false', 'ask', "a dry run turned off, which Go's ParseBool reads as false"],

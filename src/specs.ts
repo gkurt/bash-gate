@@ -741,6 +741,16 @@ function writer(effect: Effect, ...options: (string | OptionSpec)[]): CommandSpe
   return { abbreviations: true, positionals: effect === 'fs:delete' ? 'delete' : 'write', effects: [effect], options: opts(...options) };
 }
 
+/**
+ * `git clean -n` stands for `git clean -f`: git cleans nothing without `-f` (or `-i`) unless `clean.requireForce` is
+ * false, and true is its default, so the real command is taken to need it.
+ */
+function cleanForReal(without: Arg[], parsed: Parsed): Arg[] {
+  if (parsed.options['--force'] || parsed.options['--interactive']) return without;
+  const at = without.findIndex((arg) => arg.kind === 'static' && arg.value === 'clean');
+  return [...without.slice(0, at + 1), { kind: 'static', value: '-f' }, ...without.slice(at + 1)];
+}
+
 function noCommandWithPid(parsed: Parsed): void {
   if (parsed.options['--pid']) parsed.nested = [];
 }
@@ -1018,6 +1028,7 @@ const git: CommandSpec = {
     grep: { abbreviations: true, options: opts('-e=', '-f=', o('-O --open-files-in-pager=?', { effects: ['exec:arbitrary'] })) },
     'add|stage': {
       abbreviations: true,
+      dryRun: { options: ['--dry-run'] },
       effects: ['fs:write'],
       options: opts('-A --all', '-u --update', '-f --force', '-p --patch', '-n --dry-run', '-N --intent-to-add', '-v --verbose'),
     },
@@ -1056,6 +1067,7 @@ const git: CommandSpec = {
     },
     push: {
       abbreviations: true,
+      dryRun: { options: ['--dry-run'] },
       effects: ['network', 'exec:project'],
       options: opts(
         '-f --force',
@@ -1102,6 +1114,7 @@ const git: CommandSpec = {
     },
     fetch: {
       abbreviations: true,
+      dryRun: { options: ['--dry-run'] },
       effects: ['fs:write'],
       options: opts(
         '-v --verbose',
@@ -1223,6 +1236,7 @@ const git: CommandSpec = {
     },
     clean: {
       abbreviations: true,
+      dryRun: { options: ['--dry-run'], real: cleanForReal },
       effects: ['fs:delete'],
       options: opts('-f --force', '-d', '-x', '-X', '-n --dry-run', '-i --interactive', '-e= --exclude=', '-q --quiet'),
     },
@@ -1421,12 +1435,14 @@ const git: CommandSpec = {
     },
     rm: {
       abbreviations: true,
+      dryRun: { options: ['--dry-run'] },
       effects: ['fs:delete'],
       positionals: 'delete',
       options: opts('-r', '-f --force', '--cached', '-n --dry-run', '-q --quiet'),
     },
     mv: {
       abbreviations: true,
+      dryRun: { options: ['--dry-run'] },
       effects: ['fs:write'],
       options: opts('-f --force', '-k', '-n --dry-run', '-v --verbose'),
       finish: finishGitMove,
@@ -1907,7 +1923,7 @@ const gh: CommandSpec = {
             effects: ['network'],
             options: opts('--license=', '-L= --limit=', '--order=', '--owner=', '--sort=', '-w --web', ...json),
           },
-          upgrade: { effects: ['network', 'fs:write'], options: opts('--all', '--dry-run', '--force') },
+          upgrade: { effects: ['network', 'fs:write'], options: opts('--all', '--dry-run', '--force'), dryRun: { options: ['--dry-run'] } },
         },
       },
       gist: {
@@ -2059,6 +2075,8 @@ const gh: CommandSpec = {
           },
           'create|new': {
             effects: ['exec:project'],
+            // It prints the pull request rather than open it, but may still push the branch.
+            dryRun: { options: ['--dry-run'], keeps: () => ['network'] },
             options: opts(
               '-a= --assignee=',
               '-B= --base=',
@@ -2609,9 +2627,13 @@ const gh: CommandSpec = {
           },
           'list|ls': { options: opts('--agent=', '--dir=', '--scope=', ...json) },
           'preview|show': { effects: ['network'], options: opts('--allow-hidden-dirs') },
-          publish: { effects: ['network'], options: opts('--dry-run', '--fix', '--tag=') },
+          publish: { effects: ['network'], options: opts('--dry-run', '--fix', '--tag='), dryRun: { options: ['--dry-run'] } },
           search: { effects: ['network'], options: opts('-L= --limit=', '--owner=', '--page=', ...json) },
-          update: { effects: ['network', 'fs:write'], options: opts('--all', '--dir=', '--dry-run', '--force', '--unpin') },
+          update: {
+            effects: ['network', 'fs:write'],
+            options: opts('--all', '--dir=', '--dry-run', '--force', '--unpin'),
+            dryRun: { options: ['--dry-run'] },
+          },
         },
       },
       'ssh-key': {
@@ -2690,13 +2712,7 @@ function maySecrets(parsed: Parsed): boolean {
 function finishKubectl(parsed: Parsed): void {
   const path = parsed.subcommands.join(' ');
   if (parsed.unknownSubcommand && (path === '' || path === 'create')) parsed.effects.add('exec:arbitrary');
-  // A dry run sends nothing to change (`client`), or only asks the server what it would do (`server`). What it reads
-  // from a URL it still fetches.
-  const dryRun = parsed.options['--dry-run']?.at(-1);
-  const dry = dryRun !== undefined && dryRun !== true && dryRun.kind === 'static' && /^(client|server)$/.test(dryRun.value);
-  if (dry && !parsed.effects.has('exec:remote') && parsed.effects.delete('network')) parsed.effects.add('network:read');
-  for (const value of [...(parsed.options['--filename'] ?? []), ...(parsed.options['--kustomize'] ?? [])])
-    if (value === true || value.kind === 'dynamic' || /^[a-z][a-z0-9+.-]*:\/\//i.test(value.value)) parsed.effects.add('network');
+  if (kubeFetches(parsed)) parsed.effects.add('network');
   const output = parsed.options['--output']?.at(-1);
   const shows =
     parsed.options['--template'] !== undefined ||
@@ -2704,14 +2720,14 @@ function finishKubectl(parsed: Parsed): void {
   const raw = parsed.options['--raw']?.at(-1);
   // The path is sent decoded: `%73ecrets` is `secrets`.
   if (path === 'get' && raw !== undefined && (raw === true || raw.kind === 'dynamic' || /secrets|%/i.test(raw.value)))
-    parsed.effects.add('secrets:read');
+    parsed.effects.add('secrets:read').add('secrets:print');
   // Any command with print flags prints the objects it names or changes, as the server has them (`label -o yaml`).
-  if (shows && maySecrets(parsed)) parsed.effects.add('secrets:read');
-  if (path === 'apply view-last-applied' && maySecrets(parsed)) parsed.effects.add('secrets:read');
+  if (shows && maySecrets(parsed)) parsed.effects.add('secrets:read').add('secrets:print');
+  if (path === 'apply view-last-applied' && maySecrets(parsed)) parsed.effects.add('secrets:read').add('secrets:print');
   // `--flatten` skips the redaction, and puts the key and certificate files' contents in.
   if (path === 'config view' && (parsed.options['--raw'] || parsed.options['--flatten'] || parsed.maybeOptions))
-    parsed.effects.add('secrets:read');
-  if (path === 'diff' && parsed.options['--show-secrets']) parsed.effects.add('secrets:read');
+    parsed.effects.add('secrets:read').add('secrets:print');
+  if (path === 'diff' && parsed.options['--show-secrets']) parsed.effects.add('secrets:read').add('secrets:print');
   // The kubeconfig and kuberc it changes, where it reads them.
   const configFile = (option: string, fallback: string) => {
     const given = parsed.options[option]?.at(-1);
@@ -2719,16 +2735,20 @@ function finishKubectl(parsed: Parsed): void {
   };
   if (path.startsWith('config ') && parsed.effects.has('fs:write')) configFile('--kubeconfig', '~/.kube/config');
   if (path === 'kuberc set') configFile('--kuberc', '~/.kube/kuberc');
-  // A server, proxy or kubeconfig of its own is a host not set up.
-  const elsewhere = [
-    '--server',
-    '--proxy-url',
-    '--kubeconfig',
-    '--insecure-skip-tls-verify',
-    '--certificate-authority',
-    '--tls-server-name',
-  ];
-  if (parsed.effects.has('network:read') && elsewhere.some((name) => parsed.options[name])) parsed.effects.add('network');
+  if (parsed.effects.has('network:read') && kubeElsewhere(parsed)) parsed.effects.add('network');
+}
+
+/** A file or kustomization kubectl fetches from a URL: from anywhere. */
+function kubeFetches(parsed: Parsed): boolean {
+  return [...(parsed.options['--filename'] ?? []), ...(parsed.options['--kustomize'] ?? [])].some(
+    (value) => value === true || value.kind === 'dynamic' || /^[a-z][a-z0-9+.-]*:\/\//i.test(value.value),
+  );
+}
+
+/** A server, proxy or kubeconfig of its own: a host not set up. */
+function kubeElsewhere(parsed: Parsed): boolean {
+  const options = ['--server', '--proxy-url', '--kubeconfig', '--insecure-skip-tls-verify', '--certificate-authority', '--tls-server-name'];
+  return options.some((name) => parsed.options[name]);
 }
 
 const kubeFiles = opts(o('-f= --filename=', { role: 'read' }), '-R --recursive', o('-k= --kustomize=', { role: 'read' }));
@@ -3013,7 +3033,7 @@ const kubectl: CommandSpec = {
           },
           // Prints a token it has the cluster issue.
           token: {
-            effects: ['secrets:read'],
+            effects: ['secrets:read', 'secrets:print'],
             options: [
               ...kubeOutput,
               ...opts('--audience=', '--bound-object-kind=', '--bound-object-name=', '--bound-object-uid=', '--duration='),
@@ -3341,6 +3361,13 @@ const kubectl: CommandSpec = {
       wait: { effects: ['network:read'], options: [...kubeFiles, ...kubeSelect, ...kubeOutput, ...opts('--for=', '--timeout=')] },
     },
   }),
+  // A dry run sends nothing to change (`client`), or only asks the server what it would do (`server`). What it reads
+  // from a URL, or from a host of its own, it still reaches.
+  dryRun: {
+    options: ['--dry-run'],
+    values: /^(client|server|unchanged)$/,
+    keeps: (parsed) => (kubeFetches(parsed) || kubeElsewhere(parsed) ? ['network'] : []),
+  },
   parse: (args, parsed) => readCobra(kubectl, args, parsed),
   finish(parsed) {
     if (parsed.subcommands[0] === 'version' && !parsed.options['--client']) parsed.effects.add('network:read');
@@ -3356,16 +3383,13 @@ const kubectl: CommandSpec = {
 function finishHelm(parsed: Parsed): void {
   const path = parsed.subcommands.join(' ');
   if (parsed.subcommands.length === 0 && parsed.unknownSubcommand) parsed.effects.add('exec:arbitrary');
-  const chartCommands = /^(install|upgrade|template|show \w+|pull|lint|package|dependency (build|update))$/;
-  if (chartCommands.test(path)) {
+  if (helmChartCommands.test(path)) {
     for (const arg of parsed.positionals) {
-      if (arg.kind === 'dynamic') parsed.effects.add('network').add('exec:arbitrary');
-      else if (/^(https?|oci):\/\//i.test(arg.value)) parsed.effects.add('network');
-      else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(arg.value)) parsed.effects.add('exec:arbitrary').add('network');
+      if (arg.kind === 'dynamic') parsed.effects.add('exec:arbitrary');
+      else if (!/^(https?|oci):\/\//i.test(arg.value) && /^[a-z][a-z0-9+.-]*:\/\//i.test(arg.value)) parsed.effects.add('exec:arbitrary');
     }
   }
-  for (const value of [...(parsed.options['--values'] ?? []), ...(parsed.options['--repo'] ?? [])])
-    if (value === true || value.kind === 'dynamic' || /^[a-z][a-z0-9+.-]*:\/\//i.test(value.value)) parsed.effects.add('network');
+  if (helmFetches(parsed)) parsed.effects.add('network');
   for (const value of parsed.options['--set-file'] ?? []) {
     if (value === true) continue;
     if (value.kind === 'dynamic') parsed.reads.push(value);
@@ -3379,17 +3403,25 @@ function finishHelm(parsed: Parsed): void {
   if (/^repo (add|remove)$/.test(path)) configFile('--repository-config', '~/.config/helm/repositories.yaml');
   if (/^registry (login|logout)$/.test(path)) configFile('--registry-config', '~/.config/helm/registry/config.json');
   if (/^plugin (install|uninstall|update)$/.test(path)) configFile(undefined, '~/.local/share/helm/plugins');
-  // Dry as Go reads a bool (uninstall, rollback), or in one of install's and upgrade's modes: `false` is a real run.
-  const dryRun = parsed.options['--dry-run']?.at(-1);
-  const dry =
-    goTrue(dryRun) || (dryRun !== undefined && dryRun !== true && dryRun.kind === 'static' && /^(client|server)$/.test(dryRun.value));
-  if (dry && /^(install|upgrade|uninstall|rollback)$/.test(path) && parsed.effects.delete('network')) parsed.effects.add('network:read');
   // As JSON or YAML, the release itself: its values and rendered manifest, Secrets included.
   const output = parsed.options['--output']?.at(-1);
   const whole = output !== undefined && (output === true || output.kind === 'dynamic' || /^(json|yaml)$/i.test(output.value));
-  if (/^(status|install|upgrade)$/.test(path) && whole) parsed.effects.add('secrets:read');
-  // Repositories from a file or cache the command names may be any host.
-  const elsewhere = [
+  if (/^(status|install|upgrade)$/.test(path) && whole) parsed.effects.add('secrets:read').add('secrets:print');
+  if (parsed.effects.has('network:read') && helmElsewhere(parsed)) parsed.effects.add('network');
+}
+
+const helmChartCommands = /^(install|upgrade|template|show \w+|pull|lint|package|dependency (build|update))$/;
+
+/** A chart or values helm fetches from a URL, or by a scheme only a plugin knows: from anywhere. */
+function helmFetches(parsed: Parsed): boolean {
+  const url = (value: Arg | true) => value === true || value.kind === 'dynamic' || /^[a-z][a-z0-9+.-]*:\/\//i.test(value.value);
+  const charts = helmChartCommands.test(parsed.subcommands.join(' ')) ? parsed.positionals : [];
+  return [...charts, ...(parsed.options['--values'] ?? []), ...(parsed.options['--repo'] ?? [])].some(url);
+}
+
+/** A cluster, kubeconfig, or repositories from a file or cache the command names: a host not set up. */
+function helmElsewhere(parsed: Parsed): boolean {
+  const options = [
     '--kube-apiserver',
     '--kubeconfig',
     '--kube-insecure-skip-tls-verify',
@@ -3398,7 +3430,7 @@ function finishHelm(parsed: Parsed): void {
     '--repository-config',
     '--repository-cache',
   ];
-  if (parsed.effects.has('network:read') && elsewhere.some((name) => parsed.options[name])) parsed.effects.add('network');
+  return options.some((name) => parsed.options[name]);
 }
 
 const helmChart = opts(
@@ -3497,13 +3529,13 @@ const helm: CommandSpec = {
         },
       },
       // Prints HELM_KUBETOKEN.
-      env: { effects: ['secrets:read'] },
+      env: { effects: ['secrets:read', 'secrets:print'] },
       get: {
         effects: ['network:read'],
         options: opts('--revision=', '-o= --output=', '--template='),
         subcommands: {
-          ...each('all hooks manifest', { effects: ['secrets:read'] }),
-          values: { effects: ['secrets:read'], options: opts('-a --all') },
+          ...each('all hooks manifest', { effects: ['secrets:read', 'secrets:print'] }),
+          values: { effects: ['secrets:read', 'secrets:print'], options: opts('-a --all') },
           ...each('metadata notes', {}),
         },
       },
@@ -3723,6 +3755,13 @@ const helm: CommandSpec = {
       version: { options: opts('--short', '--template=') },
     },
   }),
+  // Dry as Go reads a bool (uninstall, rollback), or in one of install's and upgrade's modes: `false` is a real run.
+  // What it fetches from a URL, or from a host of its own, it still reaches.
+  dryRun: {
+    options: ['--dry-run'],
+    values: /^(1|t|T|TRUE|true|True|client|server)$/,
+    keeps: (parsed) => (helmFetches(parsed) || helmElsewhere(parsed) ? ['network'] : []),
+  },
   parse: (args, parsed) => readCobra(helm, args, parsed),
   finish: finishHelm,
 };
@@ -3753,7 +3792,7 @@ const terraformCommands: CommandSpec = {
     apply: { effects: ['exec:project', 'network'], positionals: 'read', options: tfApply },
     // Prints any expression: state, `nonsensitive(…)`, a local file.
     console: {
-      effects: ['exec:project', 'network:read', 'secrets:read'],
+      effects: ['exec:project', 'network:read', 'secrets:read', 'secrets:print'],
       options: [...tfVars, ...opts('--plan=?', o('--state=', { role: 'read' }))],
     },
     destroy: { effects: ['exec:project', 'network'], options: tfApply },
@@ -3801,7 +3840,12 @@ const terraformCommands: CommandSpec = {
     modules: { options: tfBool('json') },
     // Prints outputs, sensitive ones in full when given one by name or as JSON or raw.
     output: { effects: ['network:read'], options: [...tfBool('json raw no-color'), ...opts(o('--state=', { role: 'read' }))] },
-    plan: { effects: ['exec:project', 'network:read'], options: tfPlan },
+    // A plan rehearses the apply with the same arguments, but those only a plan takes.
+    plan: {
+      effects: ['exec:project', 'network:read'],
+      options: tfPlan,
+      dryRun: { real: (_, __, args) => tfDropped(tfRenamed(args, 'plan', 'apply'), ['out', 'generate-config-out'], ['detailed-exitcode']) },
+    },
     providers: {
       effects: ['network:read'],
       options: tfVars,
@@ -3823,9 +3867,10 @@ const terraformCommands: CommandSpec = {
       subcommands: {
         ...each('list identities', { options: [...tfState, ...opts('--id=')] }),
         // The state's values: secrets among them.
-        ...each('pull show', { effects: ['secrets:read'], options: tfState }),
+        ...each('pull show', { effects: ['secrets:read', 'secrets:print'], options: tfState }),
         ...each('mv rm replace-provider', {
           effects: ['network'],
+          dryRun: { options: ['--dry-run'], real: (_, __, args) => tfDropped(args, [], ['dry-run']) },
           options: [
             ...tfState,
             ...tfBool('dry-run auto-approve ignore-remote-version'),
@@ -3908,8 +3953,8 @@ function parseTerraform(args: Arg[], parsed: Parsed): void {
   }
   const path = parsed.subcommands.join(' ');
   if (path === 'output' && (parsed.options['--json'] || parsed.options['--raw'] || parsed.positionals.length > 0 || parsed.maybeOptions))
-    parsed.effects.add('secrets:read');
-  if (path === 'show' && (parsed.options['--json'] || parsed.maybeOptions)) parsed.effects.add('secrets:read');
+    parsed.effects.add('secrets:read').add('secrets:print');
+  if (path === 'show' && (parsed.options['--json'] || parsed.maybeOptions)) parsed.effects.add('secrets:read').add('secrets:print');
   // Only checking when -check is true or -write false, as Go reads a bool: `-check=false` writes.
   const check = goTrue(parsed.options['--check']?.at(-1)) || goFalse(parsed.options['--write']?.at(-1));
   if (path === 'fmt' && check) {
@@ -3930,7 +3975,29 @@ function parseTerraform(args: Arg[], parsed: Parsed): void {
   if (path === 'providers lock' && parsed.options['--net-mirror']) parsed.effects.add('network');
 }
 
-const terraform: CommandSpec = { parse: parseTerraform };
+const terraform: CommandSpec = { parse: parseTerraform, subcommands: terraformCommands.subcommands };
+
+/** terraform's words with the first `from` (its command) as `to`. */
+function tfRenamed(args: Arg[], from: string, to: string): Arg[] {
+  const at = args.findIndex((arg) => arg.kind === 'static' && arg.value === from);
+  return at === -1 ? args : [...args.slice(0, at), { kind: 'static', value: to }, ...args.slice(at + 1)];
+}
+
+/** terraform's words without the options named, one dash or two: `valued` ones with their value, given in the next word or not. */
+function tfDropped(args: Arg[], valued: string[], flags: string[]): Arg[] {
+  const result: Arg[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    const option = arg.kind === 'static' ? /^--?([\w-]+)(=|$)/.exec(arg.value) : null;
+    if (option && valued.includes(option[1]!)) {
+      if (option[2] === '') i++;
+      continue;
+    }
+    if (option && flags.includes(option[1]!)) continue;
+    result.push(arg);
+  }
+  return result;
+}
 
 /** `find`: starting points, then an expression whose actions run commands, delete and write files. */
 const findActions = new Set(['-exec', '-execdir', '-ok', '-okdir']);
@@ -4822,6 +4889,16 @@ const programs: Record<string, CommandSpec> = {
   ruby: interpreter(opts(inline('-e='), '-n', '-p', o('-i=?', { effects: ['fs:write'] }), '-r=', '-I=', '-w', '-W=?')),
   npm: {
     nopt: true,
+    // `npm publish --dry-run` still runs the lifecycle scripts, which are walked as they are, and still fetches
+    // another package it's given.
+    dryRun: {
+      options: ['--dry-run'],
+      keeps: (parsed) =>
+        /^(pack|publish)$/.test(parsed.subcommands[0] ?? '') &&
+        parsed.positionals.some((arg) => arg.kind === 'dynamic' || !/^[.~/]/.test(arg.value))
+          ? ['network']
+          : [],
+    },
     options: opts(
       o('--prefix= -C=', { role: 'cwd' }),
       '-w= --workspace=',
@@ -4862,12 +4939,14 @@ const programs: Record<string, CommandSpec> = {
       ),
       ...each('exec|x init|create|innit edit explore', { effects: ['network', 'exec:arbitrary'] }),
       ...each(
-        'publish unpublish deprecate dist-tag|dist-tags owner|author access team login logout adduser|add-user audit outdated view|info|show|v search|find|s|se doctor docs|home bugs|issues repo fund diff hook token profile org star stars unstar ping whoami',
+        'unpublish deprecate dist-tag|dist-tags owner|author access team login logout adduser|add-user audit outdated view|info|show|v search|find|s|se doctor docs|home bugs|issues repo fund diff hook token profile org star stars unstar ping whoami',
         { effects: ['network'] },
       ),
       // `npm version` runs the version scripts, and commits and tags with git.
       'version|verison': { effects: ['exec:project'], finish: writesManifest },
       pack: { effects: ['exec:project', 'fs:write'], finish: packsElsewhere },
+      // Publishing runs the lifecycle scripts, packing among them: another package's (`npm publish ../b`) aren't the project's.
+      publish: { effects: ['network', 'exec:project'], finish: packsElsewhere },
       shrinkwrap: { effects: ['fs:write'] },
       cache: { effects: ['fs:write', 'fs:delete'] },
       'config|c': { finish: setsConfig },
@@ -4915,13 +4994,14 @@ const programs: Record<string, CommandSpec> = {
         { effects: ['network', 'fs:write', 'exec:project'] },
       ),
       ...each(
-        'audit outdated licenses view|info|show|v search|find|s|se publish stage login|adduser|add-user logout whoami doctor docs|home bugs|issues repo dist-tag|dist-tags owner|author|owners access team unpublish deprecate undeprecate token profile org star stars unstar ping sbom store cache peers',
+        'audit outdated licenses view|info|show|v search|find|s|se stage login|adduser|add-user logout whoami doctor docs|home bugs|issues repo dist-tag|dist-tags owner|author|owners access team unpublish deprecate undeprecate token profile org star stars unstar ping sbom store cache peers',
         { effects: ['network'] },
       ),
       // Commands this spec doesn't follow: what they do is only known at run time.
       ...each('edit recursive|multi|m set-script|ss change lane pack-app', { effects: ['exec:arbitrary'] }),
       'version|verison': { effects: ['exec:project'], finish: writesManifest },
       pack: { effects: ['exec:project', 'fs:write'], finish: packsElsewhere },
+      publish: { effects: ['network', 'exec:project'], finish: packsElsewhere },
       init: { finish: writesManifest },
       'config|c': { finish: setsConfig },
       set: { effects: ['exec:arbitrary'] },
@@ -5111,7 +5191,9 @@ const programs: Record<string, CommandSpec> = {
           effects: ['network', 'fs:write', 'exec:project'],
         },
       ),
-      ...each('audit outdated info why publish whoami login logout discord feedback', { effects: ['network'] }),
+      ...each('audit outdated info why whoami login logout discord feedback', { effects: ['network'] }),
+      // It runs the lifecycle scripts, which aren't walked.
+      publish: { effects: ['network', 'exec:project'] },
       ...each('help deploy list getcompletes', {}),
     },
     finish(parsed) {
@@ -5126,6 +5208,8 @@ const programs: Record<string, CommandSpec> = {
     },
   },
   cargo: {
+    // `cargo publish --dry-run` still builds the package.
+    dryRun: { options: ['--dry-run'] },
     // Every command reads the project's `.cargo/config.toml`, whose aliases and `rustc-wrapper` run code, and those
     // that build run its build scripts and macros.
     effects: ['exec:project'],
@@ -5681,6 +5765,11 @@ const programs: Record<string, CommandSpec> = {
   },
   rsync: {
     effects: ['fs:write', 'network'],
+    // A dry run still connects to the host it names.
+    dryRun: {
+      options: ['--dry-run'],
+      keeps: (parsed) => (parsed.positionals.some((arg) => arg.kind === 'dynamic' || /^[^/]*:/.test(arg.value)) ? ['network'] : []),
+    },
     options: opts(
       o('-e= --rsh=', { effects: ['exec:arbitrary'] }),
       o('--rsync-path=', { effects: ['exec:arbitrary'] }),
@@ -5689,9 +5778,21 @@ const programs: Record<string, CommandSpec> = {
       o('--include-from=', { role: 'read' }),
       o('--backup-dir=', { role: 'write' }),
       o('--log-file=', { role: 'write' }),
-      ...'-a --archive -r --recursive -v --verbose -n --dry-run -d --dirs -l --links -t --times -p --perms -g --group -o --owner -D --devices -z --compress -P --partial'
-        .split(' ')
-        .map((name) => o(name)),
+      '-a --archive',
+      '-r --recursive',
+      '-v --verbose',
+      '-n --dry-run',
+      '-d --dirs',
+      '-l --links',
+      '-t --times',
+      '-p --perms',
+      '-g --group',
+      '-o --owner',
+      '-D',
+      '--devices',
+      '-z --compress',
+      '-P',
+      '--partial',
     ),
     finish(parsed) {
       parsed.writes.push({ kind: 'dynamic', text: 'rsync destination', reason: 'placeholder', split: false, prefix: '' });
@@ -5831,6 +5932,7 @@ const programs: Record<string, CommandSpec> = {
     },
   },
   xxd: {
+    copies: true,
     ...reader(
       '-a --autoskip',
       '-b --bits',
@@ -5973,7 +6075,7 @@ const programs: Record<string, CommandSpec> = {
   // `-m` is the modification time, no mode: the word after it is a file.
   touch: writer('fs:write', '-a', '-c --no-create', '-d= --date=', '-f', '-h --no-dereference', '-m', '-r= --reference=', '-t=', '--time='),
   truncate: writer('fs:write', '-c --no-create', '-o --io-blocks', '-r= --reference=', '-s= --size='),
-  tee: writer('fs:write', '-a --append', '-i --ignore-interrupts', '-p', '--output-error=?'),
+  tee: { ...writer('fs:write', '-a --append', '-i --ignore-interrupts', '-p', '--output-error=?'), copies: true },
   cp: copy(false),
   mv: copy(true),
   ln: { ...copy(false), effects: ['fs:write'] },
@@ -6040,7 +6142,9 @@ const programs: Record<string, CommandSpec> = {
       '-T= --timeout=',
     ),
   },
-  'cat|less|more|wc|stat|nl|od|strings|md5sum|sha1sum|sha224sum|sha256sum|sha384sum|sha512sum|b2sum|cksum|cmp|tac|rev|base64': reader(
+  // They copy what they read to their output whole (or only encoded): a secret they read, they print.
+  'cat|less|more|nl|od|strings|tac|base64': { ...reader('-n', '-c', '-l', '-w', '-b', '-s', '-v', '-A', '-E', '-T'), copies: true },
+  'wc|stat|md5sum|sha1sum|sha224sum|sha256sum|sha384sum|sha512sum|b2sum|cksum|cmp|rev': reader(
     '-n',
     '-c',
     '-l',
@@ -6052,6 +6156,22 @@ const programs: Record<string, CommandSpec> = {
     '-E',
     '-T',
   ),
+  bat: {
+    ...reader(
+      '-p --plain',
+      '-l= --language=',
+      '-n --number',
+      '-A --show-all',
+      '--style=',
+      '-r= --line-range=',
+      '--paging=',
+      '--color=',
+      '-H= --highlight-line=',
+      '--theme=',
+      '--decorations=',
+    ),
+    copies: true,
+  },
   file: {
     ...reader('-m= --magic-file=', '-f= --files-from=', '-F= --separator=', '-e= --exclude=', '-P= --parameter=', '-C --compile'),
     finish(parsed) {
@@ -6079,7 +6199,10 @@ const programs: Record<string, CommandSpec> = {
       if (parsed.options['--inplace'] || split) parsed.effects.add('fs:write');
     },
   },
-  'head|tail': reader('-n= --lines=', '-c= --bytes=', '-f --follow=?', '-F', '-q --quiet', '-v --verbose', '-z --zero-terminated'),
+  'head|tail': {
+    ...reader('-n= --lines=', '-c= --bytes=', '-f --follow=?', '-F', '-q --quiet', '-v --verbose', '-z --zero-terminated'),
+    copies: true,
+  },
   'grep|egrep|fgrep': reader(
     '-e= --regexp=',
     o('-f= --file=', { role: 'read' }),
@@ -6191,7 +6314,9 @@ const programs: Record<string, CommandSpec> = {
     '-d --directory',
     '-F --classify',
   ),
-  'echo|printf|true|false|pwd|whoami|id|uname|which|seq|sleep|yes|nproc|uptime|tput|clear|printenv|ps|pgrep|df|free': {},
+  // They print their arguments as they are: a secret variable expanded in them, they print.
+  'echo|printf': { copies: true },
+  'true|false|pwd|whoami|id|uname|which|seq|sleep|yes|nproc|uptime|tput|clear|printenv|ps|pgrep|df|free': {},
 };
 
 /** The spec for a program by name, or `undefined` when it has none. */

@@ -153,7 +153,12 @@ execs kill the process, and so does any x32 system call.
   cluster and repositories their config names. Checked against kubectl 1.35, Helm 3 and 4, and terraform 1.17 docs:
   which of their commands only read, which change a cluster or infrastructure, which run a plugin, and which print
   secrets (`secrets:read`). Which files and variables hold secrets is a list of names: one named otherwise isn't
-  known to be one. Where GNU
+  known to be one. `secrets:print` trusts that the programs a spec marks `copies` print what they read unchanged, and
+  that output redirected to a file, piped into a program that doesn't copy it, or captured by a substitution doesn't
+  reach the script's output; a secret printed by a program that transforms it (`grep`, `awk`, `jq`) is read, not
+  printed. A dry run is lowered by its spec: that `--dry-run` (or `-n`) changes nothing a spec says it would, but for
+  what the spec keeps (`gh pr create --dry-run` may push, `rsync -n` connects). A dry run's own effects, not
+  `invocation.dryRun`'s, are what a policy matches. Where GNU
   coreutils and uutils (Ubuntu's since 25.10) read a wrapper's arguments differently, the command it runs is unknown,
   or, where each reading is known, both are walked (`env -- X=1 - cmd`).
   For npm, pnpm and bun, the specs say which of their own commands beat a script of the same name, which words they

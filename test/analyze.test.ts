@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { huskyFiles } from '#src/husky.ts';
-import { allow, analyze, ask, check, checkAsync, deny, recommended, snapshot, type Arg } from '#src/index.ts';
+import { allow, analyze, ask, check, checkAsync, deny, recommended, snapshot, type Arg, type Effect } from '#src/index.ts';
 
 const values = (args: Arg[]) => args.map((arg) => (arg.kind === 'static' ? arg.value : `<${arg.reason}>`));
 const only = (source: string) => {
@@ -943,4 +943,141 @@ describe('filesystem', () => {
     expect(short.decision).toBe('ask');
     expect(short.analysis.needs.length).toBeGreaterThan(0);
   });
+});
+
+describe('secrets:print', () => {
+  const started = { cwd: '/repo', env: { HOME: '/home/me' } };
+  const has = (source: string, effect: 'secrets:read' | 'secrets:print') =>
+    analyze(source, started).invocations.some((invocation) => invocation.effects.includes(effect));
+  const cases: [source: string, prints: boolean, what: string][] = [
+    ['cat .env', true, "a copying program, its output the script's"],
+    ['cat .env || true', true, 'in a list'],
+    ['echo $GITHUB_TOKEN', true, 'a secret variable echoed'],
+    ['printf %s "$API_KEY"', true, 'a secret variable printed'],
+    ['printenv', true, 'the environment'],
+    ['env', true, 'env with no command'],
+    ['export -p', true, 'the exported variables'],
+    ['set', true, 'every variable'],
+    ['declare -p', true, 'every variable, declared'],
+    ['head -n 1 ~/.ssh/id_ed25519', true, 'part of a key, whole lines'],
+    ['base64 .env', true, 'only encoded'],
+    ['tee copy < .env', true, 'tee, which copies its input to its output too'],
+    ['cat .env >&2', true, 'to standard error, which is output'],
+    ['cat .env | cat', true, 'through programs that copy it whole'],
+    ['echo $GITHUB_TOKEN | base64', true, 'through an encoding'],
+    ['f() { cat .env; }; f', true, 'in a function'],
+    ['kubectl get secret db -o yaml', true, 'a Secret kubectl prints'],
+    ['terraform output -json', true, 'outputs terraform prints'],
+    ['helm get values web', true, 'values helm prints'],
+    ['cat .env > /tmp/x', false, 'redirected to a file'],
+    ['cat .env > /dev/null', false, 'redirected away'],
+    ['cat .env >out 2>&1', false, 'both redirected to a file'],
+    ['{ cat .env; } > f', false, 'a group redirected'],
+    ['f() { cat .env; }; f > x', false, 'a function call redirected'],
+    ['cat .env | wc -l', false, 'piped into a program that counts'],
+    ['cat .env | grep KEY', false, 'piped into a program that transforms'],
+    ['x=$(cat .env)', false, 'captured by a substitution'],
+    ['source .env && deploy', false, 'sourced, not printed'],
+    ['curl -H "Authorization: Bearer $GITHUB_TOKEN" https://example.com', false, 'sent, not printed'],
+    ['docker run --env-file .env app', false, 'given to a container'],
+    ['cp .env .env.bak', false, 'copied to a file'],
+    ['cut -d= -f1 .env', false, 'names only, through a program that transforms'],
+    ['grep KEY .env', false, 'lines matched, through a program that transforms'],
+    ['printf -v x %s "$API_KEY"', false, 'printf assigning a variable'],
+    ['kubectl get secret db -o yaml > s.yaml', false, 'a Secret redirected to a file'],
+    ['compgen -e', false, 'names only'],
+    ['printenv HOME', false, 'no secret'],
+  ];
+  for (const [source, expected, what] of cases) {
+    test(`${what}: ${JSON.stringify(source)} ${expected ? 'prints' : "doesn't print"}`, () =>
+      expect(has(source, 'secrets:print')).toBe(expected));
+  }
+
+  test('what prints a secret reads it, and what reads one without printing it still reads it', () => {
+    for (const [source, printed] of cases) if (printed) expect([source, has(source, 'secrets:read')]).toEqual([source, true]);
+    for (const source of ['cat .env > /tmp/x', 'cat .env | wc -l', 'source .env && deploy', 'cut -d= -f1 .env', 'cp .env .env.bak'])
+      expect([source, has(source, 'secrets:read')]).toEqual([source, true]);
+  });
+});
+
+describe('dry runs', () => {
+  const rehearsed = (source: string) => {
+    const { effects, dryRun } = only(source);
+    return { effects: effects.toSorted(), dryRun: dryRun && { ...dryRun, effects: dryRun.effects.toSorted() } };
+  };
+  const cases: [source: string, effects: Effect[], real?: [text: string, shape: string, effects: Effect[]]][] = [
+    [
+      'git push --dry-run origin main',
+      ['exec:project', 'network:read'],
+      ['git push origin main', 'git push <arg> <arg>', ['exec:project', 'network']],
+    ],
+    ['git push -n', ['exec:project', 'network:read'], ['git push', 'git push', ['exec:project', 'network']]],
+    ['git push', ['exec:project', 'network']],
+    // git cleans nothing without -f unless clean.requireForce is false, which isn't its default.
+    ['git clean -nd', [], ['git clean -f -d', 'git clean --force -d', ['fs:delete']]],
+    ['git clean -fdn', [], ['git clean -fd', 'git clean --force -d', ['fs:delete']]],
+    ['git add -n .', [], ['git add .', 'git add <arg>', ['fs:write']]],
+    ['git rm -n a', [], ['git rm a', 'git rm <arg>', ['fs:delete']]],
+    ['rsync -avn src/ dst/', ['network:read'], ['rsync -av src/ dst/', 'rsync --archive --verbose <arg> <arg>', ['fs:write', 'network']]],
+    // It still connects to the host.
+    [
+      'rsync -avn src/ host:/dst',
+      ['network'],
+      ['rsync -av src/ host:/dst', 'rsync --archive --verbose <arg> <arg>', ['fs:write', 'network']],
+    ],
+    [
+      'rsync -n --log-file=l a/ b/',
+      ['fs:write', 'network:read'],
+      ['rsync --log-file=l a/ b/', 'rsync --log-file=<v> <arg> <arg>', ['fs:write', 'network']],
+    ],
+    // `--dry-run` after the command is configuration the spec doesn't name there: `exec:arbitrary`.
+    [
+      'npm publish --dry-run',
+      ['exec:arbitrary', 'exec:project', 'network:read'],
+      ['npm publish', 'npm publish', ['exec:project', 'network']],
+    ],
+    ['npm --dry-run publish', ['exec:project', 'network:read'], ['npm publish', 'npm publish', ['exec:project', 'network']]],
+    ['npm publish --dry-run=false', ['exec:arbitrary', 'exec:project', 'network']],
+    // It may still push the branch.
+    [
+      'gh pr create --dry-run --fill',
+      ['exec:project', 'network'],
+      ['gh pr create --fill', 'gh pr create --fill', ['exec:project', 'network']],
+    ],
+    ['cargo publish --dry-run', ['exec:project', 'network:read'], ['cargo publish', 'cargo publish', ['exec:project', 'network']]],
+    ['kubectl apply -f k8s/ --dry-run=server', ['network:read'], ['kubectl apply -f k8s/', 'kubectl apply --filename=<v>', ['network']]],
+    ['kubectl apply -f k8s/ --dry-run=client', ['network:read'], ['kubectl apply -f k8s/', 'kubectl apply --filename=<v>', ['network']]],
+    ['kubectl apply -f k8s/ --dry-run=none', ['network']],
+    // A file fetched from a URL is fetched all the same.
+    [
+      'kubectl apply -f https://example.com/x.yaml --dry-run=client',
+      ['network'],
+      ['kubectl apply -f https://example.com/x.yaml', 'kubectl apply --filename=<v>', ['network']],
+    ],
+    [
+      'helm upgrade --install web ./chart --dry-run',
+      ['network:read'],
+      ['helm upgrade --install web ./chart', 'helm upgrade --install <arg> <arg>', ['network']],
+    ],
+    ['helm uninstall web --dry-run=false', ['network']],
+    ['terraform plan', ['exec:project', 'network:read'], ['terraform apply', 'terraform apply', ['exec:project', 'network']]],
+    // What only a plan takes is left out: `-out tfplan` would make apply apply a plan file.
+    [
+      'terraform -chdir=infra plan -out tfplan -var x=1',
+      ['exec:project', 'fs:write', 'network:read'],
+      ['terraform -chdir=infra apply -var x=1', 'terraform apply --var=<v>', ['exec:project', 'network']],
+    ],
+    [
+      'terraform state rm -dry-run aws_instance.x',
+      ['network:read'],
+      ['terraform state rm aws_instance.x', 'terraform state rm <arg>', ['network', 'network:read']],
+    ],
+    // What the script writes besides, the real run writes too.
+    ['git clean -n > list.txt', ['fs:write'], ['git clean -f', 'git clean --force', ['fs:delete', 'fs:write']]],
+  ];
+  for (const [source, effects, real] of cases) {
+    test(JSON.stringify(source), () =>
+      expect(rehearsed(source)).toEqual({ effects, dryRun: real && { text: real[0], shape: real[1], effects: real[2] } }),
+    );
+  }
 });

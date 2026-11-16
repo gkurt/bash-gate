@@ -16,7 +16,7 @@ import {
   type Word,
   type WordPart,
 } from 'unbash';
-import { assignment, emptyParsed, flag, normalize, type Parsed } from './argv.ts';
+import { assignment, emptyParsed, flag, normalize, rehearse, type Parsed } from './argv.ts';
 import { Changes, compare, Probe, type FileSystem } from './files.ts';
 import { huskyHook } from './husky.ts';
 import { basename, isSystemPath, resolvePath } from './paths.ts';
@@ -187,6 +187,10 @@ interface Settled {
 /** Where the walk is: the source positions index, and how it got there. */
 interface Context {
   source: string;
+  /** Its standard output doesn't reach the script's: piped, redirected to a file, or taken by `$(…)` or `<(…)`. */
+  captured?: boolean;
+  /** In a `>(…)`, whose output is the script's own. */
+  outputSubstitution?: boolean;
   /** The loops it's in, innermost last, in this function or shell: `break` and `continue` reach them. */
   loops: Jumps[];
   /** In a function call, the states at each `return`: they hold after the call, as the end of the body does. */
@@ -347,6 +351,62 @@ const opensOutputs = /\d<(?![<(])|<>|>&\s*[3-9]/;
 function reopens(path: string, outputsRead: boolean): boolean {
   const device = /^\/dev\/(stdin|stdout|stderr|fd\/\d+)$/.exec(path.replace(/\/+/g, '/'))?.[1];
   return device !== undefined && (outputsRead || (device !== 'stdout' && device !== 'stderr'));
+}
+
+/**
+ * Whether redirections leave standard output somewhere but the script's output: a file, a pipe's other end, closed.
+ * Replayed in order, so `>f 2>&1` and `2>&1 >f` differ. `/dev/stderr`, `/dev/tty` and a target only known at run
+ * time count as output.
+ */
+function stdoutCaptured(redirects: readonly Redirection[]): boolean {
+  const outputs: Record<number, boolean> = { 1: true, 2: true };
+  /** Whether writing to `path` reaches the script's output: a file doesn't, the terminal and stdout or stderr do. */
+  const reachesOutput = (path: string): boolean => {
+    const device = path.replace(/\/+/g, '/');
+    if (device === '/dev/stdout' || device === '/dev/fd/1') return outputs[1] ?? true;
+    if (device === '/dev/stderr' || device === '/dev/fd/2') return outputs[2] ?? true;
+    return device === '/dev/tty';
+  };
+  for (const redirect of redirects) {
+    if (redirect.type !== 'Redirect') continue;
+    const descriptor = redirect.descriptor;
+    if (descriptor && descriptor.type !== 'FileDescriptor') continue;
+    const fd = descriptor?.value ?? 1;
+    const word = redirect.target;
+    const target = !word || /[$`*?[]/.test(word.text) ? undefined : word.value;
+    const reaches = target === undefined || reachesOutput(target);
+    switch (redirect.operator) {
+      case '>':
+      case '>>':
+      case '>|':
+        outputs[fd] = reaches;
+        break;
+      case '&>':
+      case '&>>':
+        outputs[1] = outputs[2] = reaches;
+        break;
+      case '<>':
+        if (fd !== 0) outputs[fd] = reaches;
+        break;
+      case '>&':
+        if (target === undefined) outputs[fd] = true;
+        else if (target === '-') outputs[fd] = false;
+        else if (/^\d+$/.test(target)) outputs[fd] = outputs[Number(target)] ?? true;
+        else if (!descriptor) outputs[1] = outputs[2] = reaches;
+        else outputs[fd] = reaches;
+        break;
+      case '<':
+      case '<&':
+      default:
+    }
+  }
+  return outputs[1] === false;
+}
+
+/** A pipeline's command that copies its input to the script's output whole: a copying program, not redirected. */
+function copiesThrough(node: CommandNode): boolean {
+  if (node.type !== 'Command' || !node.name || /[$`'"\\]/.test(node.name.text)) return false;
+  return !!specFor(node.name.value)?.copies && !stdoutCaptured(node.redirects);
 }
 
 /** Programs whose arguments name files they don't read the contents of. */
@@ -568,6 +628,7 @@ const packageManagers = new Set(Object.keys(workspaces));
 /** The scripts npm's and pnpm's own commands run, in order. */
 const lifecycleScripts: Record<string, string[]> = {
   pack: ['prepack', 'prepare', 'postpack'],
+  publish: ['prepublishOnly', 'prepack', 'prepare', 'postpack', 'publish', 'postpublish'],
   version: ['preversion', 'version', 'postversion'],
 };
 
@@ -876,7 +937,9 @@ class Walker {
               : undefined;
         for (const [i, command] of node.commands.entries()) {
           const shell = together ? clone(state) : state;
-          if (together) this.member(node.commands, command, shell, ctx);
+          // What it writes into the pipe reaches the output only through programs that copy it whole (`| cat`, `| head`).
+          const piped = i < node.commands.length - 1 && !node.commands.slice(i + 1).every(copiesThrough);
+          if (together) this.member(node.commands, command, shell, piped ? { ...ctx, captured: true } : ctx);
           else this.node(command, shell, ctx);
           if (!together) continue;
           this.between(shell, ctx);
@@ -985,7 +1048,12 @@ class Walker {
         // Bash opens the files before it runs what's in the group, and runs none of it when one can't be opened.
         const call = { ...this.at(ctx, state, node), writes: files.writes, reads: files.reads };
         this.wrote(files.writes, call, 'contents');
-        const inner = { ...ctx, writes: [...ctx.writes, ...files.writes], reads: [...ctx.reads, ...files.reads] };
+        const inner = {
+          ...ctx,
+          writes: [...ctx.writes, ...files.writes],
+          reads: [...ctx.reads, ...files.reads],
+          captured: ctx.captured || stdoutCaptured(node.redirects),
+        };
         if (files.writes.length === 0 && files.reads.length === 0) return this.node(node.command, state, inner);
         // Opened even when nothing in the group runs (`case a in b) ;; esac >f`, `(( 0 )) >f`), as `>f` alone is.
         this.emit(ctx, call, ':', 'builtin', [{ kind: 'static', value: ':' }], emptyParsed());
@@ -1175,7 +1243,12 @@ class Walker {
     const visit = (node: SyntaxNode, ctx: Context, again = false) => {
       if (node.type === 'Script') {
         const scriptCtx = node.source === undefined ? ctx : { ...ctx, source: node.source, outer: ctx.outer ?? [node.pos, node.end] };
-        const inner = { ...scriptCtx, nesting: [...ctx.nesting, '$(…)'] };
+        const inner = {
+          ...scriptCtx,
+          nesting: [...ctx.nesting, '$(…)'],
+          captured: ctx.outputSubstitution ? ctx.captured : true,
+          outputSubstitution: false,
+        };
         // In POSIX mode Bash runs a command substitution as it parsed it with the line around it: with that line's
         // aliases, and none it defines itself. Otherwise it parses it again as it runs. A process substitution gets
         // both: the line's aliases, then those when it runs, so either may be what runs.
@@ -1183,7 +1256,10 @@ class Walker {
         if (state.posix !== true || ctx.late || again) this.script(node, clone(state), inner);
         return;
       }
-      if (node.type === 'ProcessSubstitution') return forEachChild(node, (child) => visit(child, { ...ctx, concurrent: true }, true));
+      if (node.type === 'ProcessSubstitution') {
+        const output = node.text.startsWith('>(');
+        return forEachChild(node, (child) => visit(child, { ...ctx, concurrent: true, outputSubstitution: output }, true));
+      }
       if (node.type === 'ArithmeticExpansion') {
         if (node.expression) this.arithmetic(node.expression, state, ctx);
         return;
@@ -1584,9 +1660,10 @@ class Walker {
     return numeric;
   }
 
-  simple(parsed: Command, state: State, ctx: Context): void {
+  simple(parsed: Command, state: State, outer: Context): void {
     const command = rejoined(parsed);
-    this.substitutions([command], state, ctx);
+    this.substitutions([command], state, outer);
+    const ctx = !outer.captured && stdoutCaptured(command.redirects) ? { ...outer, captured: true } : outer;
     const lookup = lookupIn(state);
     const assignments = command.prefix.filter((item): item is Assignment => item.type === 'Assignment');
     const files = redirections(command.redirects, lookup, this.outputsRead);
@@ -2635,7 +2712,9 @@ class Walker {
   run(argv: Arg[], state: State, ctx: Context, call: Call, path: string | undefined): void {
     const name = (argv[0] as Extract<Arg, { kind: 'static' }>).value;
     const program = path ? basename(path) : name;
-    const parsed = normalize(this.withAppended(argv.slice(1), ctx, call), specFor(program));
+    const args = this.withAppended(argv.slice(1), ctx, call);
+    const parsed = normalize(args, specFor(program));
+    rehearse(specFor(program), args, parsed);
     if (path && !isSystemPath(path)) parsed.effects.add('exec:file');
     // An interactive shell reads ~/.bashrc, a login shell /etc/profile and ~/.profile: code the analysis doesn't see.
     const { options } = parsed;
@@ -3502,6 +3581,8 @@ class Walker {
     if (redirected.some((arg) => socket(arg.kind === 'static' ? arg.value : arg.prefix, arg.kind === 'dynamic'))) effects.add('network');
     const realpaths = this.files ? this.realpaths([...parsed.positionals, ...reads, ...writes], ctx, call) : undefined;
     if (this.readsSecrets(program, argv, parsed, [...call.reads, ...ctx.reads], call, realpaths)) effects.add('secrets:read');
+    if (effects.has('secrets:read') && copies(program, argv, parsed)) effects.add('secrets:print');
+    if (ctx.captured) effects.delete('secrets:print');
     const open = call.open || ctx.open;
     const invocation: Invocation = {
       program,
@@ -3530,6 +3611,11 @@ class Walker {
       text: this.analysis.source.slice(call.span[0], call.span[1]),
     };
     invocation.shape = shape(invocation);
+    const { dryRun } = parsed;
+    if (dryRun) {
+      const beside = [...effects].filter((effect) => !dryRun.rehearsal.has(effect));
+      invocation.dryRun = rehearsal(argv, program, dryRun, beside);
+    }
     if (this.running.size > 0) {
       const key = JSON.stringify(invocation);
       if (this.emitted.has(key)) return;
@@ -3647,7 +3733,35 @@ class Walker {
 }
 
 /** `program subcommand --options <arg>…`: an invocation with its values left out. */
-function shape(invocation: Invocation): string {
+/**
+ * What a dry run stands for: the real command, as text and shape, with its effects. What the invocation adds beside its
+ * spec (a redirection's write, `exec:file`, a secret it reads) the real one has too.
+ */
+function rehearsal(argv: Arg[], program: string | null, dryRun: NonNullable<Parsed['dryRun']>, beside: Effect[]): Invocation['dryRun'] {
+  const real = dryRun.parsed;
+  return {
+    text: [argv[0]!, ...dryRun.args].map(quoted).join(' '),
+    shape: shape({ program, subcommands: real.subcommands, options: real.options, positionals: real.positionals }),
+    effects: [...new Set([...real.effects, ...beside])],
+  };
+}
+
+/** A word as the shell would read it back. */
+function quoted(arg: Arg): string {
+  if (arg.kind === 'dynamic') return arg.text;
+  return /^[\w@%+=:,./~-]+$/.test(arg.value) ? arg.value : `'${arg.value.replaceAll("'", String.raw`'\''`)}'`;
+}
+
+/** Whether it copies what it reads to its output unchanged, by its spec (`cat`), or prints the environment. */
+function copies(program: string | null, argv: Arg[], parsed: Parsed): boolean {
+  if (parsed.effects.has('secrets:print')) return true;
+  if (printsEnvironment(program, argv, parsed.nested.length > 0)) return true;
+  if (program === null || !specFor(program)?.copies) return false;
+  // `printf -v name` assigns what it formats rather than printing it.
+  return !(program === 'printf' && parsed.options['-v'] !== undefined);
+}
+
+function shape(invocation: Pick<Invocation, 'program' | 'subcommands' | 'options' | 'positionals'>): string {
   const options = Object.entries(invocation.options)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([name, values]) => (values.some((value) => value !== true) ? `${name}=<v>` : name));

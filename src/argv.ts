@@ -51,6 +51,28 @@ export interface CommandSpec {
   parse?: (args: Arg[], parsed: Parsed) => void;
   /** Whatever options and positionals can't say, once they're parsed: `bash -c`'s script is its first positional. */
   finish?: (parsed: Parsed) => void;
+  /** It copies what it reads (its files, its input, its arguments) to its output unchanged: `cat`, `head`, `echo`. */
+  copies?: boolean;
+  /** How it rehearses another command without doing it: `--dry-run`, or a command that is one (`terraform plan`). */
+  dryRun?: DryRunSpec;
+}
+
+/**
+ * A dry run: the options that make one, and the real command it stands for. Found on the subcommand or any level above
+ * it (`kubectl`'s `--dry-run` is every command's).
+ */
+export interface DryRunSpec {
+  /** The options, by canonical name. None: the command always rehearses another (`terraform plan`). */
+  options?: string[];
+  /** Which values make it one (kubectl's `client|server`). By default any but a false one (`false`, `0`, `none`). */
+  values?: RegExp;
+  /**
+   * The real command's arguments (the program left out), given the dry run's `args` and those words without the
+   * options (`without`), which is the default.
+   */
+  real?: (without: Arg[], parsed: Parsed, args: Arg[]) => Arg[];
+  /** What the rehearsal still does beyond reading and project code: `gh pr create --dry-run` may still push. */
+  keeps?: (parsed: Parsed) => Effect[];
 }
 
 /** A command line read with its program's spec. */
@@ -87,6 +109,8 @@ export interface Parsed {
   separated?: boolean;
   /** A working directory it switches to (`git -C`, `env -C`). */
   cwd?: Arg;
+  /** When it's a dry run, the real command it rehearses (its arguments, the program left out, read with the same spec), and the effects the spec gave the rehearsal: what's added to them after, the real run has too. */
+  dryRun?: { args: Arg[]; parsed: Parsed; rehearsal: Set<Effect> };
 }
 
 export const assignment = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -437,4 +461,79 @@ function findSubcommand(subcommands: Record<string, CommandSpec>, name: string):
     if (names.includes(name)) return [names[0]!, spec];
   }
   return undefined;
+}
+
+/** A value Go, nopt or the program reads as false, or kubectl and helm as no dry run. */
+const falseValue = /^(0|f|false|no|off|none)$/i;
+
+/** The spec at each level of `subcommands`, the root first. */
+function levelsOf(root: CommandSpec, subcommands: string[]): CommandSpec[] {
+  const levels = [root];
+  for (const name of subcommands) {
+    const next = levels.at(-1)!.subcommands && findSubcommand(levels.at(-1)!.subcommands!, name)?.[1];
+    if (!next) break;
+    levels.push(next);
+  }
+  return levels;
+}
+
+/**
+ * Whether `parsed` is a dry run, by the spec's `dryRun`: then it gets the real command it rehearses (`parsed.dryRun`),
+ * and its effects are lowered to the rehearsal's. It still reads and may run project code (`npm publish --dry-run` runs
+ * its lifecycle scripts), but writes, deletes and runs nothing remotely, and only reads from the network. What it writes
+ * by an option of its own (a log, a plan file) it still writes. A value only known at run time may be no dry run.
+ */
+export function rehearse(root: CommandSpec | undefined, args: Arg[], parsed: Parsed): void {
+  if (!root) return;
+  const levels = levelsOf(root, parsed.subcommands);
+  const spec = levels.findLast((level) => level.dryRun)?.dryRun;
+  if (!spec) return;
+  if (spec.options) {
+    const values = spec.options.flatMap((name) => parsed.options[name] ?? []);
+    const last = values.at(-1);
+    if (last === undefined) return;
+    if (last !== true && (last.kind === 'dynamic' || (spec.values ? !spec.values.test(last.value) : falseValue.test(last.value)))) return;
+  }
+  const without = withoutOptions(args, levels, spec.options ?? []);
+  const real = spec.real ? spec.real(without, parsed, args) : without;
+  parsed.dryRun = { args: real, parsed: normalize(real, root), rehearsal: new Set() };
+  const keeps = spec.keeps?.(parsed) ?? [];
+  for (const effect of ['fs:write', 'fs:delete', 'exec:remote'] as const) if (!keeps.includes(effect)) parsed.effects.delete(effect);
+  if (!keeps.includes('network') && parsed.effects.delete('network')) parsed.effects.add('network:read');
+  const named = new Set(Object.values(parsed.options).flat());
+  parsed.writes = parsed.writes.filter((arg) => named.has(arg));
+  if (parsed.writes.length > 0) parsed.effects.add('fs:write');
+  parsed.dryRun.rehearsal = new Set(parsed.effects);
+}
+
+/** `args` without the options named (canonical names, at any level): a whole word, or a letter in a cluster. */
+export function withoutOptions(args: Arg[], levels: CommandSpec[], names: string[]): Arg[] {
+  const canonical = (spelling: string) =>
+    levels.map((level) => (spelling.startsWith('--') ? findLong(level, spelling) : findOption(level, spelling))).find(Boolean)?.names[0];
+  const result: Arg[] = [];
+  let ended = false;
+  for (const arg of args) {
+    if (ended || arg.kind === 'dynamic' || !isOption(arg.value)) {
+      result.push(arg);
+      continue;
+    }
+    if (arg.value === '--') {
+      ended = true;
+      result.push(arg);
+      continue;
+    }
+    if (arg.value.startsWith('--')) {
+      const name = canonical(arg.value.split('=')[0]!);
+      if (!(name && names.includes(name))) result.push(arg);
+      continue;
+    }
+    const letters = arg.value.slice(1);
+    if (letters.includes('=')) {
+      result.push(arg);
+      continue;
+    }
+    const kept = letters.split('').filter((letter) => !names.includes(canonical(`-${letter}`) ?? ''));
+    if (kept.length > 0) result.push(kept.length === letters.length ? arg : { kind: 'static', value: `-${kept.join('')}` });
+  }
+  return result;
 }

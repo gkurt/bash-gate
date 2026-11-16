@@ -30,8 +30,9 @@ runs everything on Linux, then builds and loads `dist/` in Node.
 - `src/analyze.ts`: the walk. Shell state (variables, namerefs, functions, aliases, `hash`, `enable`, `cd`), dispatch (alias,
   function, builtin, program), wrappers, and code inside strings. What the script writes, against which file reads
   and real paths become unknown.
-- `src/argv.ts`: reads argv with a `CommandSpec`. Canonical options, subcommands, nested command lines, and cobra's
-  rules for Go programs (`readCobra`).
+- `src/argv.ts`: reads argv with a `CommandSpec`. Canonical options, subcommands, nested command lines, cobra's
+  rules for Go programs (`readCobra`), and dry runs: their effects lowered and the real command they rehearse
+  (`rehearse`, from a spec's `dryRun`).
 - `src/specs.ts`: program specs, plus git's config keys that run code. The `gh` spec's subcommands and options follow
   `gh help reference`; `kubectl`'s and `helm`'s their reference docs (kubectl 1.35, Helm 3 and 4), and `terraform`'s
   its CLI docs (1.17), its options read as Go's flag package reads them.
