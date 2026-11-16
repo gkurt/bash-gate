@@ -430,6 +430,7 @@ export function analyze(source: string, environment: Environment = {}): Analysis
   if (start !== undefined) analysis.cwd = start;
   if (start !== undefined && files) analysis.realcwd = files.physical(start) ?? null;
   const home = environment.env?.HOME;
+  if (home?.startsWith('/')) analysis.home = resolvePath('/', home) ?? home;
   if (home?.startsWith('/') && files) analysis.realhome = files.physical(resolvePath('/', home) ?? home) ?? null;
   if (files) analysis.needs = [...files.needs.values()];
   return analysis;

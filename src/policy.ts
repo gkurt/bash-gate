@@ -176,7 +176,7 @@ function decide(invocation: Invocation, policy: Policy, start: Start): Reason {
 }
 
 /** Where the script starts, which relative globs are matched from (see `Analysis`). */
-export type Start = Pick<Analysis, 'cwd' | 'realcwd' | 'realhome'>;
+export type Start = Pick<Analysis, 'cwd' | 'realcwd' | 'home' | 'realhome'>;
 
 /**
  * How `rule` matches `invocation`, read the cautious way for the rule's decision: 0 no, 1 maybe, 2 yes. Pass the
@@ -275,8 +275,9 @@ function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: b
     const local = resolved?.startsWith('/') && start.cwd !== undefined ? relativePath(resolved, start.cwd) : undefined;
     const realLocal = typeof physical === 'string' && typeof start.realcwd === 'string' ? relativePath(physical, start.realcwd) : undefined;
     const real = [physical, realLocal].filter((form) => typeof form === 'string');
-    // `~` globs match where HOME really is too: a symlink to `~/.bashrc`, or HOME given by a path that leads there.
-    const homes = [invocation.home, typeof start.realhome === 'string' ? start.realhome : undefined];
+    // `~` globs match where HOME really is too: a symlink to `~/.bashrc`, or HOME given by a path that leads there. And
+    // HOME as it started, for a script that leaves it unknown without changing it (`declare -a HOME`).
+    const homes = [invocation.home, start.home, typeof start.realhome === 'string' ? start.realhome : undefined];
     const forms = [
       all ? undefined : arg.value,
       resolved,
@@ -293,8 +294,11 @@ function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: b
     const realMatches = patterns.some((pattern) => real.some((form) => pattern.test(form)));
     if (all && (!matches || (realpaths !== undefined && !realMatches))) return 0;
     if (!all && matches) return 2;
-    const outside = resolved === undefined || resolved === '..' || resolved.startsWith('../') || physical === null;
+    // Windows also names a file by an 8.3 short name (`BASHRC~1` is `.bashrc`), which may be any name it shortens.
+    const short = shortName.test(arg.value);
+    const outside = short || resolved === undefined || resolved === '..' || resolved.startsWith('../') || physical === null;
     const unplaced =
+      short ||
       resolved === undefined ||
       physical === null ||
       (!anchored(resolved) && local === undefined) ||
@@ -303,6 +307,9 @@ function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: b
   }
   return result;
 }
+
+/** A path with a name of Windows' 8.3 form, `NAME~N` or `NAME~N.EXT`. */
+const shortName = /(^|\/)[^/~]{1,6}~\d+(\.[^/.]{1,3})?(\/|$)/;
 
 /** `path` with the names git looks for spelled as git does: `.GIT`, `git~1` and `Head` are `.git` and `HEAD`. */
 function foldCase(path: string): string {

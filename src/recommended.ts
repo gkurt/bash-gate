@@ -80,6 +80,8 @@ export const recommended: Policy = {
         '~/.local',
         '~/.local/bin',
         '~/.local/bin/**',
+        '~/bin',
+        '~/bin/**',
         '~/.npmrc',
         '~/.bunfig.toml',
         '~/.cargo',

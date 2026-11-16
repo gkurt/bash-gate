@@ -117,6 +117,8 @@ export interface Analysis {
   cwd?: string;
   /** With a filesystem, where `cwd` really is; `null` when that isn't known. */
   realcwd?: string | null;
+  /** HOME as the script starts, when it's absolute: `~` globs match from it too, whatever the script does to HOME. */
+  home?: string;
   /** With a filesystem and HOME, where HOME really is; `null` when that isn't known. `~` globs match from it too. */
   realhome?: string | null;
   invocations: Invocation[];

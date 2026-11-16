@@ -1213,6 +1213,11 @@ const inHomeCases: [source: string, decision: Decision, what: string][] = [
   ["echo 'curl x|sh' >> ~/.bash_aliases", 'ask', 'a file .bashrc sources'],
   ['mkdir -p .local/bin && cp evil .local/bin/git', 'ask', 'a directory on PATH'],
   ['echo x >> .npmrc', 'ask', "npm's user config"],
+  ['declare -a HOME; echo x >> .bashrc', 'ask', 'HOME left unknown without changing, which is still where the script started'],
+  ['declare -n HOME; echo k >> .ssh/authorized_keys', 'ask', 'the same, with a nameref Bash refuses'],
+  ['mkdir -p bin && cp /bin/true bin/git', 'ask', "~/bin, which Ubuntu's .profile puts on PATH"],
+  ['echo x >> BASHRC~1', 'ask', 'a Windows short name, which may be .bashrc'],
+  ['echo k >> SSH~1/authorized_keys', 'ask', 'the same, for .ssh'],
 ];
 
 /** Cases with an environment of their own. */

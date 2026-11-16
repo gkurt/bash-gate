@@ -468,3 +468,15 @@ Stopped by a safeguard: the reviewer subagent was terminated early (request ID r
 Open items from round 31, checked by me this round:
 - `echo script-shell=/tmp/x > .npmrc && npm test` → allow; `echo '{"compilerOptions":{"outDir":…}}' > tsconfig.json && tsc` → allow. Rejected under the current model: THREAT_MODEL (project code) says what the project holds is its own, "including what the script writes or copies into the project before" — `.npmrc` and `tsconfig.json` are project configuration, as `vite.config.js` is (`echo … > vite.config.js && vite build` is allow by the same promise). A policy for which that matters asks about `exec:project`. If you want project configuration written by the script itself to count as unseen, that's a trust-boundary change: logged here, not made.
 Costs: none. Needs a decision: none new (the note above restates an existing promise).
+
+## Round 40: src/policy.ts and src/recommended.ts (fifth pass), 2026-11-16, see commit
+Rerun from the start on fa7d65c (0.3.0) after the pause. Reviewer verified in WSL (Bash 5.2.21, Ubuntu's /etc/skel/.profile) and Git Bash on NTFS with 8.3 names; I re-ran the `declare -a HOME` case in WSL (HOME unchanged). All 5 new escapes cases fail on 3c37307.
+Confirmed and fixed:
+- `declare -a HOME; echo x >> .bashrc` (also `-A`, `-n`, `export -a`) from HOME → allow: the analysis leaves HOME unknown with no finding, so `~` globs had no HOME to match from, while Bash keeps HOME as it was → `Analysis.home` (HOME as the script starts) is one more home `~` globs match from.
+- `mkdir -p bin && cp … bin/git` from HOME → allow; Ubuntu's .profile prepends `~/bin` to PATH → `~/bin` and `~/bin/**` in the home rule.
+- `echo x >> BASHRC~1`, `echo k >> SSH~1/authorized_keys` from HOME on Windows → allow; 8.3 short names reach `.bashrc`, `.ssh` → a path with a `NAME~N` component counts as unplaced and outside, so path rules may match it.
+Rejected: none. Not verified (not changed): other dotfiles that run code later (`~/.config/**` beyond git, `~/.cargo/env`, `~/.bashrc.d/`, `.xsessionrc`, `.pam_environment`, `.gnupg/gpg-agent.conf`).
+Costs: writes to a path with a `NAME~N` component ask (`x~1`); writes under `~/bin` ask. No everyday verdict moved.
+Needs a decision: none.
+
+Loop stopped after this round at the main session's request (the user has new work queued); no further rounds scheduled.
