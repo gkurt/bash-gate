@@ -120,14 +120,20 @@ const policy: Policy = {
   case, and `.git`'s Windows short name `GIT~1`, as a filesystem that ignores case takes them.
 - `effects`: `fs:read`, `fs:write`, `fs:delete`, `network`, `network:read`, `privilege`, `exec:arbitrary`,
   `exec:project`, `exec:file`, `exec:remote`, `shell-state`, `secrets:read`. `secrets:read` reads what is likely a
-  secret: the environment as a whole (`printenv`, `env` or `export -p` alone, `declare -p`, `set` alone, `ps e`), a
-  file that holds credentials, read, sourced or redirected (`.env` and its variants but templates like
-  `.env.example`, `.envrc`, SSH private keys, `*.pem`, `*.key`, `.netrc`, `.npmrc`, `~/.aws/credentials`,
-  `~/.kube/config`, gcloud and Azure credentials, `*.tfstate`, `/proc/*/environ`), a variable named like one expanded
-  anywhere in a command but `test` (an upper-case name with a word `TOKEN`, `SECRET`, `PASSWORD`, `PASSPHRASE`,
-  `CREDENTIALS` or `APIKEY`, or ending in `KEY`: `$GITHUB_TOKEN`, `$OPENAI_API_KEY`), and what a tool prints of its own
-  (`kubectl get secret -o yaml`, `kubectl config view --raw`, `helm get values`, `terraform output -json`, `terraform
-  state pull`). A file named only by a word known at run time (`cat "$f"`) isn't known to be one. `network:read` only reads, from a host already set up:
+  secret: the environment as a whole (`printenv`, `env` or `export -p` alone, `declare -p`, `set` alone, `ps e`
+  anywhere in its arguments, `ps -E`, awk's `ENVIRON`, jq's `env` and `$ENV`, yq's `env()` and `strenv()`), a file
+  that holds credentials, read, sourced, redirected, renamed (`mv`, `ln`), matched by a glob (`.e?v`, `~/.aws/*`) or
+  at a git revision (`git show HEAD:.env`) (`.env` and its variants but templates like `.env.example`, `.envrc`,
+  `.dev.vars`, SSH private keys, `*.pem`, `*.key`, `*.ppk`, `*.kdbx`, `.netrc`, `.npmrc`, `.my.cnf`, `.htpasswd`,
+  `~/.aws/credentials`, any file in `~/.kube`, gcloud and Azure credentials, git's, agents', registries' and cloud
+  CLIs' credentials files, `*.tfstate`, `*.tfvars`, `/proc/*/environ`), a variable that may hold one expanded anywhere
+  (an upper-case name with a word ending in `TOKEN`, `SECRET`, `PASSWORD`, `PASSPHRASE`, `CREDENTIALS` or `APIKEY`, a
+  word `PWD`, `PAT` or `SSHPASS`, or ending in `KEY`: `$GITHUB_TOKEN`, `$PGPASSWORD`, `$OPENAI_API_KEY`, but not one
+  ending in `DIR`, `FILE` or `PATH`, or with a word `PUBLIC`; a nameref; `${!x}` naming one), in a command, an
+  assignment, a loop's words or arithmetic, but only tested (`test`, `[[ ]]`, `case`, not as a number and not under
+  `set -x`), and what a tool prints of its own (`kubectl get secret -o yaml`, `kubectl config view --raw`, `helm get
+  values`, `terraform output -json`, `terraform state pull`). A file named only by a word known at run time (`cat
+  "$f"`), or read by a recursive search (`grep -r`), isn't known to be one. `network:read` only reads, from a host already set up:
   `git fetch` and `git ls-remote` from a remote given by its name (or none), and the `gh` commands that look
   (`gh pr view`, `gh run list`, `gh search`). They have `network` instead once the command line may say where to go:
   a URL or a path, `git -c`, `--git-dir`, `gh -R HOST/OWNER/REPO`, `--web`, an argument only known at run time, or an
@@ -384,8 +390,8 @@ bun run checks   # tsc, then bun test
   before the command ran. So are kubectl's and helm's reads, and `terraform plan`, whose providers and data sources
   call whatever the project's configuration names, with the user's credentials.
 - **`secrets:read` is known by name.** A file is a secret by its name or where it is, and a variable by its name: a
-  secret in `config.json`, in a variable named `DB_URL`, or read through a word only known at run time (`cat "$f"`)
-  isn't one. A kubeconfig's and terraform's own credentials are used, not read, by the commands that reach a cluster
+  secret in `config.json`, in a variable named `DB_URL`, read through a word only known at run time (`cat "$f"`,
+  `xargs cat`, `find -exec cat {} +`), or by a recursive search or a bare `*` that happens to reach one, isn't one. A kubeconfig's and terraform's own credentials are used, not read, by the commands that reach a cluster
   or a provider.
 - **What a specified program writes is what its spec says.** With `fs`, a file is unknown once a redirection, a spec's
   write, a work tree git rewrites, or a program that may write anything may have reached it. A program whose spec

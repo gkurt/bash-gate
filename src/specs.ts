@@ -4399,12 +4399,13 @@ function scanSed(script: string): SedScript | undefined {
 
 /**
  * An awk program's effects, by the tokens it can't have them without: `system`, a pipe and `getline` run commands or
- * read files the program names, `@` calls a function named at run time or loads code, and a `>` after a `print`
- * writes a file. The text is searched as written, strings and regular expressions included, so it finds more than is
+ * read files the program names, `@` calls a function named at run time or loads code, a `>` after a `print` writes a
+ * file, and `ENVIRON` reads the environment, secrets and all. The text is searched as written, strings and regular expressions included, so it finds more than is
  * there and never less. A line continuation could split a token, so one counts as code unseen.
  */
 function scanAwk(code: string, parsed: Parsed): void {
   if (/system|getline|@|\\\r?\n/.test(code) || code.replaceAll('||', '').includes('|')) parsed.effects.add('exec:arbitrary');
+  if (code.includes('ENVIRON')) parsed.effects.add('secrets:read');
   const print = code.indexOf('print');
   if (print === -1 || !/>(?!=)/.test(code.slice(print))) return;
   parsed.writes.push(dynamicArg('awk output', 'variable', false, ''));

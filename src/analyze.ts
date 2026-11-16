@@ -20,7 +20,7 @@ import { assignment, emptyParsed, flag, normalize, type Parsed } from './argv.ts
 import { Changes, compare, Probe, type FileSystem } from './files.ts';
 import { huskyHook } from './husky.ts';
 import { basename, isSystemPath, resolvePath } from './paths.ts';
-import { expandedNames, printsEnvironment, secretFile, secretVariable } from './secrets.ts';
+import { expandedNames, printsEnvironment, secretFile, secretGlob, secretVariable } from './secrets.ts';
 import { gitConfig, specFor } from './specs.ts';
 import type { Analysis, Arg, Effect, FindingKind, Invocation } from './types.ts';
 import {
@@ -253,8 +253,11 @@ interface Call {
   open: boolean;
   cwd: string | undefined;
   home: string | undefined;
-  /** Its words, redirections or here-documents expand a variable named like a secret (`$GITHUB_TOKEN`). */
-  secrets?: boolean;
+  /**
+   * Its words, redirections or here-documents expand a variable that may hold a secret (`$GITHUB_TOKEN`): `traced`
+   * when `set -x` may be on, which shows it even to a test.
+   */
+  secrets?: true | 'traced';
 }
 
 /**
@@ -346,7 +349,18 @@ function reopens(path: string, outputsRead: boolean): boolean {
 
 /** Programs whose arguments name files they don't read the contents of. */
 const contentBlind =
-  /^(echo|printf|ls|stat|test|\[|touch|mkdir|rmdir|rm|unlink|basename|dirname|realpath|readlink|which|type|command|du|chmod|chown|chgrp|mv|ln|find|cd|pushd|popd|true|false|:)$/;
+  /^(echo|printf|ls|stat|test|\[|touch|mkdir|rmdir|rm|unlink|basename|dirname|realpath|readlink|which|type|command|du|chmod|chown|chgrp|find|cd|pushd|popd|true|false|:)$/;
+
+/** Whether a `[[ ]]` shows what it tests: as a number (`-eq`), whose error prints it, or copied to BASH_REMATCH (`=~`). */
+function exposesTested(node: SyntaxNode): boolean {
+  let found = false;
+  const visit = (item: SyntaxNode) => {
+    if (item.type === 'TestBinary' && /^(-(eq|ne|lt|le|gt|ge)|=~)$/.test(item.operator)) found = true;
+    else if (item.type !== 'Script') forEachChild(item, visit);
+  };
+  visit(node);
+  return found;
+}
 
 /** Files a redirection may name without touching the file system. */
 const devices = /^\/dev\/(null|stdin|stdout|stderr|tty|fd\/\d+)$/;
@@ -876,6 +890,7 @@ class Walker {
       case 'For':
       case 'Select': {
         this.substitutions(node.wordlist ?? [], state, ctx);
+        this.secretsIn(node.wordlist ?? [], state, ctx, node);
         const values = (node.wordlist ?? []).flatMap((word) => resolveWord(word, lookupIn(state)));
         const only = values.length === 1 ? values[0] : undefined;
         // `select` sets the variable to what's chosen, which is nothing for a bad answer, and REPLY to the answer.
@@ -889,6 +904,12 @@ class Walker {
         return this.loop(state, ctx, node, (s, c) => this.list(node.body.commands, s, c));
       }
       case 'ArithmeticFor':
+        this.secretsIn(
+          [node.initialize, node.test, node.update].filter((expression) => !!expression),
+          state,
+          ctx,
+          node,
+        );
         if (node.initialize) this.arithmetic(node.initialize, state, ctx);
         if (node.test) this.arithmetic(node.test, state, ctx);
         // The update and the test run again after each pass, with what the body changed.
@@ -907,6 +928,7 @@ class Walker {
       }
       case 'Case': {
         this.substitutions([node.word, ...node.items.flatMap((item) => item.pattern)], state, ctx);
+        this.secretsIn([node.word, ...node.items.flatMap((item) => item.pattern)], state, ctx, node, true);
         // An arm ending in ;& runs the next one too, and one ending in ;;& tests the patterns after it until one
         // matches: either way, what it changed holds there.
         const outcomes = [clone(state)];
@@ -927,8 +949,11 @@ class Walker {
       case 'BraceGroup':
         return this.list(node.body.commands, state, ctx);
       case 'TestCommand':
+        // A number (`-eq`) is evaluated as arithmetic, whose error shows the value, and `=~` copies it to BASH_REMATCH.
+        this.secretsIn([node], state, ctx, node, !exposesTested(node));
         return this.substitutions([node], state, ctx);
       case 'ArithmeticCommand':
+        if (node.expression) this.secretsIn([node.expression], state, ctx, node);
         if (node.expression) this.arithmetic(node.expression, state, ctx);
         return;
       case 'Redirected': {
@@ -1553,7 +1578,7 @@ class Walker {
       open: false,
       cwd: state.cwd,
       home: homeOf(state),
-      ...(expandedNames(command).some(secretVariable) ? { secrets: true } : {}),
+      ...(this.expandsSecret([command], state) ? { secrets: option(state, 'xtrace') === false ? true : 'traced' } : {}),
     };
     const before = new Map(assignments.map(({ name }) => [name, state.vars.get(name)]));
     // Before a command, they're its temporary environment: a function or builtin sees them as variables, and a local
@@ -1615,7 +1640,7 @@ class Walker {
       }
       return;
     }
-    if (opens) this.emit(ctx, call, ':', 'builtin', [{ kind: 'static', value: ':' }], emptyParsed());
+    if (opens || call.secrets !== undefined) this.emit(ctx, call, ':', 'builtin', [{ kind: 'static', value: ':' }], emptyParsed());
   }
 
   /** Runs `argv` as the shell would: an alias, a function, a builtin, or a program. */
@@ -3446,7 +3471,7 @@ class Walker {
     // Bash opens `/dev/tcp/host/port` (and udp) as a connection, not a file: a name only known at run time may be one.
     const redirected = [...call.reads, ...call.writes, ...ctx.reads, ...ctx.writes];
     if (redirected.some((arg) => socket(arg.kind === 'static' ? arg.value : arg.prefix, arg.kind === 'dynamic'))) effects.add('network');
-    const realpaths = this.files ? this.realpaths([...parsed.positionals, ...writes], ctx, call) : undefined;
+    const realpaths = this.files ? this.realpaths([...parsed.positionals, ...reads, ...writes], ctx, call) : undefined;
     if (this.readsSecrets(program, argv, parsed, [...call.reads, ...ctx.reads], call, realpaths)) effects.add('secrets:read');
     const open = call.open || ctx.open;
     const invocation: Invocation = {
@@ -3485,9 +3510,36 @@ class Walker {
   }
 
   /**
-   * Whether an invocation reads secrets: it expands a variable named like one (but only tests it, with `test`), prints
-   * the environment, or reads or names a file that holds them, as written, resolved or where it really is. A program
-   * that doesn't read what its arguments name (`ls`, `rm`) is judged by its redirections alone.
+   * Whether code expands a variable that may hold a secret: one named like one, a nameref (which may name one), or one
+   * named by another's value (`${!x}`) that is, or is only known at run time.
+   */
+  expandsSecret(nodes: readonly SyntaxNode[], state: State): boolean {
+    const lookup = lookupIn(state);
+    const secret = (name: string) => secretVariable(name) || state.refs.has(name);
+    return nodes.some((node) =>
+      expandedNames(node).some(({ name, indirect }) => {
+        if (!indirect) return secret(name);
+        const value = lookup(name);
+        return secret(name) || value?.kind !== 'static' || secret(value.value.replace(/\[.*$/s, ''));
+      }),
+    );
+  }
+
+  /**
+   * Code that isn't a command but expands a secret (`a=$TOKEN`, `for x in $TOKEN`, `(( TOKEN ))`): a `:` that reads
+   * it, which the verdict sees. A test (`tested`) shows it only under `set -x`.
+   */
+  secretsIn(nodes: readonly SyntaxNode[], state: State, ctx: Context, node: { pos: number; end: number }, tested = false): void {
+    if (tested && option(state, 'xtrace') === false) return;
+    if (!this.expandsSecret(nodes, state)) return;
+    this.emit(ctx, { ...this.at(ctx, state, node), secrets: true }, ':', 'builtin', [{ kind: 'static', value: ':' }], emptyParsed());
+  }
+
+  /**
+   * Whether an invocation reads secrets: it expands a variable that may hold one (but only tests it, with `test`, and
+   * not as a number or under `set -x`), prints the environment, or reads or names a file that holds them, as written,
+   * resolved or where it really is, or at a git revision (`HEAD:.env`). A program that doesn't read what its arguments
+   * name (`ls`, `rm`) is judged by its redirections alone.
    */
   readsSecrets(
     program: string | null,
@@ -3498,14 +3550,21 @@ class Walker {
     realpaths: Record<string, string | null> | undefined,
   ): boolean {
     if (parsed.effects.has('secrets:read')) return true;
-    if (call.secrets && program !== 'test' && program !== '[') return true;
+    const tested =
+      (program === 'test' || program === '[') && !argv.some((arg) => arg.kind === 'static' && /^-(eq|ne|lt|le|gt|ge)$/.test(arg.value));
+    if (call.secrets === 'traced' || (call.secrets && !tested)) return true;
     if (printsEnvironment(program, argv, parsed.nested.length > 0)) return true;
     const secret = (arg: Arg, short = true) => {
-      if (arg.kind === 'dynamic')
-        return arg.reason === 'glob' && [arg.text.replaceAll('*', ''), arg.text.replaceAll('*', 'x')].some((path) => secretFile(path));
+      if (arg.kind === 'dynamic') {
+        return (
+          arg.reason === 'glob' &&
+          [arg.text, resolvePath(call.cwd, arg.text, call.home)].some((glob) => glob !== undefined && secretGlob(glob))
+        );
+      }
       const resolved = resolvePath(call.cwd, arg.value, call.home);
       const real = resolved && realpaths?.[resolved];
-      return [arg.value, resolved, real].some((path) => typeof path === 'string' && secretFile(path, short));
+      const revised = program === 'git' && arg.value.includes(':') ? arg.value.slice(arg.value.indexOf(':') + 1) : undefined;
+      return [arg.value, resolved, real, revised].some((path) => typeof path === 'string' && secretFile(path, short));
     };
     if (redirected.some((arg) => secret(arg))) return true;
     if (program !== null && contentBlind.test(program)) return false;
@@ -4203,11 +4262,19 @@ function clone(state: State): State {
  * `cd` goes.
  */
 const followed = {
-  set: new Set(['allexport', 'monitor', 'physical']),
+  set: new Set(['allexport', 'monitor', 'physical', 'xtrace']),
   shopt: new Set(['lastpipe', 'localvar_inherit', 'cdable_vars']),
 };
 /** The letters of `set` (and a shell's options) for the options `shellOption` knows. */
-const setLetters: Record<string, string> = { a: 'allexport', m: 'monitor', P: 'physical', k: 'keyword', B: 'braceexpand', H: 'histexpand' };
+const setLetters: Record<string, string> = {
+  a: 'allexport',
+  m: 'monitor',
+  P: 'physical',
+  k: 'keyword',
+  B: 'braceexpand',
+  H: 'histexpand',
+  x: 'xtrace',
+};
 
 /** Whether a followed option is on: `undefined` when it may be either. */
 function option(state: State, name: string): boolean | undefined {
