@@ -11,8 +11,14 @@ export type Value = { kind: 'static'; value: string } | { kind: 'dynamic'; numer
 /** Looks variables up; `undefined` for one never assigned. */
 export type Lookup = (name: string) => Value | undefined;
 
-/** A piece of a word: text, or a value only the run knows. `split` marks unquoted expansions, which field splitting cuts. */
-type Segment = { kind: 'text'; value: string; split: boolean } | { kind: 'dynamic'; reason: DynamicReason; split: boolean };
+/**
+ * A piece of a word: text, or a value only the run knows. `split` marks unquoted expansions, which field splitting cuts.
+ * A text's `pattern` is its unquoted text as pathname expansion sees it, an escaped character as NUL; a glob's is the
+ * pattern it matches with, when that's known.
+ */
+type Segment =
+  | { kind: 'text'; value: string; split: boolean; pattern?: string }
+  | { kind: 'dynamic'; reason: DynamicReason; split: boolean; pattern?: string };
 
 /** One word as brace expansion leaves it. Brace expansion is what makes one word several. */
 type Alternative = Segment[];
@@ -146,8 +152,8 @@ export function decodeAnsiC(text: string): string {
   });
 }
 
-export function dynamicArg(text: string, reason: DynamicReason, split: boolean, prefix: string): Arg {
-  return { kind: 'dynamic', text, reason, split, prefix };
+export function dynamicArg(text: string, reason: DynamicReason, split: boolean, prefix: string, pattern?: string): Arg {
+  return { kind: 'dynamic', text, reason, split, prefix, ...(pattern === undefined ? {} : { pattern }) };
 }
 
 /**
@@ -189,6 +195,7 @@ function resolveParts(parts: readonly WordPart[], lookup: Lookup, quoted: boolea
 function resolvePart(part: WordPart | DoubleQuotedChild, lookup: Lookup, quoted: boolean): Alternative[] | undefined {
   switch (part.type) {
     case 'Literal':
+      return [[{ kind: 'text', value: part.value, split: false, ...(quoted ? {} : { pattern: unescaped(part.text) }) }]];
     case 'SingleQuoted':
       return [[{ kind: 'text', value: part.value, split: false }]];
     case 'AnsiCQuoted':
@@ -219,7 +226,7 @@ function resolvePart(part: WordPart | DoubleQuotedChild, lookup: Lookup, quoted:
       return [[{ kind: 'dynamic', reason: 'arithmetic', split: !quoted }]];
     case 'Glob':
     case 'ExtendedGlob':
-      return [[{ kind: 'dynamic', reason: 'glob', split: true }]];
+      return [[{ kind: 'dynamic', reason: 'glob', split: true, pattern: part.text }]];
     case 'BraceExpansion':
       return expandBraces(part.text, lookup);
     default:
@@ -233,7 +240,8 @@ function resolvePart(part: WordPart | DoubleQuotedChild, lookup: Lookup, quoted:
 function expand(name: string, lookup: Lookup, quoted: boolean): Segment {
   const value = special.test(name) ? undefined : lookup(name);
   if (value?.kind === 'static') return { kind: 'text', value: value.value, split: !quoted };
-  if (value?.files) return { kind: 'dynamic', reason: 'glob', split: !quoted };
+  // A file a static glob matched, none a secret's.
+  if (value?.files) return { kind: 'dynamic', reason: 'glob', split: !quoted, pattern: '*' };
   return { kind: 'dynamic', reason: special.test(name) ? 'positional' : 'variable', split: !quoted || name === '@' };
 }
 
@@ -249,7 +257,7 @@ function expandBraces(text: string, lookup: Lookup): Alternative[] | undefined {
     if (sequence === null) return undefined;
     // No list and no sequence (`{$x..}`): Bash leaves the braces as text but expands, unquotes and splits what's
     // between them, which only a plain word can be known without.
-    if (!sequence) return /['"\\$`]/.test(text) ? undefined : [[{ kind: 'text', value: text, split: false }]];
+    if (!sequence) return /['"\\$`]/.test(text) ? undefined : [[{ kind: 'text', value: text, split: false, pattern: text }]];
     return sequence.map((value) => [{ kind: 'text', value, split: false }]);
   }
   const result: Alternative[] = [];
@@ -262,7 +270,7 @@ function expandBraces(text: string, lookup: Lookup): Alternative[] | undefined {
     if (!word || bracesDisagree(word)) return undefined;
     const alternatives = word.parts
       ? resolveParts(word.parts, lookup, false)
-      : [[{ kind: 'text', value: word.value, split: false } as Segment]];
+      : [[{ kind: 'text', value: word.value, split: false, pattern: unescaped(item) } as Segment]];
     if (!alternatives) return undefined;
     result.push(...alternatives);
     if (result.length > maxAlternatives) return undefined;
@@ -560,14 +568,45 @@ function expandSequence(text: string): string[] | null | undefined {
 }
 
 /**
+ * Whether an unquoted `[` and a later unquoted `]` make a bracket expression across the word's pieces, which Bash
+ * globs once they're joined: `{.en[,}v]`, or `.en[v$x` with `x=']'`. One within a single piece the parser already
+ * reads as a glob.
+ */
+function bracketed(word: Alternative): boolean {
+  let open = false;
+  for (const segment of word) {
+    if (segment.kind !== 'text') continue;
+    const pattern = segment.split ? segment.value : segment.pattern;
+    if (pattern === undefined) continue;
+    if (open && pattern.includes(']')) return true;
+    const at = pattern.indexOf('[');
+    if (at === -1) continue;
+    if (pattern.includes(']', at + 1)) return true;
+    open = true;
+  }
+  return false;
+}
+
+/** Text as pathname expansion sees it: a character a backslash escapes matches only itself, so it's no `[` or `]`. */
+function unescaped(text: string): string {
+  return text.replaceAll(/\\[\s\S]/g, '\0');
+}
+
+/**
  * Field splitting on default `IFS`: unquoted expansions split, quoted text joins its neighbours. Known values don't
  * split in a `whole` word, though they still match files.
  */
 function toArgs(word: Alternative, text: string, whole = false): Arg[] {
+  // The pattern a glob matches with, where every part of it is known.
+  const pattern = (segments: Segment[]): string | undefined =>
+    segments.every((segment) => segment.kind === 'text' || segment.pattern !== undefined)
+      ? segments.map((segment) => (segment.kind === 'text' ? segment.value : segment.pattern)).join('')
+      : undefined;
+  if (bracketed(word)) return [dynamicArg(text, 'glob', true, '', pattern(word))];
   // An unquoted known value is a pattern too: `x='*'; cat $x` names the files it matches.
   const alternative = word.map((segment): Segment => {
     if (segment.kind !== 'text' || !segment.split) return segment;
-    if (/[*?[]|[@!+]\(/.test(segment.value)) return { kind: 'dynamic', reason: 'glob', split: true };
+    if (/[*?[]|[@!+]\(/.test(segment.value)) return { kind: 'dynamic', reason: 'glob', split: true, pattern: segment.value };
     return whole ? { ...segment, split: false } : segment;
   });
   const dynamic = alternative.filter((segment) => segment.kind === 'dynamic');
@@ -580,7 +619,7 @@ function toArgs(word: Alternative, text: string, whole = false): Arg[] {
     const reason = dynamic.find((segment) => segment.reason !== 'variable')?.reason ?? dynamic[0]!.reason;
     // A known value splits too: `"$(cmd)"$x` with `x='a b'` is two words.
     const splits = alternative.some((segment) => segment.split && (segment.kind === 'dynamic' || /[ \t\n]/.test(segment.value)));
-    return [dynamicArg(text, reason, splits, prefix)];
+    return [dynamicArg(text, reason, splits, prefix, reason === 'glob' ? pattern(alternative) : undefined)];
   }
   const fields: string[] = [];
   let current = '';

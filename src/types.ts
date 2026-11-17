@@ -6,11 +6,13 @@ export type DynamicReason = 'variable' | 'positional' | 'substitution' | 'arithm
 /**
  * A command-line argument once every expansion the analysis can follow is done: a known string, or a value only the
  * run will know. `split` marks an unquoted dynamic word, which may become no words or many (and so may be options);
- * `prefix` is the static text before the first dynamic part (`--out=` in `--out=$f`).
+ * `prefix` is the static text before the first dynamic part (`--out=` in `--out=$f`). A glob's `pattern` is what Bash
+ * matches files with, once braces and known variables are expanded (`.e*` for `$x` with `x='.e*'`); a glob with no
+ * `pattern` has a part only known at run time.
  */
 export type Arg =
   | { kind: 'static'; value: string }
-  | { kind: 'dynamic'; text: string; reason: DynamicReason; split: boolean; prefix: string };
+  | { kind: 'dynamic'; text: string; reason: DynamicReason; split: boolean; prefix: string; pattern?: string };
 
 /**
  * What running an invocation can do, beyond printing:

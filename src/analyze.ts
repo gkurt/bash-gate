@@ -1125,7 +1125,7 @@ class Walker {
           values.every((arg) =>
             arg.kind === 'static'
               ? !secretFile(arg.value)
-              : arg.reason === 'glob' && !secretGlob(arg.text, globIgnored(state) || option(state, 'dotglob') !== false),
+              : arg.reason === 'glob' && !globSecret(arg, globIgnored(state) || option(state, 'dotglob') !== false),
           );
         const value: Value =
           only?.kind === 'static' && node.type === 'For' && node.wordlist?.length === 1
@@ -4154,8 +4154,7 @@ class Walker {
     if (printsEnvironment(program, argv, parsed.nested.length > 0)) return true;
     const secret = (arg: Arg, short = true) => {
       if (arg.kind === 'dynamic') {
-        if (arg.reason === 'glob')
-          return [arg.text, resolvePath(call.cwd, arg.text, call.home)].some((glob) => glob !== undefined && secretGlob(glob, call.dots));
+        if (arg.reason === 'glob') return globSecret(arg, call.dots, call.cwd, call.home);
         // A name only known at run time, from a substitution, input, a variable or an argument, may be a secret's,
         // unless what's known of its end rules that out (`"$name.ts"`). A number is no file's name.
         return arg.reason !== 'arithmetic' && secretSuffix(staticEnd(arg.text));
@@ -5401,4 +5400,17 @@ function expanded(value: string, parts: Word['parts'], lookup: Lookup): string |
 
 function numericValue(value: Value): boolean {
   return value.kind === 'dynamic' ? value.numeric === true : /^[+-]?(?:0[xX][\da-fA-F]+|0[0-7]*|[1-9]\d*)$/.test(value.value.trim());
+}
+
+/**
+ * Whether a glob may match a file that holds secrets: the pattern Bash matches with, and each field it splits into, or,
+ * with a part only known at run time, any name its known end allows (`$x*`).
+ */
+function globSecret(arg: Extract<Arg, { kind: 'dynamic' }>, dots: boolean | undefined, cwd?: string, home?: string): boolean {
+  const patterns = arg.pattern === undefined ? [arg.text] : [arg.pattern, ...arg.pattern.split(/[ \t\n]+/)];
+  // Of what comes after the part only known at run time, what follows its last wildcard is all that is certain.
+  if (arg.pattern === undefined && secretSuffix(staticEnd(arg.text).replace(/^.*[*?[\]]/s, ''))) return true;
+  return patterns.some((glob) =>
+    [glob, cwd === undefined ? undefined : resolvePath(cwd, glob, home)].some((path) => path !== undefined && secretGlob(path, dots)),
+  );
 }
