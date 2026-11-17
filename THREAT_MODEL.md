@@ -80,7 +80,7 @@ Out of scope:
   doesn't have may run any. They're read from `core.hooksPath` where that directory is certain, and from the config's
   own `hook.<name>.command`. A hook is read as the shell its first line names (`sh`, which expands aliases, with
   none): a system shell with no options but `set`'s, or one `env` names; anything else, another language included, is
-  a finding. Hooks are read again once a command's hooks have all run, since one may write another git runs later. Package scripts are read as `sh` runs them, unless the project's `.npmrc` gives npm or pnpm another `script-shell`,
+  a finding. Hooks are read again once a command's hooks have all run, since one may write another git runs later. Package scripts are read as `sh` runs them, unless a `.npmrc` in the project or above it gives npm or pnpm another `script-shell` or picks workspaces, or a `pnpm-workspace.yaml` a `scriptShell`,
   which is `exec:file` (`exec:arbitrary` when only known at run time); and so is code other programs
   hand to `sh` (`watch`, `git rebase -x`): as Bash in POSIX mode, with a finding for Bash's own syntax, which dash
   reads otherwise (`&>`, `((`, `$'…'`, `[[`, brace expansion) and for builtins dash doesn't have (`declare`, `shopt`,

@@ -3766,28 +3766,55 @@ class Walker {
   }
 
   /**
-   * Whether npm or pnpm runs package scripts with `sh`, as they're walked: not when the project's `.npmrc` names another
-   * `script-shell`. A program it names is `exec:file` (read, not walked); one only known at run time (`${VAR}`) is
-   * `exec:arbitrary`. bun keeps its own shell.
+   * Whether npm or pnpm runs the project's own package scripts with `sh`, as they're walked: not when a `.npmrc` names
+   * another `script-shell` (or pnpm's `pnpm-workspace.yaml` a `scriptShell`), or a `.npmrc` picks workspaces, which run
+   * other packages' scripts. Both look for these in the directories above too, up to HOME, where a workspace root keeps
+   * them. A program it names is `exec:file` (read, not walked); one only known at run time (`${VAR}`), or a
+   * `scriptShell` the analysis doesn't read, is `exec:arbitrary`. bun keeps its own shell.
    */
   scriptShell(program: string, cwd: string, parsed: Parsed, ctx: Context, call: Call): boolean {
     if (program !== 'npm' && program !== 'pnpm') return true;
-    const path = `${cwd}/.npmrc`;
-    if (this.files!.readFile(path) === null && this.changed(path, ctx, 'contents') === false) return true;
-    // What the script wrote there, or what isn't known, `read` makes a finding of; what project code wrote is its own.
-    const text = this.read(path, ctx, call);
-    if (text === undefined) return true;
-    const entry = [...text.matchAll(/^[ \t]*script[-_]shell[ \t]*=[ \t]*(.*?)[ \t]*$/gim)].at(-1);
-    if (!entry) return true;
-    const value = entry[1]!.replace(/^(["'])(.*)\1$/, '$2');
-    if (value === '' || value === 'sh' || value === '/bin/sh' || value === '/usr/bin/sh') return true;
-    if (/\$\{/.test(value)) {
-      parsed.effects.add('exec:arbitrary');
-      return false;
+    const dirs: string[] = [];
+    for (let dir = cwd; dir !== call.home;) {
+      dirs.push(dir);
+      const parent = dir.slice(0, dir.lastIndexOf('/')) || '/';
+      if (parent === dir) break;
+      dir = parent;
     }
-    parsed.effects.add('exec:file');
-    parsed.reads.push({ kind: 'static', value: value.includes('/') ? (resolvePath(cwd, value, call.home) ?? value) : value });
-    return false;
+    /** What's in the file at `path`: `undefined` when it isn't there. What the script wrote there, or what isn't known, `read` makes a finding of. */
+    const text = (path: string): string | undefined =>
+      this.files!.readFile(path) === null && this.changed(path, ctx, 'contents') === false ? undefined : this.read(path, ctx, call);
+    const shell = (value: string, dir: string): boolean => {
+      if (value === '' || value === 'sh' || value === '/bin/sh' || value === '/usr/bin/sh') return true;
+      if (/\$\{/.test(value)) {
+        parsed.effects.add('exec:arbitrary');
+        return false;
+      }
+      parsed.effects.add('exec:file');
+      parsed.reads.push({ kind: 'static', value: value.includes('/') ? (resolvePath(dir, value, call.home) ?? value) : value });
+      return false;
+    };
+    let walked = true;
+    for (const dir of dirs) {
+      const npmrc = text(`${dir === '/' ? '' : dir}/.npmrc`);
+      if (npmrc !== undefined) {
+        const entries = npmrcEntries(npmrc);
+        const value = entries.findLast(([key]) => key === 'script-shell')?.[1];
+        if (value !== undefined && !shell(value, dir)) walked = false;
+        if (entries.some(([key]) => key === 'workspace' || key === 'workspaces' || key === 'include-workspace-root')) {
+          parsed.effects.add('exec:file');
+          walked = false;
+        }
+      }
+      if (program !== 'pnpm') continue;
+      const yaml = text(`${dir === '/' ? '' : dir}/pnpm-workspace.yaml`);
+      if (yaml === undefined || !/script-?shell/i.test(yaml)) continue;
+      // Only `scriptShell: value` on a line of its own is read; any other mention of it may name any shell.
+      const entry = /^scriptShell[ \t]*:[ \t]*(["']?)([^"'#\s]*)\1[ \t]*(#.*)?$/m.exec(yaml);
+      if (!entry) parsed.effects.add('exec:arbitrary');
+      if (!entry || !shell(entry[2]!, dir)) walked = false;
+    }
+    return walked;
   }
 
   /** The scripts in the package.json in `cwd`, or `undefined` when they can't be read (a finding says why). */
@@ -5472,6 +5499,40 @@ function numericValue(value: Value): boolean {
  * Whether a glob may match a file that holds secrets: the pattern Bash matches with, and each field it splits into, or,
  * with a part only known at run time, any name its known end allows (`$x*`).
  */
+/**
+ * The entries of an npm config file as npm's `ini` reads them: a line's key and value are trimmed as
+ * `String.prototype.trim` does (a BOM and a no-break space too), a quoted one is JSON-decoded, and an unquoted value ends
+ * at a `;` or `#` not escaped. Keys are lowercased with `_` as `-`, and sections don't nest them: a key in one is
+ * counted too.
+ */
+function npmrcEntries(text: string): [string, string][] {
+  const unquote = (raw: string): string => {
+    const value = raw.trim();
+    if (/^(".*"|'.*')$/s.test(value) && value.length > 1) {
+      const inner = value.startsWith("'") ? value.slice(1, -1) : value;
+      try {
+        const decoded: unknown = JSON.parse(inner);
+        return typeof decoded === 'string' ? decoded : inner;
+      } catch {
+        return inner;
+      }
+    }
+    const comment = /(?<!\\)[;#]/.exec(value);
+    return (comment ? value.slice(0, comment.index) : value).trim().replaceAll(/\\([;#\\])/g, '$1');
+  };
+  const entries: [string, string][] = [];
+  for (const line of text.split(/[\r\n]+/)) {
+    if (/^\s*([;#]|$)/.test(line) || /^\[[^\]]*\]\s*$/.test(line)) continue;
+    const at = line.indexOf('=');
+    const key = unquote(at === -1 ? line : line.slice(0, at))
+      .toLowerCase()
+      .replaceAll('_', '-')
+      .replace(/\[\]$/, '');
+    entries.push([key, at === -1 ? 'true' : unquote(line.slice(at + 1))]);
+  }
+  return entries;
+}
+
 function globSecret(arg: Extract<Arg, { kind: 'dynamic' }>, dots: boolean | undefined, cwd?: string, home?: string): boolean {
   const patterns = arg.pattern === undefined ? [arg.text] : [arg.pattern, ...arg.pattern.split(/[ \t\n]+/)];
   // Of what comes after the part only known at run time, what follows its last wildcard is all that is certain.

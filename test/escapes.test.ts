@@ -1668,6 +1668,64 @@ const projectCases: [what: string, source: string, decision: Decision, fs: Envir
     'ask',
     disk({ '/w/p/package.json': '{"scripts":{"test":"echo hi"}}', '/w/p/.npmrc': 'script-shell = "${SHELL_X}"\n' }),
   ],
+  ...[
+    ['a quoted key', '"script-shell"=/elsewhere/prog\n'],
+    ['a no-break space before the key, which npm trims', `${String.fromCharCode(0xa0)}script-shell=/elsewhere/prog\n`],
+    ['a byte-order mark before the key', `${String.fromCharCode(0xfeff)}script-shell=/elsewhere/prog\n`],
+    ['a vertical tab before the key', `${String.fromCharCode(0xb)}script-shell=/elsewhere/prog\n`],
+  ].map(([what, npmrc]): (typeof projectCases)[number] => [
+    `the same, with ${what}`,
+    'npm test',
+    'ask',
+    disk({ '/w/p/package.json': '{"scripts":{"test":"echo hi"}}', '/w/p/.npmrc': npmrc! }),
+  ]),
+  [
+    "the .npmrc of the workspace root above the project, which npm reads in place of the project's",
+    'npm test',
+    'ask',
+    disk({
+      '/w/package.json': '{"name":"root","workspaces":["p"]}',
+      '/w/.npmrc': 'script-shell=/elsewhere/prog\n',
+      '/w/p/package.json': '{"scripts":{"test":"echo hi"}}',
+    }),
+  ],
+  [
+    "a workspace the project's .npmrc picks, whose script npm runs in place of the project's",
+    'npm test',
+    'ask',
+    disk({
+      '/w/p/package.json': '{"name":"p","workspaces":["../b"],"scripts":{"test":"echo hi"}}',
+      '/w/p/.npmrc': 'workspace=../b\n',
+      '/w/b/package.json': '{"scripts":{"test":"rm -rf ~"}}',
+    }),
+  ],
+  [
+    "pnpm-workspace.yaml's scriptShell, which pnpm runs the scripts with",
+    'pnpm test',
+    'ask',
+    disk({ '/w/p/package.json': '{"scripts":{"test":"echo hi"}}', '/w/p/pnpm-workspace.yaml': 'scriptShell: /elsewhere/prog\n' }),
+  ],
+  [
+    'the same, in the workspace root above',
+    'pnpm test',
+    'ask',
+    disk({
+      '/w/pnpm-workspace.yaml': "packages:\n  - 'p'\nscriptShell: /elsewhere/prog\n",
+      '/w/p/package.json': '{"scripts":{"test":"echo hi"}}',
+    }),
+  ],
+  [
+    'the same, written in a way the analysis does not read',
+    'pnpm test',
+    'ask',
+    disk({ '/w/p/package.json': '{"scripts":{"test":"echo hi"}}', '/w/p/pnpm-workspace.yaml': '{ scriptShell: /elsewhere/prog }\n' }),
+  ],
+  [
+    'a pnpm-workspace.yaml without one, whose scripts are walked as before',
+    'pnpm test',
+    'allow',
+    disk({ '/w/p/package.json': '{"scripts":{"test":"echo hi"}}', '/w/p/pnpm-workspace.yaml': "packages:\n  - 'pkgs/*'\n" }),
+  ],
   [
     'the same, before npm install, which runs lifecycle scripts',
     'npm install',

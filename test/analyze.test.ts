@@ -4,6 +4,8 @@ import { allow, analyze, ask, check, checkAsync, covers, deny, recommended, snap
 import { listing } from './listing.ts';
 
 const values = (args: Arg[]) => args.map((arg) => (arg.kind === 'static' ? arg.value : `<${arg.reason}>`));
+/** No npm or pnpm config in /repo or above it, as a snapshot records it: npm and pnpm look for theirs up to the root. */
+const npmConfigs = { '/repo/.npmrc': null, '/.npmrc': null, '/repo/pnpm-workspace.yaml': null, '/pnpm-workspace.yaml': null };
 const only = (source: string) => {
   const { invocations } = analyze(source);
   expect(invocations).toHaveLength(1);
@@ -608,7 +610,7 @@ describe('invocations', () => {
 
   test("a package.json the script writes first isn't the one its scripts are read from", () => {
     const fs = snapshot({
-      files: { '/repo/package.json': JSON.stringify({ scripts: { test: 'cat ok' } }), '/repo/.npmrc': null },
+      files: { '/repo/package.json': JSON.stringify({ scripts: { test: 'cat ok' } }), ...npmConfigs },
       realpaths: { '/repo': '/repo', '/repo/package.json': '/repo/package.json' },
     });
     const environment = { cwd: '/repo', fs };
@@ -619,7 +621,7 @@ describe('invocations', () => {
 
   test('a command of a pipeline reads what the others may write, but not what it writes itself afterwards', () => {
     const fs = snapshot({
-      files: { '/repo/package.json': JSON.stringify({ scripts: { test: 'cat ok; ./build.sh' } }), '/repo/.npmrc': null },
+      files: { '/repo/package.json': JSON.stringify({ scripts: { test: 'cat ok; ./build.sh' } }), ...npmConfigs },
       realpaths: { '/repo': '/repo', '/repo/package.json': '/repo/package.json' },
     });
     const findings = (source: string) => analyze(source, { cwd: '/repo', fs }).findings.map((finding) => finding.kind);
@@ -706,6 +708,7 @@ describe('invocations', () => {
         [
           "`/repo/package.json` may be changed by project code before it's read",
           "`/repo/.npmrc` may be changed by project code before it's read",
+          "`/.npmrc` may be changed by project code before it's read",
         ],
       ]);
     }
