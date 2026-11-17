@@ -64,7 +64,7 @@ analyze('sudo -u root rm -rf "$dir"').invocations.map((i) => [i.shape, i.via, i.
    isn't followed are `unknown-syntax` findings: a compatibility level (`compat31`…, `BASH_COMPAT`), `set -k` and
    `set +B`. The rest only make Bash run less, matter only interactively, or change globs, which are unknown anyway.
 4. **Dispatch** as Bash does: alias, then function, then builtin, then program. `command`, `builtin` and `exec` change
-   that order. `eval`, `trap`, `mapfile -C`, `compgen -C`, `bash -c`, a shell's here-document or here-string, `ssh host
+   that order, and `jobs -x` runs its words as a command. `eval`, `trap`, `mapfile -C`, `compgen -C`, `bash -c`, a shell's here-document or here-string, `ssh host
    cmd`, `watch`, git aliases, git config commands, gh aliases and config, prompt strings (`PS4`, `${x@P}`, with `\n` and
    octal escapes decoded first, and one whose value is only known at run time, such as `\s`, a finding) and `PROMPT_COMMAND` parse their strings and walk them as code. Once set, a trap action or prompt string may run between any two commands (a signal, a failing command,
    `set -x`), so it's walked at each of those points with the state there, until `trap -` resets it, and what it

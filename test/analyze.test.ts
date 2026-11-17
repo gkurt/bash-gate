@@ -186,6 +186,22 @@ describe('options', () => {
     expect(off.filter((invocation) => invocation.program === 'cd').map((invocation) => invocation.kind)).toEqual(['external']);
   });
 
+  test('jobs -x runs the rest as a command in this shell, a jobspec among its words only known at run time', () => {
+    const { invocations } = analyze('jobs -x -- cd /etc; echo x > passwd; jobs -x kill %1', { cwd: '/repo' });
+    // cd moves this shell, as it does without jobs -x: not to the project any more.
+    expect(invocations.find((invocation) => invocation.program === 'cd')?.kind).toBe('builtin');
+    expect(invocations.find((invocation) => invocation.program === 'echo')?.cwd).not.toBe('/repo');
+    expect(invocations.find((invocation) => invocation.program === 'kill')?.argv[1]).toMatchObject({ kind: 'dynamic' });
+    // Without -x, it lists jobs.
+    expect(analyze('jobs -l %1').invocations.map((invocation) => invocation.program)).toEqual(['jobs']);
+  });
+
+  test('an option that names a file it writes is fs:write', () => {
+    expect(analyze('env time -o out echo hi').invocations.find((invocation) => invocation.program === 'time')?.effects).toContain(
+      'fs:write',
+    );
+  });
+
   test('output-file positionals are writes, not reads', () => {
     for (const source of ['uniq input output', 'xxd -r input output']) {
       const invocation = only(source);

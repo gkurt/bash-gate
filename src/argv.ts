@@ -424,7 +424,10 @@ function record(parsed: Parsed, option: OptionSpec, value: Arg | true): void {
   if (option.role === 'script') parsed.scripts.push(value);
   if (option.role === 'argv') parsed.argvStrings.push(value);
   if (option.role === 'read') parsed.reads.push(value);
-  if (option.role === 'write') parsed.writes.push(value);
+  if (option.role === 'write') {
+    parsed.writes.push(value);
+    parsed.effects.add('fs:write');
+  }
   if (option.role === 'config') parsed.configs.push(value);
   if (option.role === 'cwd') {
     // A relative one after another is from there for git and make (`git -C /tmp -C x`), from the start for others.

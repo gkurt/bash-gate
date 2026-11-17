@@ -329,7 +329,7 @@ const reservedWords = new Set([
   '[[',
   ']]',
 ]);
-/** The builtins POSIX calls special: in POSIX mode, Bash finds them before functions. */
+/** The builtins Bash calls special, POSIX's and `source`: in POSIX mode, Bash finds them before functions. */
 const specialBuiltins = new Set([
   'break',
   ':',
@@ -343,6 +343,7 @@ const specialBuiltins = new Set([
   'return',
   'set',
   'shift',
+  'source',
   'times',
   'trap',
   'unset',
@@ -2204,7 +2205,11 @@ class Walker {
           dynamic ||
           options.some(([letter]) => letter === 'l') ||
           (options.some(([letter]) => letter === 'a') &&
-            (named === undefined || command === undefined || basename(named) !== basename(command)));
+            (named === undefined ||
+              command === undefined ||
+              basename(named) !== basename(command) ||
+              // A path in the name is where some look for their own files: stdbuf preloads `libstdbuf.so` from beside it.
+              (named.includes('/') && named !== command)));
         if (renamed && rest < args.length)
           this.finding(ctx, 'loads-code', 'exec starts a program under another name, which it may act on', call.span);
         if (rest < args.length) {
@@ -2216,6 +2221,18 @@ class Walker {
           );
         }
         break;
+      }
+      case 'jobs': {
+        // `jobs -x` runs the rest as a command in this shell, functions and builtins too, with each jobspec (`%1`) among
+        // its words replaced by a process group.
+        const { options, rest, dynamic, bad } = getopt(values, 'lpnxrs');
+        if (dynamic)
+          this.finding(ctx, 'dynamic-command', '`jobs` has an option only known at run time, which may be -x and run a command', call.span);
+        if (bad || !options.some(([letter]) => letter === 'x') || rest >= args.length) break;
+        const words = args
+          .slice(rest)
+          .map((arg) => (arg.kind === 'static' && arg.value.startsWith('%') ? dynamicArg(arg.value, 'arithmetic', false, '') : arg));
+        return this.dispatch(words, state, ctx, { ...call, command: undefined });
       }
       case 'eval': {
         const text = joinStatic(values[0] === '--' ? args.slice(1) : args);

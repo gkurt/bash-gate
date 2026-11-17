@@ -1174,6 +1174,11 @@ const startedCases: [source: string, decision: Decision, what: string][] = [
   // A program under another name.
   ['exec -a pkill pgrep -f x', 'ask', 'exec -a, which starts a program under a name it acts on'],
   ['exec -a git-branch git log -D feature', 'ask', 'the same, for git'],
+  ['(exec -a ./evil/stdbuf stdbuf -oL echo hi)', 'ask', 'exec -a with a path, beside which stdbuf finds the library it preloads'],
+  ['exec -a /tmp/x/stdbuf stdbuf -oL ls', 'ask', 'the same, an absolute path'],
+  ['source() { echo safe; }; set -o posix; source ./x.sh', 'ask', 'source, which Bash finds before a function in POSIX mode'],
+  ['jobs -x rm -rf /', 'deny', 'jobs -x, which runs the rest as a command'],
+  ['rm() { echo safe; }; jobs -x rm -rf /', 'allow', 'the same, a function it runs'],
   ['exec -l ls', 'ask', 'exec -l, which starts it as -ls'],
   // The policy.
   ['GIT_TRACE2_EVENT=/home/me/.bashrc git status', 'ask', 'a git variable with a digit in its name, which writes a trace'],

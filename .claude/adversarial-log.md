@@ -773,3 +773,14 @@ Confirmed and fixed:
 Rejected (reviewer's list, all correct or conservative): assignment prefixes before `export`/`readonly`/`declare -x`/`local`; scoping across pipelines, `&`, `coproc`, `$( )` and lastpipe; loops, traps and `PROMPT_COMMAND`; namerefs; `BASH_CMDS`; `hash` with PATH resets; `cd`/`pushd` forms, CDPATH and `cdable_vars`; positional parameters; `source` with an `fs`.
 Costs: none in `recommended`'s verdicts (a builtin turned off on one path already asked through `enable -n`). No everyday verdict moved.
 Needs a decision: none.
+
+## Round 59: src/analyze.ts dispatch and wrappers (eighth pass), 2026-11-17, see commit
+The reviewer checked wrappers against coreutils 9.4, findutils 4.9, util-linux 2.39 and procps 4.0 in WSL under `env -i`, with stand-ins. I re-ran all three findings in WSL under `env -i`. For stdbuf I printed the `LD_PRELOAD` it hands the child (with an empty `libstdbuf.so`, which ld.so refuses) instead of building a library. 7 new escapes and analyze cases fail on df7bf16.
+Confirmed and fixed:
+- `source() { echo safe; }; set -o posix; source ./x.sh` → allow; Bash sourced the file. Bash 5.2 makes `source` a special builtin, found before functions in POSIX mode, like `.` (the reviewer listed them with `bash --posix`). → `source` joins `specialBuiltins`.
+- `(exec -a ./evil/stdbuf stdbuf -oL echo hi)` → allow; stdbuf set `LD_PRELOAD=./evil/libstdbuf.so` (plain stdbuf gives `/usr/libexec/coreutils/libstdbuf.so`). It takes the directory from an `argv[0]` holding a `/`. `exec -a` with the same basename counted as no rename. → A name with a `/` that isn't the command as written is a rename (`loads-code`, `unplaced`).
+- `jobs -x rm -rf x` → `rm` wasn't followed, and `-rf` was read as jobs's options; Bash ran the stand-in rm. It's checked in Bash: functions and builtins run too (`jobs -x cd /` moved the shell), an assignment word is a command name, and `-l` before `-x` is an error. → The `jobs` builtin reads its options (`lpnxrs`), and with `-x` it dispatches the rest in this shell, with `%` jobspecs dynamic. An option only known at run time is a `dynamic-command` finding.
+- Minor: an option with `role: 'write'` (`time -o`, `strace -o`, `watch -s`) put the path in `writes` but no `fs:write` effect. → `record` adds it.
+Rejected (reviewer's list): the unknown wrapper options walked at every position; xargs, timeout, flock, watch, stdbuf, setsid, script and time option parsing; find's `-ok` and `{} +`; functions under wrappers; traps; dash as `sh`; and what other rounds cover (`command_not_found_handle`, `SHELL=`, `mapfile -C`, `compgen`, `fc`, `PS4`).
+Costs: `exec -a <path>` with a path asks. `rm() { …; }; jobs -x rm …` now follows the function (it asked before as an unknown `jobs` form), and `jobs -x <allowed command>` is allowed like `command <allowed command>`. No everyday verdict moved.
+Needs a decision: none.
