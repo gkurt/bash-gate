@@ -20,6 +20,9 @@ export type Arg =
  * - `exec:project` runs code the project defines (package scripts, Makefiles, git hooks);
  * - `exec:file` runs a script or program file that isn't a system program;
  * - `exec:remote` runs a command on another machine;
+ * - `exec:nested` is git looking into repositories nested in its work tree that the analysis couldn't look for (the
+ *   filesystem can't read Git's index or list directories, or the tree is too large to list): what their config and
+ *   hooks run wasn't followed;
  * - `shell-state` changes how later commands resolve (`PATH`, `hash -p`, `enable`);
  * - `secrets:read` reads what is likely a secret: the environment as a whole (`printenv`, `env`, `export -p`), a file
  *   that holds credentials (`.env`, `~/.ssh/id_*`, `~/.aws/credentials`, `*.pem`), a variable named like one
@@ -42,6 +45,7 @@ export type Effect =
   | 'exec:project'
   | 'exec:file'
   | 'exec:remote'
+  | 'exec:nested'
   | 'shell-state'
   | 'secrets:read'
   | 'secrets:print';
@@ -129,7 +133,7 @@ export interface Finding {
 
 /** Something the analysis asked the filesystem that it didn't know: answering it may settle an `unknown-file` finding. */
 export interface Need {
-  kind: 'file' | 'realpath' | 'directory';
+  kind: 'file' | 'realpath' | 'directory' | 'bytes';
   path: string;
 }
 

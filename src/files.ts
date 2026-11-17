@@ -1,86 +1,181 @@
 import type { Need } from './types.ts';
 
+/** A value, or a promise of it. */
+export type MaybePromise<T> = T | Promise<T>;
+
 /**
- * The filesystem as it is before the command runs. Paths use `/`, and are absolute when the analysis has an absolute
- * `cwd`. Each answer is `null` when nothing is there, and `undefined` when it isn't known: the analysis then reports a
- * `Need` and an `unknown-file` finding, so the command isn't allowed. Errors thrown propagate to the caller.
+ * The filesystem as it is before the command runs, in the shape of just-bash's `IFileSystem` and Node's `fs`: one of
+ * them can be passed as it is. Every method is optional, and each may answer at once or with a promise (then only
+ * `checkAsync` can use it). Paths use `/`, and are absolute when the analysis has an absolute `cwd`.
+ *
+ * Nothing there is an error whose `code` (Node) or message (just-bash) starts `ENOENT`, `ENOTDIR` or `EISDIR`, or
+ * `null`. Not knowing is a missing method or `undefined`: the analysis then reports a `Need` and an `unknown-file`
+ * finding, so the command isn't allowed. Other errors propagate to the caller.
  */
 export interface FileSystem {
-  /** A file's text; `null` when nothing is there or it isn't a file. */
-  readFile(path: string): string | null | undefined;
+  /** A file's text, read as UTF-8. */
+  readFile?(path: string, encoding: 'utf8'): MaybePromise<string | null | undefined>;
+  /** A file's bytes: Git's index, for the repositories nested in a work tree that git looks into. */
+  readFileBuffer?(path: string): MaybePromise<Uint8Array | null | undefined>;
+  /** The names in a directory (not `.` or `..`). */
+  readdir?(path: string): MaybePromise<string[] | null | undefined>;
+  /** Where an absolute path really is, symlinks followed. */
+  realpath?(path: string): MaybePromise<string | null | undefined>;
   /**
-   * Where an absolute path really is, symlinks followed; `null` only when nothing at all is there, not even a dangling
-   * symlink (its parent is tried instead).
+   * Whether anything is at a path, even a dangling symlink: where `realpath` finds nothing, this tells a dangling
+   * symlink, where a write would go is unknown, from nothing, whose parent is tried instead.
    */
-  realpath(path: string): string | null | undefined;
-  /**
-   * The names in a directory (not `.` or `..`); `null` when it isn't one. Optional: git looks into repositories nested
-   * anywhere in its work tree (added as gitlinks, with no `.gitmodules` entry), which are found by listing it. Without
-   * it, a git command run with this filesystem is an `exec-config` finding.
-   */
-  readDirectory?(path: string): string[] | null | undefined;
+  lstat?(path: string): MaybePromise<{ isSymbolicLink: boolean | (() => boolean) } | null | undefined>;
 }
 
-/** A `FileSystem` only reachable asynchronously (a browser, a remote sandbox), for `checkAsync`. */
-export interface AsyncFileSystem {
-  readFile(path: string): Promise<string | null>;
-  realpath(path: string): Promise<string | null>;
-  readDirectory?(path: string): Promise<string[] | null>;
+/** What each kind of `Need` is answered with. */
+interface Answers {
+  file: string;
+  bytes: Uint8Array;
+  directory: string[];
+  realpath: string;
 }
 
-/** What's known of a filesystem: a path in none of the records isn't known. */
+/** Nothing is there: what Node's `code` and just-bash's message say. */
+function absent(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const { code, message } = error as { code?: unknown; message?: unknown };
+  const named = typeof code === 'string' ? code : typeof message === 'string' ? /^E[A-Z]+/.exec(message)?.[0] : undefined;
+  return named === 'ENOENT' || named === 'ENOTDIR' || named === 'EISDIR';
+}
+
+function isPromise(value: unknown): value is Promise<unknown> {
+  return typeof (value as { then?: unknown } | null | undefined)?.then === 'function';
+}
+
+/** `done` with what `run` gives, or `failed` with what it throws, at once or later, as `run` answers. */
+function settle<T, R>(
+  run: () => MaybePromise<T>,
+  done: (value: T) => MaybePromise<R>,
+  failed: (error: unknown) => MaybePromise<R>,
+): MaybePromise<R> {
+  let value: MaybePromise<T>;
+  try {
+    value = run();
+  } catch (error) {
+    return failed(error);
+  }
+  return isPromise(value) ? value.then(done, failed) : done(value);
+}
+
+const same = <T>(value: T): T => value;
+const nothing = (error: unknown): null => {
+  if (absent(error)) return null;
+  throw error;
+};
+
+/** Asks `fs` what `kind` asks of `path`: `undefined` when it has no method for that. */
+export function answer<K extends Need['kind']>(fs: FileSystem, kind: K, path: string): MaybePromise<Answers[K] | null | undefined> {
+  type Answer = MaybePromise<Answers[K] | null | undefined>;
+  switch (kind) {
+    case 'file':
+      return (fs.readFile ? settle(() => fs.readFile!(path, 'utf8'), same, nothing) : undefined) as Answer;
+    case 'bytes':
+      return (fs.readFileBuffer ? settle(() => fs.readFileBuffer!(path), same, nothing) : undefined) as Answer;
+    case 'directory':
+      return (fs.readdir ? settle(() => fs.readdir!(path), same, nothing) : undefined) as Answer;
+    case 'realpath':
+      if (!fs.realpath) return undefined;
+      return settle(
+        () => fs.realpath!(path),
+        same,
+        (error) => {
+          if (!absent(error)) throw error;
+          // Something there that has no real path is a dangling symlink: where it leads isn't known.
+          if (!fs.lstat) return undefined;
+          return settle(
+            () => fs.lstat!(path),
+            (stat) => (stat === null ? null : undefined),
+            nothing,
+          );
+        },
+      ) as Answer;
+  }
+}
+
+/** Whether `fs` has a method for `kind`. */
+export function answers(fs: FileSystem, kind: Need['kind']): boolean {
+  const has = { file: 'readFile', bytes: 'readFileBuffer', directory: 'readdir', realpath: 'realpath' } as const;
+  return fs[has[kind]] !== undefined;
+}
+
+/** What's known of a filesystem: a path in none of the records isn't known, and a record not given isn't asked. */
 export interface Snapshot {
   files?: Record<string, string | null>;
   realpaths?: Record<string, string | null>;
-  /** Directories' names, as `readDirectory` gives them. Without it, the snapshot can't list directories. */
+  /** Directories' names, as `readdir` gives them. */
   directories?: Record<string, string[] | null>;
+  /** Files' bytes, as `readFileBuffer` gives them. */
+  buffers?: Record<string, Uint8Array | null>;
 }
 
-export function snapshot({ files = {}, realpaths = {}, directories }: Snapshot): FileSystem {
+export function snapshot({ files, realpaths, directories, buffers }: Snapshot): FileSystem {
+  const from =
+    <T>(record: Record<string, T>) =>
+    (path: string): T | undefined =>
+      Object.hasOwn(record, path) ? record[path] : undefined;
   return {
-    readFile: (path) => (Object.hasOwn(files, path) ? files[path] : undefined),
-    realpath: (path) => (Object.hasOwn(realpaths, path) ? realpaths[path] : undefined),
-    ...(directories ? { readDirectory: (path: string) => (Object.hasOwn(directories, path) ? directories[path] : undefined) } : {}),
+    ...(files ? { readFile: from(files) } : {}),
+    ...(realpaths ? { realpath: from(realpaths) } : {}),
+    ...(directories ? { readdir: from(directories) } : {}),
+    ...(buffers ? { readFileBuffer: from(buffers) } : {}),
   };
 }
 
-/** Asks a `FileSystem` each question once, and keeps what it didn't know. */
+/** Asks a `FileSystem` each question once, and keeps what it didn't know. It must answer at once. */
 export class Probe {
   fs: FileSystem;
   needs = new Map<string, Need>();
-  texts = new Map<string, string | null | undefined>();
-  reals = new Map<string, string | null | undefined>();
-  listings = new Map<string, string[] | null | undefined>();
+  known = new Map<string, unknown>();
 
   constructor(fs: FileSystem) {
     this.fs = fs;
   }
 
+  ask<K extends Need['kind']>(kind: K, path: string): Answers[K] | null | undefined {
+    const key = `${kind}\0${path}`;
+    if (!this.known.has(key)) {
+      const value = answer(this.fs, kind, path);
+      if (isPromise(value)) {
+        value.catch(() => undefined);
+        throw new TypeError('The filesystem answers with promises: use checkAsync');
+      }
+      this.known.set(key, value);
+    }
+    const value = this.known.get(key) as Answers[K] | null | undefined;
+    if (value === undefined && answers(this.fs, kind)) this.needs.set(key, { kind, path });
+    return value;
+  }
+
   readFile(path: string): string | null | undefined {
-    if (!this.texts.has(path)) this.texts.set(path, this.fs.readFile(path));
-    const text = this.texts.get(path);
-    if (text === undefined) this.needs.set(`file\0${path}`, { kind: 'file', path });
-    return text;
+    return this.ask('file', path);
   }
 
   /** Whether the filesystem can list directories at all. */
   get lists(): boolean {
-    return this.fs.readDirectory !== undefined;
+    return answers(this.fs, 'directory');
   }
 
   readDirectory(path: string): string[] | null | undefined {
-    if (!this.fs.readDirectory) return undefined;
-    if (!this.listings.has(path)) this.listings.set(path, this.fs.readDirectory(path));
-    const names = this.listings.get(path);
-    if (names === undefined) this.needs.set(`directory\0${path}`, { kind: 'directory', path });
-    return names;
+    return this.ask('directory', path);
+  }
+
+  /** Whether the filesystem can read a file's bytes at all. */
+  get readsBytes(): boolean {
+    return answers(this.fs, 'bytes');
+  }
+
+  readBytes(path: string): Uint8Array | null | undefined {
+    return this.ask('bytes', path);
   }
 
   realpath(path: string): string | null | undefined {
-    if (!this.reals.has(path)) this.reals.set(path, this.fs.realpath(path));
-    const real = this.reals.get(path);
-    if (real === undefined) this.needs.set(`realpath\0${path}`, { kind: 'realpath', path });
-    return real;
+    return this.ask('realpath', path);
   }
 
   /**
@@ -107,6 +202,8 @@ export class Probe {
 /** Paths the script may have changed by some point, resolved; `any` when one of them can't be known. */
 export class Changes {
   paths = new Set<string>();
+  /** Those of `paths` written by what may make a repository there: not git checking out a file, which makes no `.git`. */
+  repositories = new Set<string>();
   /** Work trees git may have rewritten: everything under each but its `.git`, which git never writes there. */
   trees: { root: string; git: string }[] = [];
   /** Files by name, wherever they are: what a compiler emits (`.js`, `.d.ts`). */
@@ -115,9 +212,10 @@ export class Changes {
   /** Project code the analysis trusts but doesn't follow (a test run, a build) may have changed any path. */
   project = false;
 
-  add(path: string | undefined): void {
-    if (path === undefined) this.any = true;
-    else this.paths.add(path);
+  add(path: string | undefined, repository = true): void {
+    if (path === undefined) return void (this.any = true);
+    this.paths.add(path);
+    if (repository) this.repositories.add(path);
   }
 
   addTree(root: string, git: string): void {
@@ -131,6 +229,7 @@ export class Changes {
   /** Adds what `other` may have changed. */
   merge(other: Changes): void {
     for (const path of other.paths) this.paths.add(path);
+    for (const path of other.repositories) this.repositories.add(path);
     this.trees.push(...other.trees);
     for (const pattern of other.patterns) this.addPattern(pattern);
     this.any ||= other.any;
@@ -152,6 +251,22 @@ export class Changes {
     for (const changed of this.paths) if (within(path, changed)) return true;
     if (this.patterns.some((pattern) => pattern.test(path))) return true;
     return under(this.trees, path);
+  }
+
+  /**
+   * Whether something under the directory `dir`, but certainly not in `except`, may be a changed path, and (`dotGit`)
+   * one with a `.git` on its way under `dir`: a file's contents only make a repository there in a `.git`. Git's
+   * rewrites of a work tree make no `.git`, and patterns name files.
+   */
+  reaches(dir: string, except: string, dotGit: boolean): boolean {
+    if (this.any) return true;
+    for (const changed of this.repositories) {
+      if (within(dir, changed) && !dotGit) return true;
+      if (!within(changed, dir) || compare(changed, except) === true) continue;
+      const below = compare(changed, dir) === true ? changed.slice(dir.length) : changed;
+      if (!dotGit || below.split('/').some((name) => name.toLowerCase() === '.git')) return true;
+    }
+    return false;
   }
 }
 

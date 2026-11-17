@@ -30,7 +30,7 @@ function environmentAt(root: string) {
     fs: {
       readFile: (path: string) => files[path] ?? null,
       realpath: (path: string) => (path === root || path.startsWith(`${root}/`) || path === '/home/me' ? path : null),
-      readDirectory: listing(Object.keys(files)),
+      readdir: listing(Object.keys(files)),
     },
   };
 }

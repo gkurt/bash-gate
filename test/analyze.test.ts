@@ -279,7 +279,7 @@ describe('invocations', () => {
     const fs = {
       readFile: (path: string) => files[path] ?? null,
       realpath: (path: string) => path,
-      readDirectory: listing(Object.keys(files)),
+      readdir: listing(Object.keys(files)),
     };
     const git = analyze('git commit -m x', { cwd: '/repo', fs });
     expect(git.invocations.filter((invocation) => invocation.program === 'cat').map((invocation) => values(invocation.argv))).toEqual([
@@ -369,7 +369,7 @@ describe('invocations', () => {
       const fs = {
         readFile: (path: string) => files[path] ?? null,
         realpath: (path: string) => path,
-        readDirectory: listing(Object.keys(files)),
+        readdir: listing(Object.keys(files)),
       };
       const analysis = analyze(source, { cwd, fs, env });
       const ran = analysis.invocations.some((invocation) => invocation.program === 'cat' && values(invocation.argv).includes('ran'));
@@ -411,7 +411,7 @@ describe('invocations', () => {
     const fs = {
       readFile: (path: string) => files[path] ?? null,
       realpath: (path: string) => path,
-      readDirectory: listing(Object.keys(files)),
+      readdir: listing(Object.keys(files)),
     };
     const hooks = (source: string) =>
       analyze(source, { cwd: '/repo', fs })
@@ -551,7 +551,7 @@ describe('invocations', () => {
     const fs = {
       readFile: (path: string) => files[path] ?? null,
       realpath: (path: string) => (path === '/repo/x' || path.startsWith('/repo/x/') ? `/other/sub${path.slice(7)}` : path),
-      readDirectory: listing(Object.keys(files)),
+      readdir: listing(Object.keys(files)),
     };
     const environment = { cwd: '/repo', fs };
     expect(check('git commit -m x', recommended, environment).decision).toBe('deny');
@@ -597,7 +597,7 @@ describe('invocations', () => {
       const fs = {
         readFile: (path: string) => files[path] ?? null,
         realpath: (path: string) => path,
-        readDirectory: listing(Object.keys(files)),
+        readdir: listing(Object.keys(files)),
       };
       return (source: string) => check(source, recommended, { cwd: '/repo', fs });
     };
@@ -639,7 +639,7 @@ describe('invocations', () => {
     const fs = {
       readFile: (path: string) => files[path] ?? null,
       realpath: (path: string) => path,
-      readDirectory: listing(Object.keys(files)),
+      readdir: listing(Object.keys(files)),
     };
     const findings = (source: string) => analyze(source, { cwd: '/repo', fs }).findings.map((finding) => finding.message);
     for (const source of ['biome check --write && npm test', 'biome format --write . && npm test'])
@@ -811,7 +811,7 @@ describe('filesystem', () => {
   const fs = {
     readFile: (path: string) => tree[path] ?? null,
     realpath: (path: string) => links[path] ?? (path in tree || dirs.has(path) ? path : null),
-    readDirectory: listing([...Object.keys(tree), ...dirs]),
+    readdir: listing([...Object.keys(tree), ...dirs]),
   };
   const environment = { cwd: '/repo', fs };
   const unknown = (source: string) => analyze(source, environment).findings.some((finding) => finding.kind === 'unknown-file');
@@ -884,7 +884,7 @@ describe('filesystem', () => {
     const fs = {
       readFile: (path: string) => project[path] ?? null,
       realpath: (path: string) => path,
-      readDirectory: listing(Object.keys(project)),
+      readdir: listing(Object.keys(project)),
     };
     const environment = { cwd: '/repo', fs };
     const kinds = (source: string) => [...new Set(analyze(source, environment).findings.map((finding) => finding.kind))];
@@ -959,21 +959,105 @@ describe('filesystem', () => {
   });
 
   test('what the filesystem does not know is a need and a finding', () => {
-    const analysis = analyze('git commit -m x', { cwd: '/repo/sub', fs: snapshot({}) });
+    const analysis = analyze('git commit -m x', { cwd: '/repo/sub', fs: snapshot({ files: {}, realpaths: {} }) });
     expect(analysis.needs).toContainEqual({ kind: 'file', path: '/repo/sub/.git/config' });
     expect(analysis.needs).toContainEqual({ kind: 'file', path: '/.git/config' });
     expect(analysis.findings.some((finding) => finding.kind === 'unknown-file')).toBe(true);
     expect(analyze('git commit -m x').needs).toEqual([]);
   });
 
+  test("a filesystem shaped like just-bash's or Node's, its errors read as nothing there", async () => {
+    const thrown = (message: string, code?: string) => Object.assign(new Error(message), code ? { code } : {});
+    const files = new Map(Object.entries(tree));
+    // just-bash: async, and only the message names the error.
+    const justBash = {
+      readFile: async (path: string, _encoding: 'utf8') => {
+        if (dirs.has(path)) throw thrown(`EISDIR: illegal operation on a directory, read '${path}'`);
+        if (!files.has(path)) throw thrown(`ENOENT: no such file or directory, open '${path}'`);
+        return files.get(path)!;
+      },
+      realpath: async (path: string) => {
+        if (links[path] !== undefined) return links[path];
+        if (!files.has(path) && !dirs.has(path)) throw thrown(`ENOENT: no such file or directory, realpath '${path}'`);
+        return path;
+      },
+      lstat: async (path: string) => {
+        if (!files.has(path) && !dirs.has(path) && links[path] === undefined)
+          throw thrown(`ENOENT: no such file or directory, lstat '${path}'`);
+        return { isSymbolicLink: links[path] !== undefined, isFile: files.has(path) };
+      },
+      readdir: async (path: string) => {
+        const names = listing([...files.keys(), ...dirs])(path);
+        if (names === null) throw thrown(`ENOTDIR: not a directory, scandir '${path}'`);
+        return names;
+      },
+    };
+    // Node's: at once, the error's code naming it.
+    const node = {
+      readFile: (path: string, _encoding: 'utf8') => {
+        if (!files.has(path)) throw thrown('no', 'ENOENT');
+        return files.get(path)!;
+      },
+      realpath: (path: string) => {
+        if (!files.has(path) && !dirs.has(path) && links[path] === undefined) throw thrown('no', 'ENOENT');
+        return links[path] ?? path;
+      },
+      lstat: (path: string) => {
+        if (!files.has(path) && !dirs.has(path)) throw thrown('no', 'ENOENT');
+        return { isSymbolicLink: () => false };
+      },
+    };
+    for (const source of ['git commit -m x', 'echo x > new.txt', 'cp -r hooks .git/ && git commit -m x', 'rm -rf /']) {
+      expect([source, (await checkAsync(source, recommended, { cwd: '/repo', fs: justBash })).decision]).toEqual([
+        source,
+        check(source, recommended, environment).decision,
+      ]);
+    }
+    expect(check('git commit -m x', recommended, { cwd: '/repo', fs: node }).decision).toBe('allow');
+    expect(() => check('git commit -m x', recommended, { cwd: '/repo', fs: justBash })).toThrow(TypeError);
+    // Any other error is the caller's.
+    const broken = {
+      readFile: () => {
+        throw thrown('EACCES: permission denied', 'EACCES');
+      },
+    };
+    expect(() => check('git commit -m x', recommended, { cwd: '/repo', fs: broken })).toThrow('EACCES');
+    // Where realpath finds nothing but something is there, a dangling symlink, where a write goes isn't known.
+    const dangling = {
+      ...node,
+      realpath: (path: string) =>
+        path === '/repo/l'
+          ? (() => {
+              throw thrown('no', 'ENOENT');
+            })()
+          : node.realpath(path),
+      lstat: () => ({ isSymbolicLink: true }),
+    };
+    expect(analyze('echo x > l', { cwd: '/repo', fs: dangling }).invocations[0]!.realpaths?.['/repo/l']).toBeNull();
+    expect(analyze('echo x > l', { cwd: '/repo', fs: node }).invocations[0]!.realpaths?.['/repo/l']).toBe('/repo/l');
+  });
+
+  test('git looking into nested repositories the analysis could not look for is exec:nested', () => {
+    const unlisted = { readFile: fs.readFile, realpath: fs.realpath };
+    const nested = (source: string, at = unlisted) =>
+      analyze(source, { cwd: '/repo', fs: at }).invocations.some((invocation) => invocation.effects.includes('exec:nested'));
+    expect(nested('git status')).toBe(true);
+    expect(check('git status', recommended, { cwd: '/repo', fs: unlisted }).decision).toBe('allow');
+    // The index says which there are, and a listing finds them all.
+    expect(nested('git status', { ...unlisted, readFileBuffer: () => null } as never)).toBe(false);
+    expect(nested('git status', fs)).toBe(false);
+    expect(nested('git checkout main', { ...unlisted, readFileBuffer: () => null } as never)).toBe(true);
+    expect(nested('echo hi')).toBe(false);
+  });
+
   test('checkAsync fetches what each round needs, and decides as the sync check does', async () => {
     const remote = {
       readFile: async (path: string) => fs.readFile(path),
       realpath: async (path: string) => fs.realpath(path),
-      readDirectory: async (path: string) => fs.readDirectory(path),
+      readdir: async (path: string) => fs.readdir(path),
     };
     const hooked: Record<string, string> = { ...tree, '/repo/.git/hooks/pre-commit': 'rm -rf /' };
-    const evil = { readFile: async (path: string) => hooked[path] ?? null, realpath: remote.realpath, readDirectory: remote.readDirectory };
+    const evil = { readFile: async (path: string) => hooked[path] ?? null, realpath: remote.realpath, readdir: remote.readdir };
     expect((await checkAsync('git commit -m x', recommended, { cwd: '/repo', fs: remote })).decision).toBe('allow');
     expect((await checkAsync('git commit -m x', recommended, { cwd: '/repo', fs: evil })).decision).toBe('deny');
     expect(check('git commit -m x', recommended, environment).decision).toBe('allow');

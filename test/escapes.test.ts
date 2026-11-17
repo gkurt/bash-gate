@@ -1,6 +1,7 @@
 import { describe, test } from 'bun:test';
 import { huskyFiles } from '#src/husky.ts';
 import { check, recommended, type Decision, type Environment } from '#src/index.ts';
+import { file, gitIndex, gitlink } from './git-index.ts';
 import { listing } from './listing.ts';
 
 /** Each case: a command, the decision the recommended policy should reach, and what it exercises. */
@@ -773,7 +774,7 @@ const tree: Record<string, string> = {
   'merging/.git/config': '[branch "main"]\n\tmergeOptions = -s evil\n',
 };
 const withFiles: Environment = {
-  fs: { readFile: (path) => tree[path] ?? null, realpath: (path) => path, readDirectory: listing(Object.keys(tree)) },
+  fs: { readFile: (path) => tree[path] ?? null, realpath: (path) => path, readdir: listing(Object.keys(tree)) },
 };
 const filesystemCases: [source: string, decision: Decision, what: string][] = [
   ['git commit -m x', 'allow', 'a hook the filesystem has is walked'],
@@ -1412,7 +1413,7 @@ const linked: Environment = {
   fs: {
     readFile: (path) => placed[path] ?? null,
     realpath: (path) => (path === '/w/p/link' || path.startsWith('/w/p/link/') ? `/etc/sub${path.slice('/w/p/link'.length)}` : path),
-    readDirectory: listing(Object.keys(placed)),
+    readdir: listing(Object.keys(placed)),
   },
 };
 const linkedCases: [source: string, decision: Decision, what: string, cwd?: string][] = [
@@ -1570,7 +1571,12 @@ const homeLinks: [source: string, decision: Decision, what: string, environment:
 ];
 
 /** Files by their real path, with the directories they imply and `dirs`, and symlinks (`links`: path → target). */
-function disk(files: Record<string, string>, links: Record<string, string> = {}, dirs: string[] = []): Environment['fs'] {
+function disk(
+  files: Record<string, string>,
+  links: Record<string, string> = {},
+  dirs: string[] = [],
+  { buffers, lists = true }: { buffers?: Record<string, Uint8Array>; lists?: boolean } = {},
+): Environment['fs'] {
   const real = (path: string): string => {
     for (const [link, target] of Object.entries(links))
       if (path === link || path.startsWith(`${link}/`)) return real(target + path.slice(link.length));
@@ -1582,7 +1588,8 @@ function disk(files: Record<string, string>, links: Record<string, string> = {},
   return {
     readFile: (path) => files[real(path)] ?? null,
     realpath: (path) => (there.has(real(path)) ? real(path) : null),
-    readDirectory: (path) => (there.has(real(path)) ? list(real(path)) : null),
+    ...(lists ? { readdir: (path: string) => (there.has(real(path)) ? list(real(path)) : null) } : {}),
+    ...(buffers ? { readFileBuffer: (path: string) => buffers[real(path)] ?? null } : {}),
   };
 }
 const fsmonitor = '[core]\n\tfsmonitor = touch /tmp/PWNED\n';
@@ -1757,10 +1764,70 @@ const projectCases: [what: string, source: string, decision: Decision, fs: Envir
     disk({ ...repository('/w/p/.git'), ...repository('/w/p/vendor/nested/.git', fsmonitor) }),
   ],
   [
-    'the same, with a filesystem that cannot list directories',
+    'the same, with a filesystem that can neither read the index nor list directories: exec:nested, which recommended allows',
+    'git status',
+    'allow',
+    { readFile: (path) => repository('/w/p/.git')[path] ?? null, realpath: (path) => path },
+  ],
+  [
+    'the same, found in the index, by a filesystem that cannot list directories',
     'git status',
     'ask',
-    { readFile: (path) => repository('/w/p/.git')[path] ?? null, realpath: (path) => path },
+    disk({ ...repository('/w/p/.git'), ...repository('/w/p/vendor/nested/.git', fsmonitor) }, {}, [], {
+      buffers: { '/w/p/.git/index': gitIndex([['vendor/nested', gitlink]]) },
+      lists: false,
+    }),
+  ],
+  [
+    'a repository nested in the work tree that the index does not record, which git status leaves alone',
+    'git status',
+    'allow',
+    disk({ ...repository('/w/p/.git'), ...repository('/w/p/vendor/nested/.git', fsmonitor) }, {}, [], {
+      buffers: { '/w/p/.git/index': gitIndex([['a', file]]) },
+    }),
+  ],
+  [
+    'the same, after git add, which may record it',
+    'git add -A && git status',
+    'ask',
+    disk({ ...repository('/w/p/.git'), ...repository('/w/p/vendor/nested/.git', fsmonitor) }, {}, [], {
+      buffers: { '/w/p/.git/index': gitIndex([['a', file]]) },
+    }),
+  ],
+  [
+    'the same, git checkout of a branch, which looks into the gitlinks of the commit it checks out',
+    'git checkout feature',
+    'ask',
+    disk(
+      { ...repository('/w/p/.git'), '/w/p/.git/refs/heads/feature': 'abc\n', ...repository('/w/p/vendor/nested/.git', fsmonitor) },
+      {},
+      [],
+      { buffers: { '/w/p/.git/index': gitIndex([['a', file]]) } },
+    ),
+  ],
+  [
+    'a directory copied into the work tree, which may hold a repository, before git checkout looks for them',
+    'cp -r ../elsewhere vendor && git checkout feature',
+    'ask',
+    disk({ ...repository('/w/p/.git'), '/w/p/.git/refs/heads/feature': 'abc\n', '/w/elsewhere/a': 'x' }, {}, [], {
+      buffers: { '/w/p/.git/index': gitIndex([['a', file]]) },
+    }),
+  ],
+  [
+    'the same, a file written in the work tree, which makes no repository',
+    'echo x > notes.txt && git checkout feature',
+    'allow',
+    disk({ ...repository('/w/p/.git'), '/w/p/.git/refs/heads/feature': 'abc\n' }, {}, [], {
+      buffers: { '/w/p/.git/index': gitIndex([['a', file]]) },
+    }),
+  ],
+  [
+    'the same, a .git written in the work tree, which may',
+    'mkdir -p v/.git && echo x > v/.git/config && git checkout feature',
+    'ask',
+    disk({ ...repository('/w/p/.git'), '/w/p/.git/refs/heads/feature': 'abc\n' }, {}, [], {
+      buffers: { '/w/p/.git/index': gitIndex([['a', file]]) },
+    }),
   ],
   [
     'a symlink to another repository, which git does not descend into',

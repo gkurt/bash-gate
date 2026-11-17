@@ -1,7 +1,7 @@
 export { analyze, type Environment } from './analyze.ts';
 export { covers, predicting } from './cover.ts';
 export { normalize, type CommandSpec, type OptionSpec, type Parsed } from './argv.ts';
-export { snapshot, type AsyncFileSystem, type FileSystem, type Snapshot } from './files.ts';
+export { snapshot, type FileSystem, type MaybePromise, type Snapshot } from './files.ts';
 export {
   allow,
   ask,

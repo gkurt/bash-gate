@@ -1,9 +1,9 @@
 import { analyze, type Environment } from './analyze.ts';
 import { canonicalOption, specAt } from './argv.ts';
-import { snapshot, type AsyncFileSystem } from './files.ts';
+import { answer, answers, snapshot, type FileSystem } from './files.ts';
 import { isSystemPath, relativePath, resolvePath, tildePath } from './paths.ts';
 import { specFor } from './specs.ts';
-import type { Analysis, Arg, Decision, Effect, Finding, FindingKind, Invocation } from './types.ts';
+import type { Analysis, Arg, Decision, Effect, Finding, FindingKind, Invocation, Need } from './types.ts';
 
 /**
  * A rule matches an invocation when all its conditions do. Each condition is three-valued: it matches, it doesn't, or
@@ -81,28 +81,39 @@ export function check(source: string, policy: Policy, environment?: Environment)
 }
 
 /**
- * `check` with a filesystem only reachable asynchronously: analyses with what's been fetched, fetches what the analysis
- * needed, and goes again, up to `rounds` times. What's still needed after the last round stays an `unknown-file`
+ * `check` with a filesystem that may answer with promises (a browser, a remote sandbox, just-bash): analyses with
+ * what's been fetched, fetches what the analysis needed, and goes again, up to `rounds` times. What's still needed after the last round stays an `unknown-file`
  * finding.
  */
 export async function checkAsync(
   source: string,
   policy: Policy,
-  environment: Omit<Environment, 'fs'> & { fs: AsyncFileSystem },
+  environment: Omit<Environment, 'fs'> & { fs: FileSystem },
   { rounds = 8 }: { rounds?: number } = {},
 ): Promise<Verdict> {
-  const files: Record<string, string | null> = Object.create(null);
-  const realpaths: Record<string, string | null> = Object.create(null);
-  const lists = environment.fs.readDirectory !== undefined;
-  const directories: Record<string, string[] | null> | undefined = lists ? Object.create(null) : undefined;
+  const { fs } = environment;
+  // A record for each method the filesystem has: what's in none of them isn't known yet.
+  const record = <T>(kind: Need['kind']): Record<string, T | null> | undefined => (answers(fs, kind) ? Object.create(null) : undefined);
+  const known = {
+    files: record<string>('file'),
+    realpaths: record<string>('realpath'),
+    directories: record<string[]>('directory'),
+    buffers: record<Uint8Array>('bytes'),
+  };
+  const records: { [K in Need['kind']]: Record<string, unknown> | undefined } = {
+    file: known.files,
+    realpath: known.realpaths,
+    directory: known.directories,
+    bytes: known.buffers,
+  };
   for (let round = 1; ; round++) {
-    const analysis = analyze(source, { ...environment, fs: snapshot({ files, realpaths, ...(directories ? { directories } : {}) }) });
+    const analysis = analyze(source, { ...environment, fs: snapshot(known) });
     if (analysis.needs.length === 0 || round >= rounds) return evaluate(analysis, policy);
     await Promise.all(
       analysis.needs.map(async ({ kind, path }) => {
-        if (kind === 'file') files[path] = await environment.fs.readFile(path);
-        else if (kind === 'directory') directories![path] = await environment.fs.readDirectory!(path);
-        else realpaths[path] = await environment.fs.realpath(path);
+        // What it can't say stays unknown, and is asked again.
+        const value = await answer(fs, kind, path);
+        if (value !== undefined) records[kind]![path] = value;
       }),
     );
   }

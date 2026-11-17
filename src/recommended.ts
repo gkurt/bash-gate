@@ -4,7 +4,8 @@ import { allow, ask, deny, type Policy } from './policy.ts';
  * A starting policy for gating an agent's commands: reading and looking around runs, everyday git runs, destructive
  * forms are denied, and anything that deletes, escalates, writes outside the working directory or runs code the
  * analysis can't see asks. So does the network, except to read from a git remote the repository already has, or from
- * GitHub through `gh` (`network:read`). Commands no rule covers ask.
+ * GitHub through `gh` (`network:read`). Commands no rule covers ask. Git looking into nested repositories the
+ * filesystem couldn't show (`exec:nested`) is allowed: they're in the project's own tree.
  */
 export const recommended: Policy = {
   default: 'ask',

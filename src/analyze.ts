@@ -18,6 +18,7 @@ import {
 } from 'unbash';
 import { assignment, emptyParsed, flag, normalize, rehearse, type Parsed } from './argv.ts';
 import { Changes, compare, Probe, type FileSystem } from './files.ts';
+import { gitlinks } from './gitindex.ts';
 import { huskyHook, huskyStub } from './husky.ts';
 import { basename, isSystemPath, resolvePath } from './paths.ts';
 import {
@@ -631,6 +632,10 @@ function writeKind(program: string): 'none' | 'contents' | 'links' {
 const gitWritesTree =
   /^(checkout|switch|restore|reset|merge|rebase|cherry-pick|revert|pull|apply|am|mv|clean|submodule|filter-branch|gc|sparse-checkout|lfs|bisect( \S+)?|stash( (push|save|pop|apply|branch))?)$/;
 
+/** What leaves the index's entries as they are (`status` only refreshes what it knows of the files). */
+const gitKeepsIndex =
+  /^(status|log|show|diff|blame|annotate|describe|rev-parse|rev-list|ls-files|ls-tree|ls-remote|show-ref|cat-file|shortlog|reflog|whatchanged|grep|merge-base|name-rev|count-objects|var|check-ignore|check-attr|for-each-ref|help|version|config|remote|fetch|push|branch|tag)$/;
+
 const commitHooks = 'pre-commit prepare-commit-msg commit-msg post-commit post-rewrite';
 const mergeHooks = `pre-merge-commit post-merge pre-auto-gc ${commitHooks}`;
 const rebaseHooks = `pre-rebase post-checkout ${mergeHooks}`;
@@ -738,6 +743,8 @@ class Walker {
   written: Written = { contents: new Changes(), links: new Changes() };
   /** How many times `written` grew, so code walked before a write is walked again after it. */
   writes = 0;
+  /** Whether git may have changed what an index records, so that a later git reads it differently. */
+  wroteIndex = false;
   /** Whether git may have rewritten the work tree, for project code run after it without a filesystem to follow. */
   rewritten = false;
   /** Code in strings by its text: walked again, it defines the same functions, so what it does settles. */
@@ -762,8 +769,11 @@ class Walker {
     return [this.written, ...this.trackers];
   }
 
-  /** `writes` happen: `kind` is what they change for a later read (see `writeKind`). */
-  wrote(writes: Arg[], call: Call, kind: 'none' | 'contents' | 'links'): void {
+  /**
+   * `writes` happen: `kind` is what they change for a later read (see `writeKind`), and `repository` whether they may
+   * make a repository nested in a work tree.
+   */
+  wrote(writes: Arg[], call: Call, kind: 'none' | 'contents' | 'links', repository = true): void {
     if (!this.files || kind === 'none' || writes.length === 0) return;
     this.writes++;
     const sets = this.recorded.flatMap((written) => (kind === 'links' ? [written.contents, written.links] : [written.contents]));
@@ -773,9 +783,9 @@ class Walker {
       const opened = arg.kind === 'static' ? this.openedPath(call.cwd, arg.value, call.home) : undefined;
       const real = opened?.startsWith('/') ? this.files.physical(opened) : undefined;
       for (const changes of sets) {
-        changes.add(path);
-        changes.add(opened);
-        changes.add(real);
+        changes.add(path, repository);
+        changes.add(opened, repository);
+        changes.add(real, repository);
       }
     }
   }
@@ -836,6 +846,21 @@ class Walker {
     const real = path.startsWith('/') ? this.files?.physical(path) : undefined;
     if (named.length > 0 && (real === undefined || named.some((changes) => changes.covers(path) || changes.covers(real)))) return true;
     return sets.some((changes) => changes.project) ? 'project' : false;
+  }
+
+  /**
+   * Whether the script may have written anything under the directory `dir` before now, but in `except` (a `.git`
+   * inside it): what a listing shows may then have changed. `'project'` when only project code may have.
+   */
+  reached(dir: string, except: string, ctx: Context): boolean | 'project' {
+    const all = [this.written, ...(ctx.concurrent && this.everything ? [this.everything] : []), ...(ctx.alongside ?? [])];
+    const real = dir.startsWith('/') ? this.files?.physical(dir) : undefined;
+    // What can make directories or symlinks (`cp -r`, `mv`, `tar`) may make a repository anywhere; a file's contents
+    // only in a `.git`.
+    const reaches = (changes: Changes, dotGit: boolean) =>
+      changes.reaches(dir, except, dotGit) || (real !== undefined && changes.reaches(real, except, dotGit));
+    if (all.some((written) => reaches(written.links, false) || reaches(written.contents, true))) return true;
+    return all.some((written) => written.contents.project) ? 'project' : false;
   }
 
   /** A finding for a file the script may have changed before git or a package manager reads it. */
@@ -3074,7 +3099,9 @@ class Walker {
     // with `edits` only rewrites files of its kind, the pattern stands for what it writes; elsewhere (`tsc --outFile`)
     // it writes the file it's given, whatever its name.
     const named = edits ? parsed.writes.filter((write) => !parsed.edited?.includes(write)) : parsed.writes;
-    if (unknown !== 'project') this.wrote(named, call, edits ? 'contents' : writeKind(program));
+    // Git writes no `.git` in a work tree but where it makes a repository.
+    const repository = program !== 'git' || /^(clone|init|worktree|submodule)?$/.test(parsed.subcommands[0] ?? '');
+    if (unknown !== 'project') this.wrote(named, call, edits ? 'contents' : writeKind(program), repository);
     if (unknown !== false) this.wroteAnything(unknown === 'project');
   }
 
@@ -3358,40 +3385,90 @@ class Walker {
           continue;
         }
         // A submodule's own submodules are looked into as well.
-        if (followNested(sub)) submodules(sub);
+        if (followNested(sub) !== undefined) submodules(sub);
       }
     };
 
-    /** A repository in the work tree at `sub` (a submodule, or a gitlink), followed: whether there is one. */
-    const followNested = (sub: string): boolean => {
+    /** A repository in the work tree at `sub` (a submodule, or a gitlink), followed: its git directory, if there is one. */
+    const followNested = (sub: string): string | undefined => {
       const dotGit = `${sub}/.git`;
       const pointer = gitfile(readFile(dotGit));
-      if (pointer !== undefined) follow(this.pointedTo(sub, pointer, ctx, call), sub, dotGit, sub);
-      else if (readFile(`${dotGit}/config`) !== undefined || hasHead(dotGit)) follow(dotGit, sub, dotGit, sub);
-      else return false;
-      return true;
+      if (pointer !== undefined) {
+        const gitDir = this.pointedTo(sub, pointer, ctx, call);
+        follow(gitDir, sub, dotGit, sub);
+        return gitDir;
+      }
+      if (readFile(`${dotGit}/config`) === undefined && !hasHead(dotGit)) return undefined;
+      follow(dotGit, sub, dotGit, sub);
+      return dotGit;
+    };
+
+    /** Git looks into nested repositories the analysis couldn't look for: what they run is the invocation's mark. */
+    const unlooked = (): void => {
+      if (call.recorded && !call.recorded.effects.includes('exec:nested')) call.recorded.effects.push('exec:nested');
+    };
+
+    /** How long the object names of the repository in `gitDir` are: its config's `extensions.objectFormat`. */
+    const hashSize = (gitDir: string): 20 | 32 | undefined => {
+      const text = readFile(`${commonOf(gitDir)}/config`);
+      if (text === undefined) return undefined;
+      const format = parseGitConfig(text)
+        .entries.filter((entry) => entry.key.toLowerCase() === 'extensions.objectformat')
+        .at(-1)
+        ?.value.toLowerCase();
+      return format === undefined || format === 'sha1' ? 20 : format === 'sha256' ? 32 : undefined;
     };
 
     /**
-     * Repositories nested anywhere in the work tree at `root`, whether `.gitmodules` names them or not: one added as a
-     * gitlink is looked into as a submodule is. Found by listing the tree, without following symlinks, as git doesn't.
+     * The gitlinks the index of `gitDir` records: `undefined` when it can't be read here, and `null` when what it holds
+     * isn't known yet (a finding).
+     */
+    const indexed = (gitDir: string): string[] | null | undefined => {
+      const files = this.files!;
+      if (!files.readsBytes || state.vars.has('GIT_INDEX_FILE') || state.exported.has('GIT_INDEX_FILE')) return undefined;
+      const path = `${gitDir}/index`;
+      // An index the script may have written (`git add`, or git alongside) may hold any repository in the tree.
+      const alongside = ctx.concurrent || (ctx.alongside?.length ?? 0) > 0;
+      if (this.wroteIndex || alongside || this.changed(path, ctx, 'contents') !== false) return undefined;
+      const bytes = files.readBytes(path);
+      if (bytes === undefined) {
+        this.finding(ctx, 'unknown-file', `What \`${path}\` holds isn't known`, call.span);
+        return null;
+      }
+      if (bytes === null) return [];
+      const size = hashSize(gitDir);
+      return size === undefined ? undefined : gitlinks(bytes, size);
+    };
+
+    /**
+     * Repositories nested in the work tree at `root` that git looks into, `.gitmodules` or not: the gitlinks the index
+     * of `gitDir` records. A command that checks out another commit looks into those of that commit, at any path, so
+     * then (and when the index can't be read) every repository in the tree is, found by listing it without following
+     * symlinks, as git doesn't. What can't be looked for is `exec:nested`.
      */
     const listed = new Set<string>();
-    const nestedRepositories = (root: string): void => {
+    const nestedRepositories = (root: string, gitDir: string): void => {
       if (listed.has(root)) return;
       listed.add(root);
-      const files = this.files!;
-      if (!files.lists) {
-        this.finding(ctx, 'exec-config', `Repositories nested in ${root} can't be found without a directory listing`, call.span);
+      const links = writesTree ? undefined : indexed(gitDir);
+      if (links === null) return;
+      if (links !== undefined) {
+        for (const link of links) {
+          const sub = `${root === '/' ? '' : root}/${link}`;
+          const subGit = followNested(sub);
+          if (subGit !== undefined) nestedRepositories(sub, subGit);
+        }
         return;
       }
+      const files = this.files!;
+      if (!files.lists) return unlooked();
       const queue: [string, string | undefined][] = [[root, files.physical(root)]];
-      for (let seen = 0; queue.length > 0; seen++) {
-        if (seen >= 50_000) {
-          this.finding(ctx, 'exec-config', `The work tree at ${root} is too large to look for nested repositories in`, call.span);
-          return;
-        }
-        const [dir, real] = queue.shift()!;
+      // A repository the script may have put in the tree before now (`cp -r`) isn't in its listing.
+      const changed = this.reached(root, `${root === '/' ? '' : root}/.git`, ctx);
+      if (changed !== false) this.changedFinding(root, changed, ctx, call, true);
+      for (let next = 0; next < queue.length; next++) {
+        if (next >= 50_000) return unlooked();
+        const [dir, real] = queue[next]!;
         const names = files.readDirectory(dir);
         if (names === undefined) {
           this.finding(ctx, 'unknown-file', `What \`${dir}\` holds isn't known`, call.span);
@@ -3415,6 +3492,14 @@ class Walker {
       }
     };
 
+    /** What it may record in the index of `gitDir` (`git add` a nested repository) is read again by a later command. */
+    const wroteIndex = (): void => {
+      if (this.wroteIndex || gitKeepsIndex.test(parsed.subcommands[0] ?? '')) return;
+      // Code walked before it (a loop's first pass) is walked again.
+      this.wroteIndex = true;
+      this.writes++;
+    };
+
     /** Git's discovery from `start` up: whether it settled on a repository, every one it may take followed. */
     const discover = (start: string): boolean => {
       let dir = start;
@@ -3427,14 +3512,17 @@ class Walker {
         const hooksFrom = tree === undefined ? dir : undefined;
         // What it reads from the work tree, it reads before it writes there.
         if (pointer !== undefined) {
+          const gitDir = this.pointedTo(dir, pointer, ctx, call);
           submodules(dir);
-          nestedRepositories(dir);
-          follow(this.pointedTo(dir, pointer, ctx, call), dir, dotGit, hooksFrom);
+          nestedRepositories(dir, gitDir);
+          wroteIndex();
+          follow(gitDir, dir, dotGit, hooksFrom);
           return true;
         }
         if (readFile(`${dotGit}/config`) !== undefined || hasHead(dotGit)) {
           submodules(dir);
-          nestedRepositories(dir);
+          nestedRepositories(dir, dotGit);
+          wroteIndex();
           follow(dotGit, dir, dotGit, hooksFrom);
           if (valid(dotGit)) return true;
         }

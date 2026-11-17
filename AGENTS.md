@@ -38,8 +38,9 @@ runs everything on Linux, then builds and loads `dist/` in Node.
   its CLI docs (1.17), its options read as Go's flag package reads them.
 - `src/policy.ts`: three-valued rule matching, the verdict, and `checkAsync`. `src/recommended.ts`: the starting
   policy.
-- `src/files.ts`: the `FileSystem` the analysis reads (files, real paths, and optionally directory listings, which find
-  repositories nested in a work tree), `snapshot`, and what it didn't know (needs).
+- `src/files.ts`: the `FileSystem` the analysis reads, in just-bash's and Node's shape, each method optional and sync or
+  async (files, bytes, listings, real paths), `snapshot`, and what it didn't know (needs).
+- `src/gitindex.ts`: the gitlinks a Git index records, which git looks into as it does submodules.
 - `src/paths.ts`: path resolution against the tracked working directory.
 - `src/husky.ts`: husky's hooks, recognised by the exact text each version writes, followed to the project's own.
 - `src/secrets.ts`: what reads secrets (`secrets:read`): credentials files, variables named like one, and commands

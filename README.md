@@ -119,7 +119,9 @@ const policy: Policy = {
   the start, so it may match a deny or ask rule's relative glob. Deny and ask rules also match `.git` and `HEAD` in any
   case, and `.git`'s Windows short name `GIT~1`, as a filesystem that ignores case takes them.
 - `effects`: `fs:read`, `fs:write`, `fs:delete`, `network`, `network:read`, `privilege`, `exec:arbitrary`,
-  `exec:project`, `exec:file`, `exec:remote`, `shell-state`, `secrets:read`, `secrets:print`. `secrets:read` reads what is likely a
+  `exec:project`, `exec:file`, `exec:remote`, `exec:nested`, `shell-state`, `secrets:read`, `secrets:print`. `exec:nested` is git
+  looking into repositories nested in its work tree that the analysis couldn't look for (see the filesystem below);
+  `recommended` allows it. `secrets:read` reads what is likely a
   secret: the environment as a whole (`printenv`, `env` or `export -p` alone, `declare -p`, `local -p`, `set` alone,
   `ps e` anywhere in its arguments, `ps -E`, awk's `ENVIRON` (gawk's `SYMTAB` and `PROCINFO` too, and `ARGV`, which may name any file), jq's `env`, `$ENV` and `import` (in gh's `--jq` too), yq's `env()`,
   `strenv()` and `load…()`), a file that holds credentials, read, sourced, redirected, renamed (`mv`, `ln`), matched by
@@ -253,45 +255,27 @@ after a script's name (`npm test -- --config x`), which are appended to a script
 ## The environment
 
 `analyze` and `check` take an optional `Environment`: the starting `cwd` (absolute), the variables in `env`, `maxDepth`,
-and `fs`, the filesystem as it is before the command runs. Everything in it is plain data or synchronous, so it works
-wherever JavaScript does; the library uses no Node filesystem APIs.
+and `fs`, the filesystem as it is before the command runs. `check` needs everything in it to answer at once, and
+`checkAsync` takes promises too; the library uses no Node filesystem APIs, so it works wherever JavaScript does.
 
 The answers hold only if nothing else writes before the run ends. Run commands one at a time, and don't start the next
 while anything the last one started is still running: a job it left in the background (`make &`, `nohup`,
 `setsid -f`) could rewrite a hook or `.git/config` after the next command was checked. `bash-gate/trace` waits for, or
 kills, the whole process tree.
 
+`fs` takes the shape of [just-bash](https://github.com/vercel-labs/just-bash)'s `IFileSystem` and of Node's `fs`, so
+either can be passed as it is. Every method is optional, and each may answer at once or with a promise:
+
 ```ts
 import { lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { check, recommended, type FileSystem } from 'bash-gate';
 
-const absent = (error: unknown) => ['ENOENT', 'ENOTDIR', 'EISDIR'].includes((error as { code?: string }).code ?? '');
 const fs: FileSystem = {
-  readFile(path) {
-    try {
-      return readFileSync(path, 'utf8');
-    } catch (error) {
-      if (absent(error)) return null;
-      throw error;
-    }
-  },
-  realpath(path) {
-    try {
-      return realpathSync(path);
-    } catch (error) {
-      if (!absent(error)) throw error;
-      // A dangling symlink isn't nothing: where it points isn't known.
-      return lstatSync(path, { throwIfNoEntry: false }) ? undefined : null;
-    }
-  },
-  readDirectory(path) {
-    try {
-      return readdirSync(path);
-    } catch (error) {
-      if (absent(error)) return null;
-      throw error;
-    }
-  },
+  readFile: readFileSync,
+  readFileBuffer: readFileSync,
+  readdir: readdirSync,
+  realpath: realpathSync,
+  lstat: lstatSync,
 };
 check('git commit -m wip', recommended, { cwd: process.cwd(), fs });
 ```
@@ -310,15 +294,22 @@ without the line older versions put at its top: `.husky/pre-commit` is what's ju
 A husky file changed by hand is walked as it is, which asks. Where git would look isn't always certain (a relative path with `--git-dir` or `--work-tree`, `~` without a
 known `HOME`, a path set in a conditional include): that's an `exec-config` finding.
 
-- `readFile(path)` returns the text, `null` when nothing is there or it isn't a file, or `undefined` when it isn't
-  known. `realpath(path)` returns where an absolute path really is, `null` only when nothing at all is there (not even a
-  dangling symlink; then its parent is tried, so files that don't exist yet have a real path), or `undefined`.
-  `readDirectory(path)`, optional, returns the names in a directory, `null` when it isn't one, or `undefined`. git
-  looks into every repository nested in its work tree that was added as a gitlink, `.gitmodules` or not, and those are
-  found by listing the tree (symlinks aren't descended into, as git doesn't). Without it, a git command is an
-  `exec-config` finding; a tree too large to list (50,000 directories) is one too.
-- What isn't known becomes an `unknown-file` finding, and an entry in `analysis.needs`: `{ kind: 'file' | 'realpath' |
-  'directory', path }`. Errors thrown by the callbacks propagate.
+- `readFile(path, 'utf8')` is a file's text, `readFileBuffer(path)` its bytes, `readdir(path)` the names in a
+  directory, and `realpath(path)` where an absolute path really is. Nothing there is `null` or an error whose `code`
+  (Node) or message (just-bash) starts `ENOENT`, `ENOTDIR` or `EISDIR`; other errors propagate. Where `realpath` finds
+  nothing, `lstat(path)` tells a dangling symlink, where a write would land is unknown, from nothing at all, whose
+  parent is tried instead, so files that don't exist yet have a real path. Without `lstat`, that isn't known.
+- What isn't known, a missing method or `undefined`, becomes an `unknown-file` finding, and an entry in
+  `analysis.needs` for a method the filesystem has: `{ kind: 'file' | 'bytes' | 'realpath' | 'directory', path }`.
+  `check` needs answers at once, and throws a `TypeError` on a promise; `checkAsync` takes either.
+- git looks into every repository its index records as a gitlink, `.gitmodules` or not: `git status` runs its
+  `core.fsmonitor`. They're read from `.git/index` with `readFileBuffer` (versions 2 to 4; not a split or sparse
+  index). A command that checks out another commit (`checkout`, `switch`, `reset`, `merge`, `stash`…) looks into
+  those of that commit at any path, and so does a command after git may have changed the index (`git add -A && git
+  status`): then every repository in the work tree is followed, found with `readdir` (symlinks aren't descended into,
+  as git doesn't). One the script may have put there before (`cp -r`, a write into a `.git`) is an `unknown-file`
+  finding. Where neither can be done (no `readFileBuffer`, no `readdir`, or a tree of more than 50,000 directories),
+  the git invocation has the effect `exec:nested`, which `recommended` allows: a gate that wants it known asks for it.
 - The answers are about the filesystem _before_ the command. A file the script may write before it's read
   (`cp -r hooks .git/ && git commit`), or while it's read, is an `unknown-file` finding. While it's read is what the
   other commands of a pipeline write (`./build.sh | git commit`), and with `&` or `<(…)` anything the script writes
@@ -339,20 +330,17 @@ known `HOME`, a path set in a conditional include): that's an `exec-config` find
   named for them to write (`tsc --outFile`). `tsc` copies the JSON its sources import into its output, from wherever
   it is, so after it every `.json` is unknown too, a package.json included (`tsc --noEmit` writes nothing).
 
-`snapshot({ files, realpaths, directories })` builds a `FileSystem` from records: a path in none isn't known, and
-without `directories` it can't list them. Where the
-filesystem is only reachable asynchronously (a browser, a remote sandbox), `checkAsync` analyses with what it has,
-fetches the needs, and goes again:
+`snapshot({ files, realpaths, directories, buffers })` builds a `FileSystem` from records: a path in none isn't known,
+and a record not given is a method it doesn't have. Where the filesystem is only reachable asynchronously (a browser, a
+remote sandbox, just-bash), `checkAsync` analyses with what it has, fetches the needs, and goes again:
 
 ```ts
-import { checkAsync, recommended, type AsyncFileSystem } from 'bash-gate';
+import { checkAsync, recommended } from 'bash-gate';
+import { OverlayFs } from 'just-bash/fs/overlay-fs';
 
-const fs: AsyncFileSystem = {
-  readFile: (path) => sandbox.read(path),
-  realpath: (path) => sandbox.realpath(path),
-  readDirectory: (path) => sandbox.list(path),
-};
-const verdict = await checkAsync('git commit -m wip', recommended, { cwd: '/repo', fs }, { rounds: 8 });
+const overlay = new OverlayFs({ root: '/path/to/project' });
+const cwd = overlay.getMountPoint();
+const verdict = await checkAsync('git commit -m wip', recommended, { cwd, fs: overlay }, { rounds: 8 });
 ```
 
 Only content that names the next file costs a round: finding `.git` above a directory takes one, its hooks and

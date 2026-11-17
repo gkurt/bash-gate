@@ -17,12 +17,13 @@ default shell options (no BASHOPTS or SHELLOPTS in the environment). Everything 
 itself, options included: those it turns on are followed, or a finding when what they change isn't. When the integration can't
 guarantee this, the gate's answers are about some other shell.
 
-The integration may provide `fs`, the filesystem as it is before the command runs: `readFile(path)` to inspect
-repository-controlled configuration and scripts, and `realpath(path)` to resolve paths. Each answers `null` when
-nothing is there (for `realpath`, not even a dangling symlink) and `undefined` when it doesn't know. They are
-synchronous, use `/`-separated paths, and callback errors propagate to the caller. An unknown answer is an
-`unknown-file` finding, so it can't lead to an allow; `checkAsync` fetches unknown answers from an asynchronous
-filesystem and analyses again. Without `fs`, the limits below apply.
+The integration may provide `fs`, the filesystem as it is before the command runs, in just-bash's and Node's shape:
+`readFile` and `readFileBuffer` to inspect repository-controlled configuration, scripts and Git's index, `readdir` to
+list directories, and `realpath` and `lstat` to resolve paths. Each is optional. Each answers `null`, or throws
+`ENOENT`, `ENOTDIR` or `EISDIR`, when nothing is there (for `realpath`, with `lstat` telling a dangling symlink from
+nothing), and `undefined` when it doesn't know. They use `/`-separated paths, and other errors propagate to the
+caller. An unknown answer, or a missing method, is an `unknown-file` finding, so it can't lead to an allow; `check`
+throws on a promise, and `checkAsync` fetches unknown answers and analyses again. Without `fs`, the limits below apply.
 
 The answers describe the filesystem before the command, which the command may change. A file the script may write
 before it's read, or while it's read (code that runs alongside: the other commands of a pipeline, and with `&`,
@@ -67,10 +68,12 @@ Out of scope:
   `getcwd`), a `.git` or the directory itself, that has a `HEAD` and the directories `objects` and `refs`. One that may
   lack them is followed, and so are those above it. A `.git` file and `commondir` are read as git reads them, a `..`
   after a symlink leading up from its target; config is parsed as git parses it, with a finding where git would refuse
-  it. The submodules `.gitmodules` names are followed too, and theirs in turn, and so is every repository nested in the work
-  tree, found by listing it (`readDirectory`), since one added as a gitlink is looked into with no `.gitmodules` entry;
-  without a listing, a git command is an `exec-config` finding, and symlinks to directories aren't descended into, as
-  git doesn't. The hooks followed are the ones the
+  it. The submodules `.gitmodules` names are followed too, and theirs in turn, and so is every gitlink the index
+  records (`readFileBuffer`), since git looks into one with no `.gitmodules` entry. A command that checks out another
+  commit looks into those of that commit, at any path, as does one after git may have changed the index: then every
+  repository in the work tree is followed, found by listing it (`readdir`, symlinks to directories not descended into,
+  as git doesn't), and one the script may have put there before is a finding. Where neither the index nor a listing can
+  be read, or the tree is too large to list, the invocation has `exec:nested`, which `recommended` allows. The hooks followed are the ones the
   command runs in git 2.55, plus `pre-auto-gc` where older gits collect garbage afterwards; a command the table
   doesn't have may run any. They're read from `core.hooksPath` where that directory is certain, and from the config's
   own `hook.<name>.command`. A hook is read as the shell its first line names (`sh`, which expands aliases, with

@@ -1,5 +1,5 @@
 /**
- * A `readDirectory` for a fixture filesystem given by its paths: a directory holds the names one level below it, and a
+ * A `readdir` for a fixture filesystem given by its paths: a directory holds the names one level below it, and a
  * path with nothing below it isn't one. Relative paths (a fixture with no absolute `cwd`) are listed from `.`.
  */
 export function listing(paths: Iterable<string>): (dir: string) => string[] | null {
