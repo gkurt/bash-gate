@@ -1216,6 +1216,8 @@ class Walker {
         const define = (s: State, name: string) => {
           s.functions.set(name, { bodies: [this.body(node, ctx)], maybeUndefined: false });
           exportAll(s, name, s.exportedFunctions, s.maybeExportedFunctions);
+          if (s.exportedFunctions.has(name) || s.maybeExportedFunctions.has(name))
+            this.exportedFunction(name, ctx, this.span(ctx, node.pos, node.end));
         };
         // The name of `name()` (not `function name`) is a command word, which an alias replaces: `alias rm=zz; rm() …`
         // defines `zz`.
@@ -2520,6 +2522,7 @@ class Walker {
               if (fn.maybeUndefined && !state.exportedFunctions.has(variable)) state.maybeExportedFunctions.add(variable);
               else if (!fn.maybeUndefined) state.maybeExportedFunctions.delete(variable);
               state.exportedFunctions.add(variable);
+              this.exportedFunction(variable, ctx, call.span);
             }
             continue;
           }
@@ -3658,6 +3661,14 @@ class Walker {
     if (real === undefined) this.finding(ctx, 'unknown-file', `Where \`${cwd}\` really is isn't known`, call.span);
     const settled = discover(cwd);
     return real === undefined || real === cwd ? settled : discover(real) && settled;
+  }
+
+  /**
+   * A function exported to the environment: every Bash a later program starts defines it, project code's own and git's
+   * hooks among them, which the analysis doesn't all see. As `BASH_FUNC_name%%=…` given to a program is.
+   */
+  exportedFunction(name: string, ctx: Context, span: [number, number]): void {
+    this.finding(ctx, 'sensitive-variable', `The function ${name} is exported: a Bash any later program starts runs it in its place`, span);
   }
 
   /** The git directory a `.git` file or `commondir` names, from `base`, as the kernel finds it. */
@@ -5286,7 +5297,12 @@ function childState(state: State, cwd: string | undefined, bash = false): State 
   }
   for (const name of state.exportedFunctions) {
     const fn = state.functions.get(name);
-    if (fn) child.functions.set(name, !bash || state.maybeExportedFunctions.has(name) ? { ...fn, maybeUndefined: true } : fn);
+    if (!fn) continue;
+    const maybe = !bash || state.maybeExportedFunctions.has(name);
+    child.functions.set(name, maybe ? { ...fn, maybeUndefined: true } : fn);
+    // Bash keeps a function it imports exported, so its own children have it too, redefined or not.
+    child.exportedFunctions.add(name);
+    if (maybe) child.maybeExportedFunctions.add(name);
   }
   child.exported = new Set(state.exported);
   child.maybeExported = new Set(state.maybeExported);
