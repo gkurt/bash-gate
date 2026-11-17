@@ -322,16 +322,22 @@ while os.waitpid(sub, os.WNOHANG) == (0, 0):
   });
 
   test("a wrapper's shell runs the code the wrapper was given", async () => {
-    fresh();
-    // The inner shell's code predicted otherwise: being a shell under the wrapper doesn't cover it.
-    const source = `flock lk -c 'bash -c "sleep 0"'`;
-    const analysis = analyze(source, { cwd: work });
-    const inner = analysis.invocations.find((invocation) => invocation.program === 'bash')!;
-    inner.argv = [...inner.argv.slice(0, -1), { kind: 'static', value: 'true' }];
-    const result = await run(source, options({ analysis }));
-    const shells = result.execs.filter((exec) => exec.argv[0] === 'bash');
-    expect(shells.length).toBeGreaterThan(0);
-    expect(shells.filter((exec) => exec.covered)).toEqual([]);
+    // The inner shell's code predicted otherwise: being a shell under the wrapper doesn't cover it, nor does another word
+    // of the wrapper only known at run time, or a word of another wrapper's.
+    for (const source of [
+      `flock lk -c 'bash -c "sleep 0"'`,
+      `flock -w "$(echo 5)" lk -c 'bash -c "sleep 0"'`,
+      `flock -w 5 lk -c 'bash -c "sleep 0"'; flock lk2 echo 'sleep 0'`,
+    ]) {
+      fresh();
+      const analysis = analyze(source, { cwd: work });
+      const inner = analysis.invocations.find((invocation) => invocation.program === 'bash')!;
+      inner.argv = [...inner.argv.slice(0, -1), { kind: 'static', value: 'true' }];
+      const result = await run(source, options({ analysis }));
+      const shells = result.execs.filter((exec) => exec.argv[0] === 'bash');
+      expect([source, shells.length > 0]).toEqual([source, true]);
+      expect([source, shells.filter((exec) => exec.covered)]).toEqual([source, []]);
+    }
   });
 
   test('arguments that are no UTF-8 are covered only by code no one saw', async () => {

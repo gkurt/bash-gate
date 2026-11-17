@@ -253,13 +253,11 @@ function judge(analysis: Analysis, via: string[], argv: string[], at?: Where & {
   const system =
     at === undefined || (!followsLinks(at.path) && isSystemPath(at.path.startsWith('/') ? at.path : posix.join(at.cwd, at.path)));
   const code = argv[1] === '-c' ? argv[2] : undefined;
+  // That invocation's own code, and nothing else of it: one only known at run time may be any.
   const given = (invocation: Invocation) =>
     invocation.program === wrapper &&
     startsWith(wrappers(invocation), via.slice(0, -1)) &&
-    (invocation.argv.some((arg) => arg.kind === 'dynamic') ||
-      invocation.argv.some((_, i) =>
-        [1, invocation.argv.length - i].some((count) => joined(invocation.argv.slice(i, i + count)) === code),
-      ));
+    codeGiven(invocation).some((arg) => arg.kind === 'dynamic' || arg.value === code);
   if (
     shells.has(program) &&
     system &&
@@ -273,6 +271,26 @@ function judge(analysis: Analysis, via: string[], argv: string[], at?: Where & {
   // Placed apart, only a finding that leaves code unseen accounts for it.
   const covered = at === undefined ? covers(analysis, argv, via) : analysis.findings.some((finding) => unseen.has(finding.kind));
   return { covered, next: null };
+}
+
+/**
+ * The shell code a wrapper invocation was given: `--command` (`flock -c`, `script -c`), the word after `-c` in
+ * `flock FILE -c CODE`, or `watch`'s command words joined. A word only known at run time stands for any code.
+ */
+function codeGiven(invocation: Invocation): Arg[] {
+  const options = (invocation.options['--command'] ?? []).filter((value) => value !== true);
+  const after = invocation.argv.findIndex((arg, i) => i > 0 && arg.kind === 'static' && (arg.value === '-c' || arg.value === '--command'));
+  const following = after === -1 ? undefined : invocation.argv[after + 1];
+  const words = joined(invocation.positionals);
+  const watched: Arg[] =
+    invocation.program !== 'watch' || invocation.positionals.length === 0
+      ? []
+      : [
+          words === undefined
+            ? { kind: 'dynamic', text: '', reason: 'variable', split: true, prefix: '' }
+            : { kind: 'static', value: words },
+        ];
+  return [...options, ...(following ? [following] : []), ...watched];
 }
 
 /** Static words joined by spaces, as `watch` joins its command's; `undefined` when one is only known at run time. */
