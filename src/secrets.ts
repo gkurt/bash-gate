@@ -126,20 +126,65 @@ export function secretFile(path: string, short = true): boolean {
  * `GLOBIGNORE`).
  */
 export function secretGlob(glob: string, dots = false): boolean {
-  const lower = glob.toLowerCase().replaceAll('\\', '/').replace(/["']/g, '');
+  const lower = loosened(glob.replace(/["']/g, '')).toLowerCase();
+  // `**` under `globstar` reaches every file below where it starts: a directory that holds secrets is read whole.
+  const parts = lower.split('/');
+  const star = parts.indexOf('**');
+  if (star !== -1 && secretDirectory(parts.slice(0, star).join('/'))) return true;
   const filled = (any: string) =>
     lower
       .replace(/\[!?\^?\]?[^\]]*\]/g, (set) => (/^\[[!^]/.test(set) ? 'x' : (set[1] ?? 'x')))
       .replaceAll('?', 'x')
       .replaceAll('*', any);
   if (secretFile(filled('')) || secretFile(filled('x'))) return true;
-  const parts = lower.split('/').filter(Boolean);
-  const own = /[^*?[\]]/.test(parts.at(-1) ?? '');
+  const named = parts.filter(Boolean);
+  const own = /[^*?[\]]/.test(named.at(-1) ?? '');
   return examples.some((example) => {
-    if (parts.length < example.length || (example.length === 1 && !own)) return false;
-    const tail = parts.slice(-example.length);
+    if (named.length < example.length || (example.length === 1 && !own)) return false;
+    const tail = named.slice(-example.length);
     return example.every((part, i) => part === '*' || globPart(tail[i]!, dots).test(part));
   });
+}
+
+/**
+ * A glob with what the checks below don't read made wider, as Bash may match more with it: an escaped character as
+ * itself (`.e\\nv` matches `.env`), and a set that's negated or holds a class (`[!A-Z]`, `[[:alpha:]]`, `[[=e=]]`) as
+ * `?`. Case is ignored after, which a negated set would turn around.
+ */
+function loosened(glob: string): string {
+  let out = '';
+  for (let i = 0; i < glob.length; i++) {
+    const char = glob[i]!;
+    if (char === '\\' && i + 1 < glob.length) {
+      out += glob[++i];
+      continue;
+    }
+    if (char !== '[') {
+      out += char;
+      continue;
+    }
+    // Where Bash closes the set: a `]` first (after `!` or `^`) is a member, and so is one inside `[:…:]`, `[=…=]`, `[.….]`.
+    let j = i + 1;
+    if (glob[j] === '!' || glob[j] === '^') j++;
+    if (glob[j] === ']') j++;
+    let classes = false;
+    for (; j < glob.length && glob[j] !== ']'; j++) {
+      const open = glob[j] === '[' ? glob[j + 1] : undefined;
+      if (open !== ':' && open !== '=' && open !== '.') continue;
+      const close = glob.indexOf(`${open}]`, j + 2);
+      if (close === -1) continue;
+      classes = true;
+      j = close + 1;
+    }
+    if (j >= glob.length) {
+      out += char;
+      continue;
+    }
+    const set = glob.slice(i, j + 1);
+    out += classes || /^\[[!^]/.test(set) ? '?' : set.replaceAll(/\\([\s\S])/g, '$1');
+    i = j;
+  }
+  return out;
 }
 
 /** One part of a path glob as a regular expression: a wildcard first doesn't match a leading dot, unless `dots`. */

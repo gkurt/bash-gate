@@ -4240,6 +4240,9 @@ class Walker {
         return arg.reason !== 'arithmetic' && secretSuffix(staticEnd(arg.text));
       }
       const resolved = resolvePath(call.cwd, arg.value, call.home);
+      // A directory a tilde names that isn't placed (`~-/x`) may be any, as a name only known at run time.
+      const rest = tildeRest(arg.value);
+      if (rest !== undefined && secretSuffix(rest)) return true;
       const real = resolved && realpaths?.[resolved];
       // `HEAD:.env`, `:.env`, and a stage of the index, `:0:.env`.
       const revision = arg.value.replace(/^:[0-3]:/, ':');
@@ -5499,6 +5502,12 @@ function numericValue(value: Value): boolean {
  * Whether a glob may match a file that holds secrets: the pattern Bash matches with, and each field it splits into, or,
  * with a part only known at run time, any name its known end allows (`$x*`).
  */
+/** What follows a tilde prefix `resolvePath` can't place (`~-`, `~+1`, `~2`, `~user`): `undefined` for `~`, `~+` and the rest. */
+function tildeRest(path: string): string | undefined {
+  const tilde = /^~([^/]+)(.*)$/s.exec(path);
+  return tilde && tilde[1] !== '+' ? tilde[2] : undefined;
+}
+
 /**
  * The entries of an npm config file as npm's `ini` reads them: a line's key and value are trimmed as
  * `String.prototype.trim` does (a BOM and a no-break space too), a quoted one is JSON-decoded, and an unquoted value ends
@@ -5535,6 +5544,9 @@ function npmrcEntries(text: string): [string, string][] {
 
 function globSecret(arg: Extract<Arg, { kind: 'dynamic' }>, dots: boolean | undefined, cwd?: string, home?: string): boolean {
   const patterns = arg.pattern === undefined ? [arg.text] : [arg.pattern, ...arg.pattern.split(/[ \t\n]+/)];
+  // A directory a tilde names that isn't placed (`~-`, `~1`) may be any: what follows its last wildcard is all that's known.
+  const unplaced = patterns.map(tildeRest).find((rest) => rest !== undefined);
+  if (unplaced !== undefined && secretSuffix(unplaced.replace(/^.*[*?[\]]/s, ''))) return true;
   // Of what comes after the part only known at run time, what follows its last wildcard is all that is certain.
   if (arg.pattern === undefined && secretSuffix(staticEnd(arg.text).replace(/^.*[*?[\]]/s, ''))) return true;
   return patterns.some((glob) =>
