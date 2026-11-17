@@ -35,6 +35,8 @@ export interface CommandSpec {
   abbreviations?: boolean;
   /** Read as Go's pflag reads it (cobra): `-o=value` is `-o` with `value`, a flag's too (`-f=false`). */
   cobra?: boolean;
+  /** A long option's name reads `_` as `-`, as pflag's word-separator normalization has it (kubectl). */
+  wordSeparators?: boolean;
   /** What the positionals are, when they're paths. */
   positionals?: 'read' | 'write' | 'delete';
   /**
@@ -249,7 +251,7 @@ export function readCobra(root: CommandSpec, args: Arg[], parsed: Parsed): void 
       if (arg.value === '--') break search;
       if (arg.value === '') continue;
       if (arg.value.startsWith('-')) {
-        if (cobraTakesNext(current, arg.value)) i++;
+        if (cobraTakesNext({ ...current, wordSeparators: root.wordSeparators }, arg.value)) i++;
         continue;
       }
       const found = findSubcommand(current.subcommands, arg.value);
@@ -265,7 +267,14 @@ export function readCobra(root: CommandSpec, args: Arg[], parsed: Parsed): void 
     }
     break;
   }
-  const leaf = normalize(rest, { ...current, cobra: true, subcommands: undefined, parse: undefined, finish: undefined });
+  const leaf = normalize(rest, {
+    ...current,
+    cobra: true,
+    wordSeparators: root.wordSeparators,
+    subcommands: undefined,
+    parse: undefined,
+    finish: undefined,
+  });
   for (const level of levels) for (const effect of level.effects ?? []) leaf.effects.add(effect);
   Object.assign(parsed, leaf, { subcommands: parsed.subcommands });
   for (const level of levels) level.finish?.(parsed);
@@ -449,7 +458,8 @@ function unknown(parsed: Parsed, name: string, value: Arg | true): void {
 }
 
 function findOption(spec: CommandSpec | undefined, name: string): OptionSpec | undefined {
-  return spec?.options?.find((option) => option.names.includes(name));
+  const key = spec?.wordSeparators && name.startsWith('--') ? `--${name.slice(2).replaceAll('_', '-')}` : name;
+  return spec?.options?.find((option) => option.names.includes(key));
 }
 
 /** A long option by its name, or by a prefix of exactly one name when the spec allows abbreviations. */

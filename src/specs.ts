@@ -2739,6 +2739,12 @@ const goTrue = (value: Arg | true | undefined) =>
 const goFalse = (value: Arg | true | undefined) =>
   value !== undefined && value !== true && value.kind === 'static' && /^(0|f|F|FALSE|false|False)$/.test(value.value);
 
+/** From verbosity 8, client-go logs response bodies: a Secret's data, whatever the output format. */
+function logsBodies(parsed: Parsed): boolean {
+  const verbosity = parsed.options['--v']?.at(-1);
+  return verbosity !== undefined && (verbosity === true || verbosity.kind === 'dynamic' || !/^[0-7]$/.test(verbosity.value));
+}
+
 /** Whether the resources a kubectl command names may include Secrets: by name, by file, or only known at run time. */
 function maySecrets(parsed: Parsed): boolean {
   if (parsed.maybeOptions || parsed.unknownOptions.length > 0) return true;
@@ -2771,10 +2777,7 @@ function finishKubectl(parsed: Parsed): void {
   // `--raw` and `--flatten` skip the redaction, and the redaction itself leaves out an OIDC auth provider's tokens and
   // an exec plugin's environment.
   if (path === 'config view') parsed.effects.add('secrets:read').add('secrets:print');
-  // From verbosity 8, client-go logs response bodies: a Secret's data, whatever the output format.
-  const verbosity = parsed.options['--v']?.at(-1);
-  const logsBodies = verbosity !== undefined && (verbosity === true || verbosity.kind === 'dynamic' || !/^[0-7]$/.test(verbosity.value));
-  if (logsBodies && maySecrets(parsed)) parsed.effects.add('secrets:read').add('secrets:print');
+  if (logsBodies(parsed) && maySecrets(parsed)) parsed.effects.add('secrets:read').add('secrets:print');
   if (path === 'diff' && parsed.options['--show-secrets']) parsed.effects.add('secrets:read').add('secrets:print');
   // The kubeconfig and kuberc it changes, where it reads them.
   const configFile = (option: string, fallback: string) => {
@@ -3429,9 +3432,11 @@ const kubectl: CommandSpec = {
     // A raw request (`delete --raw`) is sent as it is: the dry run is never asked.
     keeps: (parsed) => (kubeFetches(parsed) || kubeElsewhere(parsed) || parsed.options['--raw'] ? ['network'] : []),
   },
+  // kubectl normalizes flag names, `_` as `-`: `--insecure_skip_tls_verify` is the bool, with a warning.
+  wordSeparators: true,
   parse: (args, parsed) => readCobra(kubectl, args, parsed),
   finish(parsed) {
-    if (parsed.subcommands[0] === 'version' && !parsed.options['--client']) parsed.effects.add('network:read');
+    if (parsed.subcommands[0] === 'version' && !goTrue(parsed.options['--client']?.at(-1))) parsed.effects.add('network:read');
     finishKubectl(parsed);
   },
 };
@@ -3464,6 +3469,8 @@ function finishHelm(parsed: Parsed): void {
   if (/^repo (add|remove)$/.test(path)) configFile('--repository-config', '~/.config/helm/repositories.yaml');
   if (/^registry (login|logout)$/.test(path)) configFile('--registry-config', '~/.config/helm/registry/config.json');
   if (/^plugin (install|uninstall|update)$/.test(path)) configFile(undefined, '~/.local/share/helm/plugins');
+  // Helm 3's klog flags: client-go logs what it fetches, release Secrets included, from verbosity 8.
+  if (logsBodies(parsed)) parsed.effects.add('secrets:read').add('secrets:print');
   // As JSON or YAML, the release itself: its values and rendered manifest, Secrets included.
   const output = parsed.options['--output']?.at(-1);
   const whole = output !== undefined && (output === true || output.kind === 'dynamic' || /^(json|yaml)$/i.test(output.value));
@@ -3474,7 +3481,7 @@ function finishHelm(parsed: Parsed): void {
   const fromCluster =
     ['--reuse-values', '--reset-then-reuse-values'].some((name) => parsed.options[name]) ||
     (dryRun !== undefined && dryRun !== true && (dryRun.kind === 'dynamic' || dryRun.value === 'server'));
-  if (/^(install|upgrade)$/.test(path) && dryRun !== undefined && fromCluster && !parsed.options['--hide-secret'])
+  if (/^(install|upgrade)$/.test(path) && dryRun !== undefined && fromCluster && !goTrue(parsed.options['--hide-secret']?.at(-1)))
     parsed.effects.add('secrets:read').add('secrets:print');
   // Where it writes: the index into the directory it's given, the dependencies into the chart's.
   // With `--dependency-update`, the dependencies go into the chart's `charts/`, beside a `Chart.lock`.
@@ -3596,6 +3603,20 @@ const helm: CommandSpec = {
       o('--registry-config=', { role: 'read', effects: ['exec:file'] }),
       o('--repository-cache=', { role: 'write' }),
       o('--repository-config=', { role: 'read' }),
+      // klog's flags, which Helm 3 adds hidden, `_` read as `-`: a bool before the command takes no word as its value.
+      '--add-dir-header',
+      '--alsologtostderr',
+      '--log-backtrace-at=',
+      o('--log-dir=', { role: 'write' }),
+      o('--log-file=', { role: 'write' }),
+      '--log-file-max-size=',
+      '--logtostderr',
+      '--one-output',
+      '--skip-headers',
+      '--skip-log-headers',
+      '--stderrthreshold=',
+      '-v= --v=',
+      '--vmodule=',
     ),
     subcommands: {
       completion: {},
@@ -6034,9 +6055,13 @@ const programs: Record<string, CommandSpec> = {
       '-w= --check-chars=',
     ),
     finish(parsed) {
-      // `+N` is the old spelling of -s N, and a word only known at run time may be one: any may be the output.
+      // `+N` is the old spelling of -s N, and a word only known at run time may be one: any may be the output. After
+      // `--`, one is a file, and which words came after isn't kept: any may be the output then too.
       const old = (arg: Arg) => (arg.kind === 'static' ? /^\+\d+$/.test(arg.value) : /^\+?\d*$/.test(arg.prefix));
-      if (parsed.positionals.some((arg) => arg.kind === 'dynamic' && old(arg))) parsed.writes.push(...parsed.positionals);
+      if (parsed.positionals.some((arg) => (arg.kind === 'dynamic' || parsed.separated) && old(arg))) {
+        parsed.writes.push(...parsed.positionals);
+        parsed.effects.add('fs:write');
+      }
       parsed.positionals = parsed.positionals.filter((arg) => arg.kind === 'dynamic' || !old(arg));
       const output = parsed.positionals[1];
       if (output) {
