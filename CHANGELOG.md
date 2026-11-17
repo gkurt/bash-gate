@@ -1,3 +1,85 @@
+## bash-gate@0.5.1
+
+### npm's and pnpm's config read as they read it, in the project and above it
+
+- **`.npmrc` as npm's ini reads it:** a key is trimmed as JavaScript trims (a byte-order mark, a no-break space or a vertical tab before it too), and a quoted key is decoded. `"script-shell"=/elsewhere/prog` names the shell npm runs scripts with, as `script-shell=…` does.
+- **Above the project:** npm reads the `.npmrc` of a workspace root above the project in place of the project's, and pnpm its `pnpm-workspace.yaml`. Both are now read in every directory from the project up to HOME.
+- **Workspaces from `.npmrc`:** a `workspace`, `workspaces` or `include-workspace-root` setting runs other packages' scripts, as `-w` does: they aren't walked.
+- **pnpm's `scriptShell`:** `pnpm-workspace.yaml`'s `scriptShell` is the shell pnpm 11 runs scripts with: `exec:file`, or `exec:arbitrary` when it isn't written as `scriptShell: value`.
+- **Snapshots:** a snapshot that doesn't record whether `.npmrc` and `pnpm-workspace.yaml` exist in the directories above the project now asks on `npm test` and `pnpm test`.
+
+### `jobs -x`, `source` in POSIX mode, `exec -a` with a path, and write options' effect
+
+- **`jobs -x`:** `jobs -x cmd args` runs the command in this shell (functions and builtins too), and it's now followed as one. A jobspec among its words (`%1`) is only known at run time.
+- **`source` in POSIX mode:** Bash finds `source`, like `.`, before a function of that name in POSIX mode. `source() { :; }; set -o posix; source ./x.sh` runs the file, and now reads as it.
+- **`exec -a` with a path:** a name with a `/` in it that isn't the command as written counts as a rename. stdbuf preloads the `libstdbuf.so` beside its `argv[0]`, so `exec -a ./evil/stdbuf stdbuf …` loads a library from `./evil`.
+- **Write options:** an option a spec marks as naming a file it writes (`time -o`, `strace -o`) adds `fs:write`, as positional writes do.
+
+### Secret globs with classes, negated sets, escapes, `**` and `~-`
+
+- **Bracket expressions as Bash closes them:** a POSIX class, equivalence class or collating symbol (`.[[:alpha:]]nv`, `.[[=e=]]nv`) no longer ends the set at its own `]`. A negated set (`.[!A-Z]nv`) is no longer turned around by ignoring case. Both may match `.env`, and now ask.
+- **Escapes:** a backslash in a pattern from a variable escapes the next character, as Bash 5.2 reads it (`x='.e\nv*'; cat $x` reads `.env`). It was read as a path separator.
+- **`**`:** a glob with a `**` part under a directory that holds secrets (`~/.gnupg/**`, `~/.local/**`) is a secret read, as `globstar` reads every file below it.
+- **Tildes not placed:** `~-`, `~N` and `~+N` name a directory only known at run time, so `~-/*` may read any file there.
+
+### Case attributes as Bash's declare sets them, and builtins turned off on one path only
+
+- **`declare +X`:** a `+u`, `+l` or `+c` takes away only its own letter, as Bash does, and each `-X` takes the other two away. `declare -u o; declare +l o; o=-b; git checkout $o feature` runs `git checkout -B`, and now reads as it.
+- **`enable -n` on one path:** a builtin turned off in one branch only (`[ -t 0 ] && enable -n cd`) may run as the builtin or the program afterwards, and both are followed. It was read as off for certain, so `cd /etc` after it didn't move the tracked working directory.
+
+### Globs judged by the pattern Bash matches, not the text as written
+
+- **Brackets across a word's pieces:** an unquoted `[` and a later unquoted `]` that brace expansion or a variable's value puts in one word make a glob, as Bash globs the joined word. `cat {.en[,}v]` and `x=']'; cat .en[v$x` read `.env`, and `cp x {y,.gi[}t]/hooks` writes `.git/hooks`. Such a word is now a glob, not a literal path.
+- **Secret files:** a glob's secret check uses the pattern Bash matches with, once braces and known variables are expanded. `x='.e*'; cat $x` and `y=.en; cat $y*` now ask, as `cat .e*` does. A glob with a part only known at run time (`read z; cat $z*`) may name any file its known end allows.
+- **`Arg.pattern`:** a dynamic glob `Arg` has the pattern it matches with when every part of it is known.
+
+### A `cd` that fails after it moved
+
+- **`cd -`, CDPATH and `cdable_vars`:** these print the directory `cd` went to, and when that print fails (`cd - >&-`), `cd` has already moved but returns 1. A branch taken on its failure (`|| …`, `if ! cd …`) is no longer placed in the directory it left, and neither is one after `cd` with an argument only known at run time.
+
+### Files printed in error messages, yq's `eval`, and npm's own `env` and `restart` scripts
+
+- **Lists of names:** `du --files0-from=FILE` and `find -files0-from FILE` print a file that holds no NUL-separated names whole in their error, so one that names a secret is `secrets:read`, as `wc --files0-from` already was. find's starting points from such a file are only known at run time (`-delete` on them asks).
+- **`git grep -f`:** its pattern file is a read; a line that doesn't compile is printed in the error.
+- **`MAGIC`:** setting it is a sensitive variable. `file` reads it as its magic file and prints each line it can't parse.
+- **yq `eval`:** an expression with `eval(…)` runs a string built at run time, which may read the environment or files: `secrets:read`.
+- **npm's built-in scripts:** `npm run env` without an `env` script runs `env`, which prints the environment, and `npm run restart` without a `restart` script runs `npm stop --if-present && npm start`. Both are followed.
+
+### Nested repositories under `--git-dir` and `--work-tree`, submodules' kept git directories, and the index read as git reads it
+
+- **`--git-dir` and `--work-tree`:** `git --git-dir=.git status` now follows the submodules and gitlinks of the work tree as `git status` does, and a `git --git-dir=… add` makes a later git command list the work tree. The gitlinks the index records are looked for in the work tree `--work-tree` names, not where git started. A `--work-tree` only known at run time is a finding.
+- **Submodules' git directories:** every git directory under `.git/modules` is followed, whether a work tree holds it or not. `git fetch` recurses into a submodule that isn't checked out, and `git checkout --recurse-submodules` (or `submodule.recurse`) checks one out again, and both run its `core.fsmonitor` and hooks. Without `readdir`, a `.git/modules` that's there is `exec:nested`.
+- **The index:** an entry's name is read with the length its flags give, as git reads it. One whose NUL isn't there is no longer read past, so a crafted index can't hide a gitlink.
+- **Case:** a nested `.GIT` found by `readdir` is followed, as a filesystem that folds case finds it as `.git`.
+
+### Exported functions
+
+- **`export -f`:** a function exported to the environment (`export -f`, `declare -fx`, or defined under `set -a`) is a `sensitive-variable` finding, as giving a program `BASH_FUNC_name%%=…` already was. Every Bash a later program starts runs it, project code's own and git's hooks among them, so `echo() { rm -rf ~; }; export -f echo; vite build` asks.
+- **Grandchildren:** a child Bash keeps the functions it imports exported, as Bash does, so `bash -c 'bash -c f'` runs the exported `f`, redefined in the child or not.
+
+### `recommended` asks about every dotfile in HOME, the agent's project settings, and more system paths
+
+- **HOME:** writes to any dotfile or dot directory in HOME ask, in place of a list of names, which missed files that run code later: `~/.bash_completion` (which Ubuntu's `.bashrc` sources), `~/.vim/plugin` and `~/.vim/vimrc`, `~/.rustup`'s toolchains, version managers' shims, `~/.gdbinit` and others. So do `~/go/bin`, as `~/bin` did. A project that lives in a dot directory of HOME (`~/.dotfiles`) now asks on every write.
+- **The agent's project settings:** writes to `.claude/` and `.mcp.json` in the project (and below it) ask, as `~/.claude` did: they hold the agent's permissions, hooks and MCP servers.
+- **System paths:** `/opt`, `/var/spool` (cron's), `/run/systemd` and macOS's `/private/etc` ask, even from a script started at `/`.
+- **Case folding:** `ſ` (long s) folds to `s`, as Unicode's case folding has it, so `~/.ſsh` matches `~/.ssh` on a filesystem that folds it.
+
+### kubectl and helm options their specs don't know
+
+- **Unknown options:** an option the kubectl or helm spec doesn't know, or a word that may be one, is `network`, as it already was for gh. Before, it had no effect at all, and the analysis relied on the program refusing it. But an option may name a host or a file of its own, or take the next word as its value (round 60's `--insecure_skip_tls_verify delete` and klog's hidden flags). So `kubectl get pods --not-a-flag` and `helm list $FLAGS` now ask.
+- **Option lists checked:** the specs were checked against every command's `--help` in kubectl 1.35 and Helm 3.19 and 4.0, so real flags don't ask. The flags added include kubectl `run -f`/`-k`/`--wait`/`--force`, `top --show-swap`, `wait --local`, `create -l`, `create deployment -r`, `create job --from`, `kustomize --helm-*`, `--log-flush-frequency`, and helm `-l`, `plugin list --type` and rollback's server-side options. kubectl `kustomize -e` takes a value. Helm 4's `upgrade --server-side` and `rollback --server-side` take the next word.
+
+### kubectl's `_` in flag names, Helm 3's klog flags, Go booleans set false, and `uniq --`
+
+- **kubectl:** a flag name with `_` is read as with `-`, as kubectl normalizes it. `kubectl --insecure_skip_tls_verify delete events --all` runs `delete`, and `--proxy_url`, `--profile_output` and the like have the effects of their hyphenated spellings.
+- **helm:** klog's flags, which Helm 3 adds hidden, are known. A bool among them (`--skip-headers`) takes no word, so `helm --skip-headers uninstall list rel` runs `uninstall`. `--log-file` and `--log-dir` are writes, and `--v` at 8 or more logs the Secrets client-go fetches.
+- **Booleans set false:** `helm … --dry-run=server --hide-secret=false` prints Secrets, and `kubectl version --client=false` asks the server. Both are now read by the flag's value.
+- **`uniq --`:** after `--`, `+N` is a file, the output when it's second. `uniq -- in +5` writes `+5`.
+
+### trace: a wrapper's shell is covered only by the code that wrapper was given
+
+- **`flock`, `script` and `watch`:** a system shell the wrapper starts (`sh -c CODE`) is covered when CODE is that invocation's own code: its `--command`, the word after `-c` in `flock FILE -c CODE`, or `watch`'s command words joined. Before, any word or run of words of any invocation of that wrapper did, and so did a word only known at run time anywhere in it (`flock -w "$T"`), whatever CODE was.
+
 ## bash-gate@0.5.0
 
 ### git's patch and edit modes open the editor, and biome with a word only known at run time may write or delete
