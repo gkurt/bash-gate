@@ -1313,7 +1313,7 @@ describe('dry runs', () => {
       ['helm install x ./chart --dependency-update', 'helm install --dependency-update <arg> <arg>', ['fs:write', 'network']],
     ],
     // A plugin needn't honor it.
-    ['kubectl myplugin --dry-run=client', ['exec:arbitrary']],
+    ['kubectl myplugin --dry-run=client', ['exec:arbitrary', 'network']],
   ];
   for (const [source, effects, real] of cases) {
     test(JSON.stringify(source), () =>

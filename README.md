@@ -233,7 +233,9 @@ it (`network`: `apply`, `delete`, `install`, `upgrade`, and a `--dry-run` Go rea
 something in a container (`exec:remote`: `kubectl exec`, `run`, `debug`, `cp`), open an editor, run a plugin (a word
 they don't know), print a Secret, change the user's kubeconfig or helm config, or go to a server, kubeconfig, chart
 URL, repository file or cache of their own (`--repository-config`, `--repository-cache`, `XDG_CACHE_HOME`), a URL in a
-comma-separated `-f`, or a kustomization a host names (`github.com/org/repo`, `deploy@host:repo`). `helm repo index`
+comma-separated `-f`, or a kustomization a host names (`github.com/org/repo`, `deploy@host:repo`). An option their spec
+doesn't know, or a word that may be one (`$FLAGS`), is `network`, as gh's is: it may name a host, or take the next
+word as its value. `helm repo index`
 and `dependency build|update` write into the directory they're given.
 `terraform init`, `validate`, `plan`, `fmt` and the state commands that only list run: they run the project's
 providers and `external` data sources as project code (`exec:project`). `apply`, `destroy`, `import`, `test`, the

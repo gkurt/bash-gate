@@ -2749,9 +2749,15 @@ function logsBodies(parsed: Parsed): boolean {
   return verbosity !== undefined && (verbosity === true || verbosity.kind === 'dynamic' || !/^[0-7]$/.test(verbosity.value));
 }
 
+/**
+ * An option the spec doesn't know, or a word that may be one: it may name a server, a proxy or a file of its own, or
+ * take the next word as its value (`--insecure_skip_tls_verify delete`). As gh's spec does, it reaches anywhere.
+ */
+const unsureOptions = (parsed: Parsed) => parsed.unknownOptions.length > 0 || parsed.maybeOptions;
+
 /** Whether the resources a kubectl command names may include Secrets: by name, by file, or only known at run time. */
 function maySecrets(parsed: Parsed): boolean {
-  if (parsed.maybeOptions || parsed.unknownOptions.length > 0) return true;
+  if (unsureOptions(parsed)) return true;
   if (parsed.options['--filename'] || parsed.options['--kustomize']) return true;
   return parsed.positionals.some(
     (arg) => arg.kind === 'dynamic' || arg.value.split(',').some((name) => /^secrets?($|[./])/i.test(name.trim())),
@@ -2766,6 +2772,7 @@ function maySecrets(parsed: Parsed): boolean {
 function finishKubectl(parsed: Parsed): void {
   const path = parsed.subcommands.join(' ');
   if (parsed.unknownSubcommand && (path === '' || path === 'create')) parsed.effects.add('exec:arbitrary');
+  if (unsureOptions(parsed)) parsed.effects.add('network');
   if (kubeFetches(parsed)) parsed.effects.add('network');
   const output = parsed.options['--output']?.at(-1);
   const shows =
@@ -2845,7 +2852,7 @@ const kubeChange = opts(
 /** Opens `KUBE_EDITOR`, `EDITOR` or `vi` on the objects: a program that reads commands from the script's input. */
 const kubeEdit = {
   effects: ['network', 'exec:arbitrary'] as Effect[],
-  options: [...kubeFiles, ...kubeOutput, ...kubeChange, ...opts('--windows-line-endings', '--subresource=')],
+  options: [...kubeFiles, ...kubeOutput, ...kubeChange, ...opts('--windows-line-endings', '--subresource=', '--output-patch')],
 };
 const kubeRemote = opts('-c= --container=', '-i --stdin', '-t --tty', '-q --quiet', '--pod-running-timeout=');
 
@@ -2867,6 +2874,7 @@ const kubectl: CommandSpec = {
       // A kubeconfig's users may run a credential plugin; a kuberc's aliases and defaults change what commands do.
       o('--kubeconfig=', { role: 'read', effects: ['exec:file'] }),
       o('--kuberc=', { role: 'read', effects: ['exec:file'] }),
+      '--log-flush-frequency=',
       '--match-server-version',
       '-n= --namespace=',
       '--password=',
@@ -2900,6 +2908,7 @@ const kubectl: CommandSpec = {
           '--namespaced=?',
           '--no-headers',
           '-o= --output=',
+          '--show-managed-fields',
           '--sort-by=',
           '--verbs=',
         ),
@@ -2923,6 +2932,7 @@ const kubectl: CommandSpec = {
             '--overwrite',
             '--openapi-patch',
             '--applyset=',
+            '--subresource=',
           ),
         ],
         subcommands: {
@@ -2945,7 +2955,10 @@ const kubectl: CommandSpec = {
             effects: ['network'],
             options: [...kubeFiles, ...kubeOutput, ...opts('--dry-run=?', '--remove-extra-permissions', '--remove-extra-subjects')],
           },
-          whoami: { effects: ['network:read'], options: opts('-o= --output=') },
+          whoami: {
+            effects: ['network:read'],
+            options: opts('-o= --output=', o('--template=', { role: 'read' }), '--allow-missing-template-keys', '--show-managed-fields'),
+          },
         },
       },
       autoscale: {
@@ -3024,7 +3037,7 @@ const kubectl: CommandSpec = {
           ...kubeFiles,
           ...kubeOutput,
           ...kubeChange,
-          ...opts('--raw=', '--windows-line-endings'),
+          ...opts('--raw=', '--windows-line-endings', '-l= --selector='),
           o('--edit', { effects: ['exec:arbitrary'] }),
         ],
         subcommands: {
@@ -3039,9 +3052,10 @@ const kubectl: CommandSpec = {
                   o('--from-env-file=', { role: 'read' }),
                   '--from-literal=',
                   '--image=',
-                  '--replicas=',
+                  '-r= --replicas=',
                   '--port=',
                   '--schedule=',
+                  '--from=',
                   '--restart=',
                   '--clusterrole=',
                   '--role=',
@@ -3210,7 +3224,7 @@ const kubectl: CommandSpec = {
           ...opts(
             '--cluster-ip=',
             '--external-ip=',
-            '--labels=',
+            '-l= --labels=',
             '--load-balancer-ip=',
             '--name=',
             '--override-type=',
@@ -3260,8 +3274,10 @@ const kubectl: CommandSpec = {
           o('--enable-helm', { effects: ['exec:arbitrary'] }),
           o('--helm-command=', { effects: ['exec:arbitrary'] }),
           '--as-current-user',
-          '--env=',
-          '-e',
+          '-e= --env=',
+          '--helm-api-versions=',
+          '--helm-debug',
+          '--helm-kube-version=',
           '--load-restrictor=',
           '--mount=',
           '--network',
@@ -3351,10 +3367,15 @@ const kubectl: CommandSpec = {
         effects: ['exec:remote', 'network'],
         options: [
           ...kubeRemote,
+          ...kubeFiles,
           ...kubeOutput,
           ...kubeChange,
           ...opts(
             '--annotations=',
+            '--cascade=?',
+            '--force',
+            '--grace-period=',
+            '--wait',
             '--attach',
             '--command',
             '--env=',
@@ -3403,6 +3424,7 @@ const kubectl: CommandSpec = {
             '--group=',
             '--serviceaccount=',
             '--user=',
+            '--resource-version=',
           ),
         ],
         subcommands: each('env image resources selector serviceaccount|sa subject', {}),
@@ -3418,6 +3440,8 @@ const kubectl: CommandSpec = {
             '-l= --selector=',
             '--sort-by=',
             '--show-capacity',
+            '--show-swap',
+            '--field-selector=',
             '--sum',
             '--use-protocol-buffers',
           ),
@@ -3425,7 +3449,10 @@ const kubectl: CommandSpec = {
       },
       uncordon: { effects: ['network'], options: [...kubeSelect, ...opts('--dry-run=?')] },
       version: { options: opts('--client', '-o= --output=') },
-      wait: { effects: ['network:read'], options: [...kubeFiles, ...kubeSelect, ...kubeOutput, ...opts('--for=', '--timeout=')] },
+      wait: {
+        effects: ['network:read'],
+        options: [...kubeFiles, ...kubeSelect, ...kubeOutput, ...opts('--for=', '--timeout=', '--local')],
+      },
     },
   }),
   // A dry run sends nothing to change (`client`), or only asks the server what it would do (`server`). What it reads
@@ -3453,6 +3480,7 @@ const kubectl: CommandSpec = {
 function finishHelm(parsed: Parsed): void {
   const path = parsed.subcommands.join(' ');
   if (parsed.subcommands.length === 0 && parsed.unknownSubcommand) parsed.effects.add('exec:arbitrary');
+  if (unsureOptions(parsed)) parsed.effects.add('network');
   if (helmChartCommands.test(path)) {
     for (const arg of parsed.positionals) {
       if (arg.kind === 'dynamic') parsed.effects.add('exec:arbitrary');
@@ -3559,7 +3587,7 @@ const helmRelease = opts(
   '-g',
   '--hide-notes',
   '--hide-secret',
-  '--labels=',
+  '-l= --labels=',
   '--name-template=',
   '--no-hooks',
   '-o= --output=',
@@ -3705,7 +3733,7 @@ const helm: CommandSpec = {
               o('--key-file=', { role: 'read' }),
             ),
           },
-          'list|ls': {},
+          'list|ls': { options: opts('--type=') },
           'uninstall|rm|remove': { effects: ['exec:arbitrary', 'fs:write'] },
           'update|up': { effects: ['network', 'exec:arbitrary', 'fs:write'] },
           package: {
@@ -3794,6 +3822,9 @@ const helm: CommandSpec = {
           '--wait=?',
           '--wait-for-jobs',
           '--rollback-on-failure',
+          '--force-conflicts',
+          '--force-replace',
+          '--server-side=',
         ),
       },
       search: {
@@ -3853,7 +3884,11 @@ const helm: CommandSpec = {
           '--wait=?',
         ),
       },
-      upgrade: { effects: ['network'], options: [...helmChart, ...helmRelease] },
+      // Install's `--server-side` is a bool, upgrade's a string that takes the next word.
+      upgrade: {
+        effects: ['network'],
+        options: [...helmChart, ...helmRelease.filter((option) => option.names[0] !== '--server-side'), ...opts('--server-side=')],
+      },
       verify: { positionals: 'read', options: opts(o('--keyring=', { role: 'read' })) },
       version: { options: opts('--short', '--template=') },
     },
