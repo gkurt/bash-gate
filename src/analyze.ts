@@ -2392,10 +2392,17 @@ class Walker {
             (option(state, 'cdable_vars') !== false && /^[A-Za-z_]\w*$/.test(arg.value)) ||
             (searched && !/^(\/|\.\.?(\/|$))/.test(arg.value)));
         // It fails on a directory that isn't there, and the shell stays where it was. Through a nameref, setting PWD or
-        // OLDPWD may fail after it moved.
+        // OLDPWD may fail after it moved, and so may printing where it went, which `cd -` and a directory found through
+        // CDPATH or cdable_vars do (`cd - >&-`): an argument only known at run time may be one of those.
         const named = state.refs.has('PWD') || state.refs.has('OLDPWD');
+        const announces =
+          (arg !== undefined && arg.kind !== 'static') ||
+          target === '-' ||
+          (arg?.kind === 'static' &&
+            ((option(state, 'cdable_vars') !== false && /^[A-Za-z_]\w*$/.test(arg.value)) ||
+              (searched && !/^(\/|\.\.?(\/|$))/.test(arg.value))));
         const from = state.cwd;
-        state.failedCwd = { cwd: named ? undefined : from };
+        state.failedCwd = { cwd: named || announces ? undefined : from };
         const logical =
           index === -1
             ? (homeOf(state) ?? '~')

@@ -1654,6 +1654,30 @@ const homeLinks: [source: string, decision: Decision, what: string, environment:
     'CDPATH from the environment, which cd searches first',
     { cwd: '/home/me/repo', env: { HOME: '/home/me', CDPATH: '/home/me' } },
   ],
+  [
+    'cd .. && cd repo && { cd - >&- || touch .bashrc; }',
+    'ask',
+    'cd - failing to print where it went, after it moved: the failure branch runs in the new directory',
+    { cwd: '/home/me/repo', env: { HOME: '/home/me' } },
+  ],
+  [
+    'shopt -s cdable_vars; h=$HOME; cd h >&- || touch .bashrc',
+    'ask',
+    'the same, a directory found through cdable_vars',
+    { cwd: '/home/me/repo', env: { HOME: '/home/me' } },
+  ],
+  [
+    'cd me >&- || touch .bashrc',
+    'ask',
+    'the same, a directory found through CDPATH from the environment',
+    { cwd: '/home/me/repo', env: { HOME: '/home/me', CDPATH: '/home' } },
+  ],
+  [
+    'cd src || touch notes.txt',
+    'allow',
+    'a plain cd failing, which stays where it was',
+    { cwd: '/home/me/repo', env: { HOME: '/home/me' } },
+  ],
 ];
 
 /** Files by their real path, with the directories they imply and `dirs`, and symlinks (`links`: path → target). */

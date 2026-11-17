@@ -129,6 +129,7 @@ export const scripts = [
   'declare -l x; declare +u x; x=CAT; $x a; declare -l y; declare +l y; y=ls; $y b',
   'declare -u a; declare -l +u a=CAT; $a x; declare -l b; declare +l -l b=Ls; ls "$b"; declare -u c; declare -u +l c=ls; ls "$c"',
   'jobs -x ls a; f() { cat fn; }; jobs -x f; jobs -x -- sort b',
+  'mkdir -p d; cd d; cd ..; { cd - >&- || ls x; }; cat y',
   '[ -t 0 ] && enable -n echo; echo a; if false; then enable -n cd; fi; cd sub; ls',
   `export x=a; f() { local x; /bin/bash -c 'ls "$x"'; cat "[$x]"; }; f`,
   'RANDOM=5; ls $RANDOM; OLDPWD=a; cd .; cat "$OLDPWD"; PIPESTATUS=ls; true | true; sort $PIPESTATUS',
