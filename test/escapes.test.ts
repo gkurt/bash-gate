@@ -181,6 +181,15 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['declare -l v; v=RM; $v -rf /', 'deny', 'a variable that lowercases what it is assigned'],
   ["declare +u -u o=-c; git $o core.fsmonitor='touch PWNED' status", 'ask', '+u with -u, which turns the attribute off'],
   ['declare -u +u v=rm; $v -rf /', 'deny', 'the same in the other order'],
+  ['declare -u o; declare +l o; o=-b; git checkout $o feature', 'ask', '+l alone, which leaves -u as it is: git checkout -B'],
+  ['declare -u o; declare +c o; o=-c; git switch "$o" feature', 'ask', 'the same with +c: git switch -C'],
+  ['f() { local -u o; local +l o; o=-b; git checkout $o feature; }; f', 'ask', 'the same with local'],
+  ['declare -l x; declare +u x; x=RM; $x -rf /', 'deny', '+u alone, which leaves -l as it is'],
+  [
+    '[ -t 0 ] && enable -n declare; x=echo; declare x=rm; $x -rf /',
+    'ask',
+    'a builtin turned off on one path only, which may still run: $x is echo or rm',
+  ],
   // Round 49: names Bash assigns itself, through a nameref or with an attribute, and attributes through a nameref.
   ['x=ls; declare -n _=x; : rm; $x -f victim', 'ask', 'a nameref named _, which each command assigns'],
   ['f() { local -n _=x; : rm; }; x=ls; f; $x -f victim', 'ask', 'the same, local'],

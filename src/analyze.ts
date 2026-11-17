@@ -98,6 +98,8 @@ interface State {
   maybeExportedFunctions: Set<string>;
   /** Builtins turned off with `enable -n`: the name runs the program instead. */
   disabled: Set<string>;
+  /** Builtins `enable -n` turned off on some paths only: the name may run either. */
+  maybeDisabled: Set<string>;
   /** Variables with the integer attribute (`declare -i`): what they're assigned is evaluated as arithmetic. */
   integers: Set<string>;
   /** Those of `integers` that may not have it: what they're assigned is only known at run time. */
@@ -569,6 +571,7 @@ export function analyze(source: string, environment: Environment = {}): Analysis
       maybeExported: new Set(),
       maybeExportedFunctions: new Set(),
       disabled: new Set(),
+      maybeDisabled: new Set(),
       integers: new Set(startingIntegers),
       maybeIntegers: new Set(),
       frames: [],
@@ -1335,6 +1338,7 @@ class Walker {
       [...state.maybeExported].sort(),
       [...state.maybeExportedFunctions].sort(),
       [...state.disabled].sort(),
+      [...state.maybeDisabled].sort(),
       [...state.integers].sort(),
       [...state.maybeIntegers].sort(),
       // What a return puts back: a loop settled in one call isn't settled in another with other values outside.
@@ -1960,7 +1964,12 @@ class Walker {
     const defined = ctx.externalOnly || call.noFunctions ? undefined : state.functions.get(name);
     // In POSIX mode, a special builtin is found before a function: one that may be in it may run either.
     const special = specialBuiltins.has(name) && !state.disabled.has(name) && state.posix !== false;
-    const fn = defined && special && state.posix === true ? undefined : defined && special ? { ...defined, maybeUndefined: true } : defined;
+    const fn =
+      defined && special && state.posix === true && !state.maybeDisabled.has(name)
+        ? undefined
+        : defined && special
+          ? { ...defined, maybeUndefined: true }
+          : defined;
     if (fn) {
       this.emit(ctx, call, name, 'function', argv, emptyParsed());
       const outcomes = fn.bodies.map(({ node, aliases, source, outer }) => {
@@ -1982,7 +1991,17 @@ class Walker {
       settle(state, fn.maybeUndefined ? [...outcomes, clone(state)] : outcomes);
       if (!fn.maybeUndefined) return;
     }
-    if (!ctx.externalOnly && builtins.has(name) && !state.disabled.has(name)) return this.builtin(name, argv, state, ctx, call);
+    if (!ctx.externalOnly && builtins.has(name) && !state.disabled.has(name)) {
+      if (!state.maybeDisabled.has(name)) return this.builtin(name, argv, state, ctx, call);
+      // One `enable -n` may have turned off runs the builtin or the program.
+      const builtin = this.branch(state, ctx, (s, c) => this.builtin(name, argv, s, c, call));
+      const program = this.branch(state, ctx, (s, c) => {
+        if (!name.includes('/')) this.notFound(argv, s, c, call);
+        this.program(argv, s, c, call);
+      });
+      settle(state, [builtin, program]);
+      return;
+    }
     if (!ctx.externalOnly && !name.includes('/')) this.notFound(argv, state, ctx, call);
     this.program(argv, state, ctx, call);
   }
@@ -2319,6 +2338,7 @@ class Walker {
           if (value === undefined || !builtins.has(value)) continue;
           if (disabling) state.disabled.add(value);
           else state.disabled.delete(value);
+          state.maybeDisabled.delete(value);
         }
         break;
       }
@@ -2525,11 +2545,21 @@ class Walker {
           if (flags.includes('i')) state.integers.add(variable);
           if (flags.includes('i') || off.includes('i')) state.maybeIntegers.delete(variable);
           if (off.includes('i')) state.integers.delete(variable);
-          // One of -u, -l and -c sets it, unless a `+` of the same letter takes it away, in either order (`+u -u`); two
-          // of them together turn it off, and so does a `+` alone.
-          const cases = new Set((['u', 'l', 'c'] as const).filter((flag) => flags.includes(flag) && !off.includes(flag)));
-          if (cases.size === 1) state.cases.set(variable, [...cases][0]);
-          else if (cases.size > 1 || /[ulc]/.test(off)) state.cases.delete(variable);
+          // As Bash's declare: each of -u, -l and -c sets its letter and takes the other two away, each `+` takes its own
+          // away, and what's set goes on before what's taken away comes off. `+u -u` and `-ul` leave none; `+l` alone
+          // leaves `-u` as it is.
+          const letters = ['u', 'l', 'c'] as const;
+          const on = letters.filter((flag) => flags.includes(flag));
+          const cleared = new Set([
+            ...letters.filter((flag) => off.includes(flag)),
+            ...on.flatMap((flag) => letters.filter((other) => other !== flag)),
+          ]);
+          const current = state.cases.get(variable);
+          const after = [...new Set([...on, ...(current === undefined ? [] : [current])])].filter((flag) => !cleared.has(flag));
+          // One whose letter isn't known keeps it unknown, unless something set or took every letter away.
+          const unknown = state.cases.has(variable) && current === undefined && on.length === 0 && cleared.size < 3;
+          if (after.length === 1) state.cases.set(variable, after[0]);
+          else if (!unknown) state.cases.delete(variable);
           if (flags.includes('n') && name !== 'export' && name !== 'readonly') {
             // A nameref: its value is the name of the variable it stands for, which isn't assigned. (`export -n`
             // takes the export away.) Each read of it reads that variable, subscript and all: `a[$(ls)]` runs `ls`.
@@ -4858,6 +4888,7 @@ function equal(a: State, b: State): boolean {
     sameSet(a.maybeExported, b.maybeExported) &&
     sameSet(a.maybeExportedFunctions, b.maybeExportedFunctions) &&
     sameSet(a.disabled, b.disabled) &&
+    sameSet(a.maybeDisabled, b.maybeDisabled) &&
     sameSet(a.integers, b.integers) &&
     sameSet(a.maybeIntegers, b.maybeIntegers) &&
     a.frames.length === b.frames.length &&
@@ -5093,6 +5124,7 @@ function clone(state: State): State {
     maybeExported: new Set(state.maybeExported),
     maybeExportedFunctions: new Set(state.maybeExportedFunctions),
     disabled: new Set(state.disabled),
+    maybeDisabled: new Set(state.maybeDisabled),
     integers: new Set(state.integers),
     maybeIntegers: new Set(state.maybeIntegers),
     frames: state.frames.map((frame) => ({
@@ -5254,6 +5286,7 @@ function freshState(cwd: string | undefined): State {
     maybeExported: new Set(),
     maybeExportedFunctions: new Set(),
     disabled: new Set(),
+    maybeDisabled: new Set(),
     integers: new Set(startingIntegers),
     maybeIntegers: new Set(),
     frames: [],
@@ -5343,7 +5376,13 @@ function join(state: State, other: State): void {
   for (const [fd, files] of other.inputs) state.inputs.set(fd, [...(state.inputs.get(fd) ?? []), ...files]);
   for (const name of new Set([...state.options.keys(), ...other.options.keys()]))
     if (option(state, name) !== option(other, name)) state.options.set(name, undefined);
-  for (const name of other.disabled) state.disabled.add(name);
+  // A builtin turned off on one path only may run either way after them.
+  for (const name of new Set([...state.disabled, ...other.disabled])) {
+    if (state.disabled.has(name) && other.disabled.has(name)) continue;
+    state.disabled.delete(name);
+    state.maybeDisabled.add(name);
+  }
+  for (const name of other.maybeDisabled) state.maybeDisabled.add(name);
   if (state.failedCwd || other.failedCwd) {
     const [mine, theirs] = [(state.failedCwd ?? state).cwd, (other.failedCwd ?? other).cwd];
     state.failedCwd = { cwd: mine === theirs ? mine : undefined };

@@ -170,6 +170,22 @@ describe('options', () => {
     }
   });
 
+  test('a builtin enable -n turned off on one path only runs as the builtin or the program after it', () => {
+    const { invocations } = analyze('[ -t 0 ] && enable -n cd; cd /etc; echo x > passwd', { cwd: '/repo' });
+    expect(invocations.filter((invocation) => invocation.program === 'cd').map((invocation) => invocation.kind)).toEqual([
+      'builtin',
+      'external',
+    ]);
+    expect(invocations.find((invocation) => invocation.program === 'echo')?.cwd).toBeUndefined();
+    // `declare x=rm` may have run, or not: `$x` is echo or rm.
+    const both = analyze('if [ -t 0 ]; then enable -n declare; fi; x=echo; declare x=rm; $x -rf /');
+    expect(both.invocations.some((invocation) => invocation.program === 'echo')).toBe(false);
+    expect(both.findings.map((finding) => finding.kind)).toContain('dynamic-command');
+    // Turned off on every path, it's the program.
+    const off = analyze('if [ -t 0 ]; then enable -n cd; else enable -n cd; fi; cd /etc').invocations;
+    expect(off.filter((invocation) => invocation.program === 'cd').map((invocation) => invocation.kind)).toEqual(['external']);
+  });
+
   test('output-file positionals are writes, not reads', () => {
     for (const source of ['uniq input output', 'xxd -r input output']) {
       const invocation = only(source);
