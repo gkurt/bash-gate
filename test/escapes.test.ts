@@ -10,6 +10,11 @@ const cases: [source: string, decision: Decision, what: string][] = [
   ['git status', 'allow', 'a read-only git command'],
   ['git status && rm -rf /', 'deny', 'a second command after &&'],
   ['ls | grep x; cat y || true', 'allow', 'pipelines and lists of allowed commands'],
+  // The agent's own project settings.
+  ['mkdir -p .claude && echo "{}" > .claude/settings.local.json', 'ask', "the agent's project settings, its permissions and hooks"],
+  ['echo x > .claude/hooks/check.sh', 'ask', 'a hook script under .claude'],
+  ['cp /tmp/x.json .mcp.json', 'ask', 'the MCP servers the agent starts'],
+  ['echo x > packages/web/.claude/settings.json', 'ask', "a nested package's .claude"],
   ['rm -rf /', 'deny', 'the plain form'],
   ['rm / -rf', 'deny', 'options after positionals (GNU permutation)'],
   ['rm -r -f /', 'deny', 'options apart'],
@@ -1539,6 +1544,10 @@ const fromRootCases: [source: string, decision: Decision, what: string][] = [
   ['cp evil usr/lib/x.so', 'ask', 'a system library, by a path relative to /'],
   ['echo x >> etc/profile', 'ask', 'system configuration'],
   ['echo x > tmp/out', 'allow', 'a scratch file'],
+  ["echo '* * * * * touch /x' > var/spool/cron/crontabs/root", 'ask', "a crontab in cron's spool"],
+  ['cp unit run/systemd/system/x.service', 'ask', 'a runtime systemd unit'],
+  ['echo x > opt/tool/bin/x', 'ask', 'a program installed under /opt'],
+  ['echo x >> private/etc/zshrc', 'ask', "macOS's /etc, under /private"],
 ];
 
 /** A script started in HOME itself, where `..` doesn't reach HOME's own files. */
@@ -1573,6 +1582,14 @@ const inHomeCases: [source: string, decision: Decision, what: string][] = [
   ['mkdir -p bin && cp /bin/true bin/git', 'ask', "~/bin, which Ubuntu's .profile puts on PATH"],
   ['echo x >> BASHRC~1', 'ask', 'a Windows short name, which may be .bashrc'],
   ['echo k >> SSH~1/authorized_keys', 'ask', 'the same, for .ssh'],
+  ['echo "touch x" >> .bash_completion', 'ask', "bash-completion's user file, which Ubuntu's .bashrc sources"],
+  ['mkdir -p .vim/plugin && echo x > .vim/plugin/a.vim', 'ask', 'a vim plugin, which every vim loads'],
+  ['mkdir -p .vim && echo x > .vim/vimrc', 'ask', "vim's vimrc in ~/.vim, read when there's no ~/.vimrc"],
+  ['cp evil .rustup/toolchains/stable/bin/cargo', 'ask', "rustup's toolchain, which ~/.cargo/bin/cargo runs"],
+  ['mkdir -p go/bin && cp evil go/bin/gopls', 'ask', "Go's bin directory, on PATH"],
+  ['echo x > .gdbinit', 'ask', 'any other dotfile in HOME, which a tool may read as code'],
+  ['echo x >> .ſsh/authorized_keys', 'ask', '~/.ssh spelled with a long s, which Unicode case folding takes as s'],
+  ['echo hi > Documents/notes.txt', 'allow', 'a file in a directory of HOME that is not a dot directory'],
 ];
 
 /** Cases with an environment of their own. */

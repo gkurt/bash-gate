@@ -303,7 +303,8 @@ function matchPaths(globs: string[], args: Arg[], invocation: Invocation, all: b
     // tried on that spelling too. A rule that must match every path isn't.
     // Windows also names `.git` by its short name, `GIT~1`.
     // So does every other name there (`~/.BASHRC`), for the globs spelled in lower case.
-    if (!all) forms.push(...forms.flatMap((form) => [foldCase(form), foldCase(form.toLowerCase())]));
+    // Unicode's case folding takes `ſ` (long s) as `s`, which `toLowerCase` leaves as it is.
+    if (!all) forms.push(...forms.flatMap((form) => [foldCase(form), foldCase(form.toLowerCase().replaceAll('ſ', 's'))]));
     const matches = patterns.some((pattern) => forms.some((form) => pattern.test(form)));
     const realMatches = patterns.some((pattern) => real.some((form) => pattern.test(form)));
     if (all && (!matches || (realpaths !== undefined && !realMatches))) return 0;
