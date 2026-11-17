@@ -3349,18 +3349,6 @@ class Walker {
       }
     };
 
-    // `--bare` makes the working directory the repository, unless `--git-dir` names one.
-    const given = parsed.options['--git-dir']?.at(-1);
-    if (given !== undefined || parsed.options['--bare'] !== undefined) {
-      const gitDir = given === undefined ? cwd : staticPath(given);
-      if (gitDir === undefined) {
-        this.finding(ctx, 'exec-config', 'The repository git reads is only known at run time', call.span);
-        return false;
-      }
-      follow(gitDir, cwd, gitDir);
-      return true;
-    }
-
     /** The submodules `.gitmodules` names in the work tree at `root`: commands that look into them run their config. */
     const nested = new Set<string>();
     const submodules = (root: string): void => {
@@ -3390,16 +3378,18 @@ class Walker {
     };
 
     /** A repository in the work tree at `sub` (a submodule, or a gitlink), followed: its git directory, if there is one. */
-    const followNested = (sub: string): string | undefined => {
-      const dotGit = `${sub}/.git`;
+    const followNested = (sub: string, name = '.git'): string | undefined => {
+      const dotGit = `${sub}/${name}`;
       const pointer = gitfile(readFile(dotGit));
       if (pointer !== undefined) {
         const gitDir = this.pointedTo(sub, pointer, ctx, call);
         follow(gitDir, sub, dotGit, sub);
+        modules(gitDir, sub);
         return gitDir;
       }
       if (readFile(`${dotGit}/config`) === undefined && !hasHead(dotGit)) return undefined;
       follow(dotGit, sub, dotGit, sub);
+      modules(dotGit, sub);
       return dotGit;
     };
 
@@ -3477,8 +3467,9 @@ class Walker {
         if (names === null) continue;
         for (const name of names) {
           const child = `${dir === '/' ? '' : dir}/${name}`;
-          if (name === '.git') {
-            if (dir !== root) followNested(dir);
+          // A filesystem that folds case finds `.GIT` where git looks for `.git`.
+          if (name.toLowerCase() === '.git') {
+            if (dir !== root) followNested(dir, name);
             continue;
           }
           // A symlink to a directory is no directory git descends into.
@@ -3500,6 +3491,68 @@ class Walker {
       this.writes++;
     };
 
+    /**
+     * The git directories of submodules kept in the repository's own, under `modules`, followed whether a work tree
+     * holds them or not: git fetches into those it doesn't (`fetch`'s on-demand recursion), and checks them out again.
+     * A submodule's name may hold slashes, so a directory there that isn't a git directory is listed too.
+     */
+    const kept = new Set<string>();
+    const modules = (gitDir: string, root: string): void => {
+      const top = `${commonOf(gitDir)}/modules`;
+      if (kept.has(top)) return;
+      kept.add(top);
+      if (this.exists(top, ctx, call) === false) return;
+      const files = this.files!;
+      if (!files.lists) return unlooked();
+      const pending = [top];
+      for (let next = 0; next < pending.length; next++) {
+        if (next >= 1000) return unlooked();
+        const dir = pending[next]!;
+        const names = files.readDirectory(dir);
+        if (names === undefined) {
+          this.finding(ctx, 'unknown-file', `What \`${dir}\` holds isn't known`, call.span);
+          continue;
+        }
+        if (names === null) continue;
+        for (const name of names) {
+          const child = `${dir}/${name}`;
+          if (readFile(`${child}/config`) === undefined && !hasHead(child)) {
+            pending.push(child);
+            continue;
+          }
+          follow(child, root, child);
+          const inner = `${commonOf(child)}/modules`;
+          if (!kept.has(inner)) {
+            kept.add(inner);
+            pending.push(inner);
+          }
+        }
+      }
+    };
+
+    // `--bare` makes the working directory the repository, unless `--git-dir` names one.
+    const given = parsed.options['--git-dir']?.at(-1);
+    const bare = parsed.options['--bare'] !== undefined;
+    if (given !== undefined || bare) {
+      const gitDir = given === undefined ? cwd : staticPath(given);
+      if (gitDir === undefined) {
+        this.finding(ctx, 'exec-config', 'The repository git reads is only known at run time', call.span);
+        return false;
+      }
+      // Without `--bare`, the work tree is where git runs, unless `--work-tree` names one.
+      const top = tree !== undefined ? workTree : bare ? undefined : cwd;
+      if (tree !== undefined && workTree === undefined)
+        this.finding(ctx, 'exec-config', 'The work tree git looks into is only known at run time', call.span);
+      if (top !== undefined) {
+        submodules(top);
+        nestedRepositories(top, gitDir);
+      }
+      wroteIndex();
+      follow(gitDir, top ?? cwd, gitDir);
+      modules(gitDir, top ?? cwd);
+      return true;
+    }
+
     /** Git's discovery from `start` up: whether it settled on a repository, every one it may take followed. */
     const discover = (start: string): boolean => {
       let dir = start;
@@ -3511,24 +3564,31 @@ class Walker {
         // Git runs the hooks of a repository it finds in a `.git` in the work tree, unless it's told of another.
         const hooksFrom = tree === undefined ? dir : undefined;
         // What it reads from the work tree, it reads before it writes there.
+        // The gitlinks in the index are paths in the work tree `--work-tree` names, when it names one.
+        if (tree !== undefined && workTree === undefined)
+          this.finding(ctx, 'exec-config', 'The work tree git looks into is only known at run time', call.span);
+        const top = workTree ?? dir;
         if (pointer !== undefined) {
           const gitDir = this.pointedTo(dir, pointer, ctx, call);
-          submodules(dir);
-          nestedRepositories(dir, gitDir);
+          submodules(top);
+          nestedRepositories(top, gitDir);
           wroteIndex();
           follow(gitDir, dir, dotGit, hooksFrom);
+          modules(gitDir, top);
           return true;
         }
         if (readFile(`${dotGit}/config`) !== undefined || hasHead(dotGit)) {
-          submodules(dir);
-          nestedRepositories(dir, dotGit);
+          submodules(top);
+          nestedRepositories(top, dotGit);
           wroteIndex();
           follow(dotGit, dir, dotGit, hooksFrom);
+          modules(dotGit, top);
           if (valid(dotGit)) return true;
         }
         // The directory itself, when it has what a `.git` has: a bare repository, or one made to look like it.
         if (hasHead(dir)) {
           follow(dir, dir, dir);
+          modules(dir, workTree ?? dir);
           if (valid(dir)) return true;
         }
         const parent = resolvePath(dir, '..');

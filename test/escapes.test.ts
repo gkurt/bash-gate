@@ -1830,6 +1830,57 @@ const projectCases: [what: string, source: string, decision: Decision, fs: Envir
     }),
   ],
   [
+    'a gitlink repository under --git-dir, whose config git status runs as it does without',
+    'git --git-dir=.git status',
+    'ask',
+    disk({ ...repository('/w/p/.git'), ...repository('/w/p/sub/.git', fsmonitor) }, {}, [], {
+      buffers: { '/w/p/.git/index': gitIndex([['sub', gitlink]]) },
+    }),
+  ],
+  [
+    'git add under --git-dir, which may record a nested repository a later git status looks into',
+    'git --git-dir=.git add evil; git status',
+    'ask',
+    disk({ ...repository('/w/p/.git'), ...repository('/w/p/evil/.git', fsmonitor) }, {}, [], {
+      buffers: { '/w/p/.git/index': gitIndex([['a', file]]) },
+    }),
+  ],
+  [
+    "a gitlink under --work-tree, where git looks for the index's gitlinks",
+    'git --work-tree=other status',
+    'ask',
+    disk({ ...repository('/w/p/.git'), ...repository('/w/p/sub/.git'), ...repository('/w/p/other/sub/.git', fsmonitor) }, {}, [], {
+      buffers: { '/w/p/.git/index': gitIndex([['sub', gitlink]]) },
+    }),
+  ],
+  [
+    "a submodule's git directory with no work tree holding it, which git fetch recurses into",
+    'git fetch',
+    'ask',
+    disk({ ...repository('/w/p/.git'), ...repository('/w/p/.git/modules/s', fsmonitor) }, {}, [], {
+      buffers: { '/w/p/.git/index': gitIndex([['a', file]]) },
+    }),
+  ],
+  [
+    'the same, under a name holding a slash, which git checkout --recurse-submodules checks out again',
+    'git checkout --recurse-submodules feature',
+    'ask',
+    disk(
+      { ...repository('/w/p/.git'), '/w/p/.git/refs/heads/feature': 'abc\n', ...repository('/w/p/.git/modules/libs/s', fsmonitor) },
+      {},
+      [],
+      { buffers: { '/w/p/.git/index': gitIndex([['a', file]]) } },
+    ),
+  ],
+  [
+    'a nested repository in .GIT, which a filesystem that folds case finds as .git',
+    'git add evil; git status',
+    'ask',
+    disk({ ...repository('/w/p/.git'), ...repository('/w/p/evil/.GIT', fsmonitor) }, {}, [], {
+      buffers: { '/w/p/.git/index': gitIndex([['a', file]]) },
+    }),
+  ],
+  [
     'a symlink to another repository, which git does not descend into',
     'git status',
     'allow',

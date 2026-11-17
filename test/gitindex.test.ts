@@ -37,4 +37,19 @@ describe('gitlinks', () => {
       expect([path, gitlinks(gitIndex([[path, gitlink]]), 20)]).toEqual([path, undefined]);
     expect(gitlinks(new Uint8Array(), 20)).toBeUndefined();
   });
+
+  test("a name whose length in the flags isn't where its NUL is, which git reads by the length, is undefined", () => {
+    for (const version of [2, 4] as const) {
+      const index = gitIndex(
+        [
+          ['a', file],
+          ['vendor/nested', gitlink],
+        ],
+        { version },
+      );
+      // The first entry's flags, after its 40 bytes of stat data and its object name.
+      index[12 + 40 + 20 + 1] = 9;
+      expect([version, gitlinks(index, 20)]).toEqual([version, undefined]);
+    }
+  });
 });

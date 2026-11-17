@@ -21,7 +21,10 @@ export function gitlinks(index: Uint8Array, hashSize: 20 | 32): string[] | undef
     const fixed = 40 + hashSize + 2;
     if (offset + fixed > end) return undefined;
     const mode = view.getUint32(offset + 24);
-    const extended = (view.getUint16(offset + 40 + hashSize) & 0x40_00) !== 0;
+    const flags = view.getUint16(offset + 40 + hashSize);
+    const extended = (flags & 0x40_00) !== 0;
+    // Git takes the name's length from the flags, and looks for its end only when it's too long for them.
+    const length = flags & 0xf_ff;
     offset += fixed;
     if (extended) {
       if (version < 3) return undefined;
@@ -38,15 +41,16 @@ export function gitlinks(index: Uint8Array, hashSize: 20 | 32): string[] | undef
         drop = ((drop + 1) << 7) | (byte & 0x7f);
       }
       if (drop > previous.length) return undefined;
-      const nul = index.indexOf(0, offset);
-      if (nul < 0 || nul >= end) return undefined;
-      path = [...previous.slice(0, previous.length - drop), ...index.subarray(offset, nul)];
+      const kept = previous.length - drop;
+      const nul = nameEnd(index, offset, length === 0xf_ff ? undefined : length - kept, end);
+      if (nul === undefined) return undefined;
+      path = [...previous.slice(0, kept), ...index.subarray(offset, nul)];
       offset = nul + 1;
     } else {
-      const nul = index.indexOf(0, offset);
-      if (nul < 0 || nul >= end) return undefined;
+      const nul = nameEnd(index, offset, length === 0xf_ff ? undefined : length, end);
+      if (nul === undefined) return undefined;
       path = [...index.subarray(offset, nul)];
-      // Padded with NULs to a multiple of eight bytes, at least one.
+      // Padded to a multiple of eight bytes, at least one, which git skips without reading.
       offset = start + ((nul - start + 8) & ~7);
       if (offset > end) return undefined;
     }
@@ -70,6 +74,17 @@ export function gitlinks(index: Uint8Array, hashSize: 20 | 32): string[] | undef
     offset += 8 + view.getUint32(offset + 4);
   }
   return offset === end ? links : undefined;
+}
+
+/**
+ * Where the name at `offset` ends: `length` bytes on, or at the first NUL when the flags don't hold its length. A NUL
+ * inside it, or none after it, is `undefined`, as git's string functions would read another name than its length.
+ */
+function nameEnd(index: Uint8Array, offset: number, length: number | undefined, end: number): number | undefined {
+  const nul = index.indexOf(0, offset);
+  if (nul < 0 || nul >= end) return undefined;
+  if (length === undefined) return nul;
+  return length >= 0 && nul === offset + length ? nul : undefined;
 }
 
 function utf8(bytes: number[]): string | undefined {

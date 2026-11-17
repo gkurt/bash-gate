@@ -308,7 +308,9 @@ known `HOME`, a path set in a conditional include): that's an `exec-config` find
   those of that commit at any path, and so does a command after git may have changed the index (`git add -A && git
   status`): then every repository in the work tree is followed, found with `readdir` (symlinks aren't descended into,
   as git doesn't). One the script may have put there before (`cp -r`, a write into a `.git`) is an `unknown-file`
-  finding. Where neither can be done (no `readFileBuffer`, no `readdir`, or a tree of more than 50,000 directories),
+  finding. The gitlinks are looked for in the work tree `--work-tree` names, or with `--git-dir`, where git runs. The
+  git directories of submodules under `.git/modules` are followed too, checked out or not, since `git fetch` and a
+  recursive checkout use them; listing them takes `readdir`. Where neither can be done (no `readFileBuffer`, no `readdir`, or a tree of more than 50,000 directories),
   the git invocation has the effect `exec:nested`, which `recommended` allows: a gate that wants it known asks for it.
 - The answers are about the filesystem _before_ the command. A file the script may write before it's read
   (`cp -r hooks .git/ && git commit`), or while it's read, is an `unknown-file` finding. While it's read is what the
