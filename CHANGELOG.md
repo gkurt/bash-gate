@@ -1,3 +1,160 @@
+## bash-gate@0.5.0
+
+### git's patch and edit modes open the editor, and biome with a word only known at run time may write or delete
+
+- These open the editor (`exec:arbitrary`), which `vi` makes scriptable from the script's input:
+  - `git add -p`, `-i` and `-e`;
+  - `git commit -p` and `--interactive`;
+  - `git stash -p`, and `stash push -p` or `save -p`.
+- A biome command only known at run time is now `exec:arbitrary`. Before, it had no effects at all: `biome "$(echo format)" --write ../x` and `xargs biome` were allowed, although `format --write` rewrites files and `clean` deletes.
+- Under `check`, `lint`, `format` and `migrate`, a word that may be `--write` counts as one.
+
+### A `+` case attribute turns off its letter in either order, and a tilde in an assignment-shaped argument is expanded
+
+- `declare +u -u x=…` no longer upper-cases what it's assigned. Bash turns each letter given with `+` off, whatever the order: `+u -u` leaves the value as it is, and `+u -l` still lower-cases. The analysis upper-cased it, so `declare +u -u o=-c; git $o core.fsmonitor=… status` was allowed although git ran the fsmonitor command.
+- A tilde after the `=` or a `:` of an argument shaped like an assignment (`echo a=~/x`, `declare x=a:~/b`) is now only known at run time, because Bash expands it there too.
+
+### A project .npmrc's script-shell is a program of its own
+
+With a filesystem, the project's `.npmrc` is read before npm or pnpm runs package scripts.
+
+When it names another `script-shell`, the scripts run with that program instead of `sh`, so they aren't walked as shell code:
+
+- a program named by path or name is `exec:file`, and a read of that program;
+- one that comes from the environment (`${VAR}`) is `exec:arbitrary`.
+
+An `.npmrc` the script may have changed before it's read is a finding, as `package.json` is. A snapshot that leaves `.npmrc` unknown now asks; give it as `null` when it isn't there.
+
+### A program the analysis can't place covers only its own call
+
+`covers` and `bash-gate/trace` treated every invocation that shared a `loads-code` finding's span as "any program, from anywhere". Code from a string (`bash -c`, `eval`, `trap`) and a wrapper's command share one span. So `bash -c '(exec -a k pgrep a); cat notes'` covered `rm notes`, and `hash -p "$P" find; find . -exec ls {} +` covered `rm -rf /` under `find`. Enforce mode would have run them.
+
+That's now a field of the invocation itself: `Invocation.unplaced`. It covers that one call only. It's set for `exec -a`, a name `hash -p` gave a path only known at run time, and a git that runs a hook the analysis can't read.
+
+### Files named by an option's value, and more ways awk, gh and bun read secrets or write outside
+
+`secrets:read` now covers secret files named this way:
+
+- **Option values:** the value of an option the spec doesn't know (`git blame --contents=.env`, `git add --pathspec-from-file=.env`, `wc --files0-from=.env`), and a `git -c` config value (`-c blame.ignoreRevsFile=.env`). The program reads these files, and prints them or their lines in an error.
+- **Spec fixes:**
+  - `git blame` and `annotate` know `--contents` and `--ignore-revs-file`.
+  - `git log` knows `-L`.
+  - GNU diff's `-d` and `-f` and util-linux column's `-d` and `-L` take no value. They had hidden the file that followed them.
+  - `file -f` and `-m`, and `diff --from-file` and `--to-file`, are reads.
+- **Index stages:** `git show :0:.env` (a stage of the index).
+- **awk:** `SYMTAB`, `PROCINFO` and `ARGV`/`ARGC` in an awk program.
+- **gh:** a `--jq` filter that reads the environment.
+
+Also:
+
+- bun's `--cpu-prof-name`, `--cpu-prof-dir`, `--heap-prof-name` and `--heap-prof-dir` are writes to the path they name.
+- `core.protectNTFS` and `core.protectHFS` are git config keys that can lead to code running.
+
+### FileSystem takes just-bash's and Node's shape, each method optional and sync or async
+
+`fs` can be a just-bash `IFileSystem` or Node's `fs` functions as they are: `readFile(path, 'utf8')`, `readFileBuffer`, `readdir`, `realpath` and `lstat`. An `ENOENT`, `ENOTDIR` or `EISDIR` error means nothing is there, and `lstat` tells a dangling symlink from nothing. `check` throws a `TypeError` on a promise, and `checkAsync` takes the same `FileSystem`. `AsyncFileSystem` is gone, and `snapshot` takes `buffers` and gives only the methods whose records it's given.
+
+### Repositories nested in a work tree that git looks into
+
+git looks into every repository its index records as a gitlink, even one `.gitmodules` doesn't name, and runs its `core.fsmonitor`. The analysis reads the gitlinks from `.git/index` (versions 2 to 4). A command that checks out another commit, or one after git may have changed the index, looks into every repository in the work tree, found with `readdir`. Where neither can be read, the git invocation has the new effect `exec:nested`, which `recommended` allows.
+
+### Paths with a newline, credential directories read whole, and more of the user's configuration
+
+- **Newlines in paths:** a `**` in a policy glob now matches a newline, as do the secret file patterns. A path such as `$'../x\ny'` had escaped every `**` rule (`../**`, `.git/**`, `~/.ssh/**`), and `$'a\nb.pem'` wasn't seen as a key.
+- **Credential directories:** a directory that holds credentials (`~/.ssh`, `~/.aws`, `~/.config`) is a secret read when a program may read it recursively (`grep -r '' ~/.aws`).
+- **More secret files:** `credentials.json`, `secrets.yaml`/`.yml`/`.json`, `.yarnrc.yml`, and shell history.
+- **terraform:** a word only known at run time after the command may be `-out`, `-state-out`, `-var-file`, `-or-create` or `-net-mirror`. It now counts as a write, a read and network.
+- **The user's configuration:** `recommended` asks before writes anywhere under `~/.config`, `~/.local` and `~/.cargo`, even from a script started in HOME. That covers Python's `.pth` files, gh's and pnpm's config, and editors'. It also asks about `.bashrc.d`, oh-my-zsh, nvm, bun, Yarn, Claude, AWS, Docker, terraform, GnuPG, vim, tmux, `.pam_environment`, `.xprofile` and macOS launch agents.
+
+### git checkout of a file, rebase --onto, reads through a descriptor, and system writes from /
+
+- **`git checkout WORD`:** with a filesystem, this restores a file or directory of that name over uncommitted changes when no branch, tag, remote branch or ref has the name. It now counts as `--force`, which `recommended` asks about.
+- **`git rebase --onto`:** asks, since it drops the commits it leaves out.
+- **Descriptor reads:** a file `exec` opened on a descriptor is read by a later `<&N` (`exec 3< .env; cat <&3`), and by every command that inherits standard input opened that way (`exec < .env; cat`). The shell state follows copies (`4<&3`), closes and reopens.
+- **System writes:** `recommended` asks before writes to `/usr`, `/bin`, `/sbin`, `/lib`, `/etc` and `/boot`, even from a script started at `/`. A program written to `/usr/local/bin` would otherwise be trusted as the system's.
+
+### grep, and sed, awk or jq that may pass a line through, print the secrets they read
+
+`secrets:print` now covers four more programs, read directly or through a pipe:
+
+- **grep:** prints the lines it matches whole (`grep KEY .env`, `env | grep TOKEN`), unless it only tests, counts or names files (`-q`, `-c`, `-l`, `-L`).
+- **sed, awk and jq:** print a secret when their script may pass a line or value through unchanged:
+  - sed without `-n`, or with a command that prints (`sed 's/^export //' .env`, `sed -n '/KEY/p' .env`);
+  - an awk program that uses a field, prints with no arguments, or has a pattern with no action (`awk -F= '{print $2}'`, `awk '/KEY/'`);
+  - a jq filter with a path or a variable in it (`jq .auths`).
+
+These stay read but not printed:
+
+- programs that can't pass a line through: `awk '{print length}'`, `jq length` and `sed -i`;
+- `cut`, `wc`, `tr` and `sort`'s keys.
+
+### bun's command is the first word without a dash, and pnpm's `--color` takes `always`, `auto` or `never`
+
+- bun picks its command as the first word that doesn't start with `-`, without skipping any option's value. When that word names a bun command but the spec read it as an option's value, the command is now `exec:arbitrary` and `network`. Before, `bun --title create test` was allowed as `bun test` although it runs `bun create`, which fetches and runs a package. `bun --cwd add test left-pad` was likewise allowed as `bun test`, but runs `bun add`.
+- pnpm's `--color` takes `always`, `auto` or `never` from the next word, as its nopt types say. Before, `pnpm --color never exec rm -rf ../victim` was read as running the project's `never` script.
+- A spec option's new `words` field names those values.
+
+### secrets:print follows a secret through variables, pipes and output sent back
+
+`secrets:print` now marks more of the ways a secret reaches the script's output whole:
+
+- a variable assigned it, read into it or looped over it, and a substitution that read it (`x=$(cat .env); echo "$x"`, `echo "$(cat .env)"`);
+- a pipe into a wrapper, function, loop, group, path-named or unknown program, any of which may pass it on (`| env cat`, `| while read l; do echo "$l"; done`), or a `tee` onto `/dev/stderr` mid-pipe;
+- output sent back from a capture on purpose (`x=$(cat .env >&2)`, `>&3`, `> >(cat)`, `/proc/self/fd/1`, `/dev/pts/0`);
+- `set -x` tracing an expanded secret;
+- `hexdump`, `rev`, `sort`, `uniq`, `paste`, `join`, `diff`, `comm`, `zcat`, `dd` without `of=`, `cp` onto `/dev/stdout`, and `git show`, `cat-file` and `diff`.
+
+Only a secret's length or a part of it (`${#GITHUB_TOKEN}`, `${x:0:4}`, `${x//?/*}`) no longer counts as printed. Neither does closed standard output (`1<&-`), and `.env.local.example`-style templates no longer count as secrets.
+
+### A nameref or attribute on `_`, `PWD` or `OLDPWD`, or an attribute through a nameref, is a finding
+
+Bash assigns `_`, `PWD` and `OLDPWD` itself, through a nameref and with the attributes they have. These were allowed and changed what ran:
+
+- `declare -n _=x` makes each command's last word `x`'s value: `x=ls; declare -n _=x; : rm; $x -f f` runs `rm`.
+- `declare -n OLDPWD=x` lets `cd` assign `x`.
+- `declare -i _` evaluates each last word as arithmetic, command substitutions in subscripts included.
+- `declare -l PWD` lowers what `~+` reads.
+
+An attribute given to a nameref (`declare -n r=v; declare -i r`) goes to the variable it names. All of these are now `sensitive-variable` findings.
+
+### Nested submodules, husky under a hooks path ending in `..`, and more of the user's startup files
+
+- **Nested submodules:** with a filesystem, a submodule's own submodules are followed too. `git status` in the top repository runs a nested submodule's `core.fsmonitor`.
+- **husky hooks paths:** a husky 9 stub under a `core.hooksPath` that ends in `.` or `..` (`.husky/x/..`) is a finding. husky's dispatcher works out the project's hook from the path's text, so it runs `.husky/x/pre-commit`, not the hook the folded path leads to.
+- **The user's startup files:** `recommended` now asks before writes to more files that run code later, even from a script started in HOME:
+  - husky's init scripts (`~/.config/husky/init.sh`, `~/.huskyrc`), which every hook it runs sources;
+  - fish's, systemd's, `environment.d`'s and autostart's configuration under `~/.config`;
+  - `~/.cargo/bin`, which is on PATH.
+
+### kubectl, helm and terraform: dry runs that aren't, and more they print, fetch or write
+
+- A dry run doesn't count when the command has an option its spec doesn't know, or a word that may be one: it may take the dry-run option as its value (`kubectl run --detach-keys --dry-run=client`).
+- A `kubectl --raw` request ignores the dry run.
+- These print secrets:
+  - `kubectl config view` with or without `--raw`;
+  - `kubectl -v=8` and up on a Secret;
+  - a helm install or upgrade dry run with `--reuse-values` or `=server`, unless `--hide-secret` is given.
+- These reach the network:
+  - a URL in a comma-separated `-f` or `--values`;
+  - a kustomization named by host (`github.com/org/repo`, `deploy@host:repo`);
+  - `terraform workspace select -or-create`.
+- `helm repo index` and `dependency build|update` write into the directory they're given.
+- `recommended` asks about writes under `~/.kube`.
+
+### Dry runs only where the program honors them, and only when the real command they name is the same
+
+- npm's `--dry-run` lowers only the commands that honor it: `install`, `ci`, `update`, `uninstall`, `dedupe`, `prune`, `link`, `pack`, `publish` and `unpublish`. npm ignores it elsewhere, and `npm --dry-run run deploy`, `dist-tag add`, `owner add`, `version` and `pkg set` were allowed as rehearsals although they run for real.
+- A command whose words without the dry-run option would read as another command is no dry run. In `git clean -n -fen -x`, one `n` is `-e`'s value, so `invocation.dryRun` named a different command.
+- A plugin or a subcommand the spec doesn't know gets no `dryRun`.
+- `git fetch --dry-run` keeps `fs:write`, because it still stores the objects it downloads.
+- helm's `--dependency-update` writes into the chart, dry run or not.
+
+### A file named only at run time may be a secret's
+
+A path only known at run time now counts as `secrets:read` when the program reads it. It may come from a substitution, input, a variable or the script's arguments: `cat $(echo .env)`, `read f; cat "$f"`, `find . -name .env | xargs cat`, `find ~/.ssh -exec cat {} +`, `cat "$1"`. Hiding a secret's name no longer turns an ask into an allow.
+
+It doesn't count when the known end of the name rules a secret out (`cat "$name.ts"`), or for a loop over a static glob that matches no secret (`for f in src/*.ts; do cat "$f"; done`). `xargs grep TODO < list` now asks.
+
 ## bash-gate@0.4.0
 
 ### kubectl, helm and terraform ask when a dry run is off, a Secret is printed, or a host is their own
