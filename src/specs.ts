@@ -1049,7 +1049,11 @@ const git: CommandSpec = {
       ),
       finish: finishRemoteRead,
     },
-    grep: { abbreviations: true, options: opts('-e=', '-f=', o('-O --open-files-in-pager=?', { effects: ['exec:arbitrary'] })) },
+    // A pattern file's line that doesn't compile is printed in the error.
+    grep: {
+      abbreviations: true,
+      options: opts('-e=', o('-f= --file=', { role: 'read' }), o('-O --open-files-in-pager=?', { effects: ['exec:arbitrary'] })),
+    },
     'add|stage': {
       abbreviations: true,
       dryRun: { options: ['--dry-run'] },
@@ -4154,6 +4158,9 @@ const find: CommandSpec = {
       if (value === undefined) parsed.maybeOptions = true;
       starts.push(arg);
     }
+    // `-files0-from` reads the starting points from a file (or standard input): which they are is only known at run time.
+    const listed = args.slice(i).some((arg) => staticValue(arg) === '-files0-from');
+    if (listed) starts.push({ kind: 'dynamic', text: '-files0-from', reason: 'stdin', split: false, prefix: '' });
     if (starts.length === 0) starts.push({ kind: 'static', value: '.' });
     parsed.positionals.push(...starts);
     parsed.reads.push(...starts);
@@ -4204,6 +4211,11 @@ const find: CommandSpec = {
         parsed.effects.add('fs:write');
         add(value, target ?? true);
         i += value === '-fprintf' ? 2 : 1;
+      } else if (value === '-files0-from') {
+        const list = args[i + 1];
+        if (list) parsed.reads.push(list);
+        add(value, list ?? true);
+        i++;
       } else if (findTakesOne.has(value)) {
         add(value, args[i + 1] ?? true);
         i++;
@@ -6444,7 +6456,17 @@ const programs: Record<string, CommandSpec> = {
   },
   // util-linux's column takes no value with -d (`--table-noheadings`) or -L (`--keep-empty-lines`).
   column: reader('-s= --separator=', '-o= --output-separator=', '-c= --output-width=', '-N= --table-columns='),
-  'cut|tr|fold|fmt|jq|du|realpath|readlink|basename|dirname': reader('-d= --delimiter=', '-f= --fields=', '-c --count', '-L= --level='),
+  du: reader(
+    '-d= --max-depth=',
+    '-t= --threshold=',
+    '-B= --block-size=',
+    '--exclude=',
+    o('-X= --exclude-from=', { role: 'read' }),
+    o('--files0-from=', { role: 'read' }),
+    '--time=?',
+    '--time-style=',
+  ),
+  'cut|tr|fold|fmt|jq|realpath|readlink|basename|dirname': reader('-d= --delimiter=', '-f= --fields=', '-c --count', '-L= --level='),
   // Each line they read reaches their output whole (`diff` and `comm` with a marker before it), or every byte does.
   'paste|join|expand|unexpand|comm': { ...reader('-d= --delimiter=', '-f= --fields=', '-c --count'), copies: true },
   // GNU diff's -d is `--minimal` and -f `--forward-ed`; `--from-file` and `--to-file` name files it compares.

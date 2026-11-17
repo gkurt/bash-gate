@@ -366,7 +366,7 @@ const setOptions = new Set(
  * (prompt strings and `PROMPT_COMMAND` are walked as code instead).
  */
 const sensitive =
-  /^(PATH|PWD|POSIXLY_CORRECT|RIPGREP_CONFIG_PATH|BASH_FUNC_.+|EXECIGNORE|BASH_ENV|ENV|IFS|SHELLOPTS|BASHOPTS|BASH_LOADABLES_PATH|TEXTDOMAIN|TEXTDOMAINDIR|CDPATH|HOME|ZDOTDIR|TMPDIR|XDG_CONFIG_HOME|XDG_CACHE_HOME|XDG_DATA_HOME|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_[A-Z0-9_]+|GH_(PAGER|EDITOR|BROWSER|CONFIG_DIR|PATH|HOST|REPO)|(HTTPS?|ALL)_PROXY|(https?|all)_proxy|BROWSER|PAGER|MANPAGER|MANOPT|SHELL|GCONV_PATH|GNUPGHOME|SSLKEYLOGFILE|GNUTLS_KEYLOGFILE|BUN_INSPECT\w*|BIOME_LOG_PATH|(HOST_|TARGET_)?(CC|CXX|CPP|AR|LD|RANLIB)(_\w+)?|(HOST_|TARGET_)?(C|CXX|CPP|LD)FLAGS(_\w+)?|pnpm_config_\w+|PNPM_CONFIG_\w+|EDITOR|VISUAL|LESS|LESSOPEN|LESSCLOSE|LESSKEY\w*|NODE_OPTIONS|BUN_OPTIONS|CARGO_[A-Z0-9_]+|RUSTC(_WRAPPER|_WORKSPACE_WRAPPER)?|RUSTDOC|RUSTFLAGS|RUSTDOCFLAGS|RUSTUP_TOOLCHAIN|RUSTUP_HOME|NODE_PATH|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|SSH_ASKPASS|SUDO_ASKPASS|[Nn][Pp][Mm]_[Cc][Oo][Nn][Ff][Ii][Gg]_\w+|FUNCNEST|HISTFILE|HISTFILESIZE|PKG_CONFIG\w*|CMAKE\w*|PROTOC\w*|PYO3_\w+|LIBCLANG_PATH|CLANG_PATH|LLVM_CONFIG_PATH|BINDGEN_\w+|KUBECONFIG|KUBERC|KUBECTL_\w+|KUBE_EDITOR|KUBECACHEDIR|HELM_\w+|TF_CLI_ARGS\w*|TF_CLI_CONFIG_FILE|TERRAFORM_CONFIG|TF_DATA_DIR|TF_PLUGIN_CACHE\w*|TF_REATTACH_PROVIDERS|TF_STACKS_\w+|TF_LOG_PATH|TF_WORKSPACE)$/;
+  /^(PATH|PWD|POSIXLY_CORRECT|MAGIC|RIPGREP_CONFIG_PATH|BASH_FUNC_.+|EXECIGNORE|BASH_ENV|ENV|IFS|SHELLOPTS|BASHOPTS|BASH_LOADABLES_PATH|TEXTDOMAIN|TEXTDOMAINDIR|CDPATH|HOME|ZDOTDIR|TMPDIR|XDG_CONFIG_HOME|XDG_CACHE_HOME|XDG_DATA_HOME|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_[A-Z0-9_]+|GH_(PAGER|EDITOR|BROWSER|CONFIG_DIR|PATH|HOST|REPO)|(HTTPS?|ALL)_PROXY|(https?|all)_proxy|BROWSER|PAGER|MANPAGER|MANOPT|SHELL|GCONV_PATH|GNUPGHOME|SSLKEYLOGFILE|GNUTLS_KEYLOGFILE|BUN_INSPECT\w*|BIOME_LOG_PATH|(HOST_|TARGET_)?(CC|CXX|CPP|AR|LD|RANLIB)(_\w+)?|(HOST_|TARGET_)?(C|CXX|CPP|LD)FLAGS(_\w+)?|pnpm_config_\w+|PNPM_CONFIG_\w+|EDITOR|VISUAL|LESS|LESSOPEN|LESSCLOSE|LESSKEY\w*|NODE_OPTIONS|BUN_OPTIONS|CARGO_[A-Z0-9_]+|RUSTC(_WRAPPER|_WORKSPACE_WRAPPER)?|RUSTDOC|RUSTFLAGS|RUSTDOCFLAGS|RUSTUP_TOOLCHAIN|RUSTUP_HOME|NODE_PATH|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|SSH_ASKPASS|SUDO_ASKPASS|[Nn][Pp][Mm]_[Cc][Oo][Nn][Ff][Ii][Gg]_\w+|FUNCNEST|HISTFILE|HISTFILESIZE|PKG_CONFIG\w*|CMAKE\w*|PROTOC\w*|PYO3_\w+|LIBCLANG_PATH|CLANG_PATH|LLVM_CONFIG_PATH|BINDGEN_\w+|KUBECONFIG|KUBERC|KUBECTL_\w+|KUBE_EDITOR|KUBECACHEDIR|HELM_\w+|TF_CLI_ARGS\w*|TF_CLI_CONFIG_FILE|TERRAFORM_CONFIG|TF_DATA_DIR|TF_PLUGIN_CACHE\w*|TF_REATTACH_PROVIDERS|TF_STACKS_\w+|TF_LOG_PATH|TF_WORKSPACE)$/;
 
 /** Redirections that may leave the shell's output or errors on a file opened for reading: `1<f`, `<>`, `1>&3`. */
 const opensOutputs = /\d<(?![<(])|<>|>&\s*[3-9]/;
@@ -3696,8 +3696,11 @@ class Walker {
     // bun drops a `--` right after the name; npm's own parsing ends at it, and pnpm passes it on.
     const first = words[0];
     const extra = program === 'bun' && first?.kind === 'static' && first.value === '--' ? words.slice(1) : words;
+    // npm has scripts of its own a project without them runs: `env` prints the environment.
+    const builtinEnv = program === 'npm' && given?.kind === 'static' && given.value === 'env';
     const unwalked = () => {
       if (extra.length > 0) parsed.effects.add('exec:arbitrary');
+      if (builtinEnv) parsed.effects.add('secrets:read').add('secrets:print');
       return unfollowed;
     };
     if (!this.files || !cwd || workspaces[program]!.some((option) => parsed.options[option])) return unwalked();
@@ -3712,6 +3715,9 @@ class Walker {
     const appended = extra.map((arg) => ` '${(arg as Extract<Arg, { kind: 'static' }>).value.replaceAll("'", "'\\''")}'`).join('');
     const [name] = names;
     if (given && scripts[name!] === undefined) {
+      // npm's own `env` and `restart`, for a project that doesn't define them.
+      if (program === 'npm' && name === 'env') return { run: [['env', `env${appended}`]], followed: true };
+      if (program === 'npm' && name === 'restart') return { run: [['restart', 'npm stop --if-present && npm start']], followed: true };
       if (program !== 'bun') return { run: [], followed: true };
       // bun runs a file of that name, `f` being `f.ts` too, and `bun run` a command from PATH after that.
       parsed.effects.add('exec:file');
@@ -4214,6 +4220,10 @@ class Walker {
       return [arg.value, resolved, real, revised].some((path) => typeof path === 'string' && secretFile(path, short));
     };
     if (redirected.some((arg) => secret(arg))) return true;
+    // A file that lists names is printed whole in the error when it holds none (`du --files0-from=.env`), whatever the
+    // program does with the names.
+    const lists = ['--files0-from', '-files0-from'].flatMap((name) => parsed.options[name] ?? []).filter((value) => value !== true);
+    if (lists.some((arg) => secret(arg))) return true;
     if (program !== null && contentBlind.test(program)) return false;
     // git's words are revisions as often as paths: `HEAD~1` is no short name. Some of its commands only name files
     // (`git ls-files .env`), and `config --file` reads the file it names as well as writing it.

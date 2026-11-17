@@ -278,8 +278,9 @@ export function printsEnvironment(program: string | null, argv: Arg[], runs: boo
       return filter === 'file' || filter?.kind === 'dynamic' || (filter !== undefined && jqReadsEnvironment(filter.value));
     }
     case 'yq': {
-      // `env()`, `strenv()`, `envsubst`, `$ENV`, and files loaded by name (`load_str`, `load_props`).
-      const reads = /\b(str)?env\s*\(|envsubst|\$ENV\b|\bload(_\w+)?\s*\(/;
+      // `env()`, `strenv()`, `envsubst`, `$ENV`, files loaded by name (`load_str`, `load_props`), and `eval`, which
+      // runs a string built at run time as an expression.
+      const reads = /\b(str)?env\s*\(|envsubst|\$ENV\b|\bload(_\w+)?\s*\(|\beval\s*\(/;
       return args.some(
         (arg, i) =>
           (arg.kind === 'dynamic' && !args.slice(0, i).some((before) => before.kind === 'dynamic' || !before.value.startsWith('-'))) ||

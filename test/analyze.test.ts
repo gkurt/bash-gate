@@ -480,6 +480,19 @@ describe('invocations', () => {
     for (const source of ['npm test', 'npm tst', 'npm run test', 'npm rum test', 'npm run-script test'])
       expect([source, cats(source)]).toEqual([source, ['before', 'test']]);
     expect(cats('npm restart')).toEqual(['stop', 'start']);
+    // npm's own restart and env scripts, for a project without them.
+    // It runs `npm stop --if-present && npm start`: after stop's project code, package.json may have changed (a finding).
+    const restart = analyze('npm run restart', { cwd: '/repo', fs });
+    expect(restart.invocations.map((invocation) => values(invocation.argv).join(' '))).toEqual([
+      'npm run restart',
+      'npm stop --if-present',
+      'cat stop',
+      'npm start',
+    ]);
+    expect(restart.findings.map((finding) => finding.kind)).toContain('unknown-file');
+    const env = analyze('npm run env', { cwd: '/repo', fs }).invocations.find((invocation) => invocation.program === 'env');
+    expect(env?.effects).toContain('secrets:print');
+    expect(analyze('npm run env').invocations[0]!.effects).toContain('secrets:print');
   });
 
   test('pnpm and bun run a script by its name, a file or a command from PATH when no script has it', () => {
