@@ -1984,6 +1984,86 @@ const projectCases: [what: string, source: string, decision: Decision, fs: Envir
     }),
   ],
   [
+    'the same, in a directory .gitignore ignores, which git add never records',
+    'git add -A && git status',
+    'allow',
+    disk({ ...repository('/w/p/.git'), ...repository('/w/p/vendor/nested/.git', fsmonitor), '/w/p/.gitignore': 'vendor/\n' }, {}, [], {
+      buffers: { '/w/p/.git/index': gitIndex([['a', file]]) },
+    }),
+  ],
+  [
+    'the same, git add --force, which records it anyway',
+    'git add -f -A && git status',
+    'ask',
+    disk({ ...repository('/w/p/.git'), ...repository('/w/p/vendor/nested/.git', fsmonitor), '/w/p/.gitignore': 'vendor/\n' }, {}, [], {
+      buffers: { '/w/p/.git/index': gitIndex([['a', file]]) },
+    }),
+  ],
+  [
+    'the same, a later pattern taking the directory back',
+    'git add -A && git status',
+    'ask',
+    disk(
+      { ...repository('/w/p/.git'), ...repository('/w/p/vendor/nested/.git', fsmonitor), '/w/p/.gitignore': 'vendor/\n!vendor/\n' },
+      {},
+      [],
+      {
+        buffers: { '/w/p/.git/index': gitIndex([['a', file]]) },
+      },
+    ),
+  ],
+  [
+    'the same, a .gitignore through a symlink, which git never reads',
+    'git add -A && git status',
+    'ask',
+    disk(
+      { ...repository('/w/p/.git'), ...repository('/w/p/vendor/nested/.git', fsmonitor), '/w/elsewhere/ignore': 'vendor/\n' },
+      { '/w/p/.gitignore': '/w/elsewhere/ignore' },
+      ['/w/p/.gitignore'],
+      { buffers: { '/w/p/.git/index': gitIndex([['a', file]]) } },
+    ),
+  ],
+  [
+    'the same, a .gitignore the script changes first',
+    "echo '!vendor/' >> .gitignore && git add -A && git status",
+    'ask',
+    disk({ ...repository('/w/p/.git'), ...repository('/w/p/vendor/nested/.git', fsmonitor), '/w/p/.gitignore': 'vendor/\n' }, {}, [], {
+      buffers: { '/w/p/.git/index': gitIndex([['a', file]]) },
+    }),
+  ],
+  [
+    'the same, git update-index, which may record anything',
+    'git update-index --add vendor/nested && git status',
+    'ask',
+    disk({ ...repository('/w/p/.git'), ...repository('/w/p/vendor/nested/.git', fsmonitor), '/w/p/.gitignore': 'vendor/\n' }, {}, [], {
+      buffers: { '/w/p/.git/index': gitIndex([['a', file]]) },
+    }),
+  ],
+  [
+    'the same, recorded in the index already',
+    'git add -A && git status',
+    'ask',
+    disk({ ...repository('/w/p/.git'), ...repository('/w/p/vendor/nested/.git', fsmonitor), '/w/p/.gitignore': 'vendor/\n' }, {}, [], {
+      buffers: { '/w/p/.git/index': gitIndex([['vendor/nested', gitlink]]) },
+    }),
+  ],
+  [
+    'a repository nested in the work tree the index does not record, with git status in a pipeline',
+    'git status | cat',
+    'allow',
+    disk({ ...repository('/w/p/.git'), ...repository('/w/p/vendor/nested/.git', fsmonitor) }, {}, [], {
+      buffers: { '/w/p/.git/index': gitIndex([['a', file]]) },
+    }),
+  ],
+  [
+    'the same, with git add in the pipeline',
+    'git add -A | git status',
+    'ask',
+    disk({ ...repository('/w/p/.git'), ...repository('/w/p/vendor/nested/.git', fsmonitor) }, {}, [], {
+      buffers: { '/w/p/.git/index': gitIndex([['a', file]]) },
+    }),
+  ],
+  [
     'the same, git checkout of a branch, which looks into the gitlinks of the commit it checks out',
     'git checkout feature',
     'ask',

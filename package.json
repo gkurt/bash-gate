@@ -73,6 +73,7 @@
     "prepublishOnly": "bun run checks && bun run build"
   },
   "dependencies": {
+    "ignore": "7.0.16",
     "unbash": "6.0.3"
   },
   "devDependencies": {

@@ -72,7 +72,11 @@ Out of scope:
   records (`readFileBuffer`), since git looks into one with no `.gitmodules` entry. A command that checks out another
   commit looks into those of that commit, at any path, as does one after git may have changed the index: then every
   repository in the work tree is followed, found by listing it (`readdir`, symlinks to directories not descended into,
-  as git doesn't), and one the script may have put there before is a finding. That work tree is the one `--work-tree`
+  as git doesn't), and one the script may have put there before is a finding. Where only a plain `git add`, `git commit`
+  or `git rm` changed the index, which record no repository a `.gitignore` ignores, the gitlinks the index held are
+  followed and the listing skips the directories the work tree's `.gitignore` files ignore, read as git reads them by
+  `ignore`. A `.gitignore` through a symlink, or one the script may have changed, skips nothing. A pipeline's other
+  commands change the index only where they run such git. That work tree is the one `--work-tree`
   names, or with `--git-dir`, where git runs. Every git directory under `.git/modules` is followed as well, whether a
   work tree holds it or not, as `git fetch` and a recursive checkout use them. Where neither the index nor a listing can
   be read, or the tree is too large to list, the invocation has `exec:nested`, which `recommended` allows. The hooks followed are the ones the

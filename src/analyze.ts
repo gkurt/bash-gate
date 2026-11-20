@@ -1,3 +1,4 @@
+import ignore, { type Ignore } from 'ignore';
 import {
   forEachChild,
   parse,
@@ -621,7 +622,19 @@ export function analyze(source: string, environment: Environment = {}): Analysis
 interface Written {
   contents: Changes;
   links: Changes;
+  /** How git may have changed what an index records (`IndexWrites`). */
+  index?: IndexWrites;
 }
+
+/**
+ * How git may have changed what an index records: `adds` only as a plain `git add`, `git commit` or `git rm` does,
+ * which records no repository at a path the work tree's `.gitignore` files ignore, and `any` otherwise.
+ */
+type IndexWrites = 'adds' | 'any';
+
+/** The wider of two records of index writes. */
+const widerIndex = (a: IndexWrites | undefined, b: IndexWrites | undefined): IndexWrites | undefined =>
+  a === 'any' || b === 'any' ? 'any' : (a ?? b);
 
 /**
  * What a program's writes change for a later read: nothing (`mkdir`, `touch` and `chmod` leave contents alone), files'
@@ -639,6 +652,9 @@ const gitWritesTree =
 /** What leaves the index's entries as they are (`status` only refreshes what it knows of the files). */
 const gitKeepsIndex =
   /^(status|log|show|diff|blame|annotate|describe|rev-parse|rev-list|ls-files|ls-tree|ls-remote|show-ref|cat-file|shortlog|reflog|whatchanged|grep|merge-base|name-rev|count-objects|var|check-ignore|check-attr|for-each-ref|help|version|config|remote|fetch|push|branch|tag)$/;
+
+/** What records no repository a `.gitignore` ignores, unless forced: `git rm -f` only removes. */
+const gitAddsOnly = /^(add|stage|commit|rm)$/;
 
 const commitHooks = 'pre-commit prepare-commit-msg commit-msg post-commit post-rewrite';
 const mergeHooks = `pre-merge-commit post-merge pre-auto-gc ${commitHooks}`;
@@ -747,8 +763,6 @@ class Walker {
   written: Written = { contents: new Changes(), links: new Changes() };
   /** How many times `written` grew, so code walked before a write is walked again after it. */
   writes = 0;
-  /** Whether git may have changed what an index records, so that a later git reads it differently. */
-  wroteIndex = false;
   /** Whether git may have rewritten the work tree, for project code run after it without a filesystem to follow. */
   rewritten = false;
   /** Code in strings by its text: walked again, it defines the same functions, so what it does settles. */
@@ -840,7 +854,7 @@ class Walker {
    * Whether the script may have changed `path` before now: its contents, or (`links`) a symlink on its way.
    * `'project'` when only project code it trusts but doesn't follow may have.
    */
-  changed(path: string, ctx: Context, kind: keyof Written): boolean | 'project' {
+  changed(path: string, ctx: Context, kind: 'contents' | 'links'): boolean | 'project' {
     const sets = [
       this.written[kind],
       ...(ctx.concurrent && this.everything ? [this.everything[kind]] : []),
@@ -850,6 +864,12 @@ class Walker {
     const real = path.startsWith('/') ? this.files?.physical(path) : undefined;
     if (named.length > 0 && (real === undefined || named.some((changes) => changes.covers(path) || changes.covers(real)))) return true;
     return sets.some((changes) => changes.project) ? 'project' : false;
+  }
+
+  /** How git may have changed what an index records before now, or alongside, as `changed` reads files. */
+  indexWrites(ctx: Context): IndexWrites | undefined {
+    const all = [this.written, ...(ctx.concurrent && this.everything ? [this.everything] : []), ...(ctx.alongside ?? [])];
+    return all.reduce<IndexWrites | undefined>((wider, written) => widerIndex(wider, written.index), undefined);
   }
 
   /**
@@ -1032,8 +1052,9 @@ class Walker {
     }
     if (this.everything !== undefined) return;
     const recorded = this.members.get(command);
-    if (!recorded) this.members.set(command, record);
-    else for (const kind of ['contents', 'links'] as const) recorded[kind].merge(record[kind]);
+    if (!recorded) return void this.members.set(command, record);
+    for (const kind of ['contents', 'links'] as const) recorded[kind].merge(record[kind]);
+    recorded.index = widerIndex(recorded.index, record.index);
   }
 
   node(node: PipelineNode | AndOr | CommandNode | CompoundList, state: State, ctx: Context): void {
@@ -3467,48 +3488,80 @@ class Walker {
     };
 
     /**
-     * The gitlinks the index of `gitDir` records: `undefined` when it can't be read here, and `null` when what it holds
-     * isn't known yet (a finding).
+     * The gitlinks the index of `gitDir` records, with whether git may have added repositories since (`added`), which
+     * it found where no `.gitignore` ignores them: `undefined` when it can't be read here, and `null` when what it
+     * holds isn't known yet (a finding).
      */
-    const indexed = (gitDir: string): string[] | null | undefined => {
+    const indexed = (gitDir: string): { links: string[]; added: boolean } | null | undefined => {
       const files = this.files!;
       if (!files.readsBytes || state.vars.has('GIT_INDEX_FILE') || state.exported.has('GIT_INDEX_FILE')) return undefined;
       const path = `${gitDir}/index`;
-      // An index the script may have written (`git add`, or git alongside) may hold any repository in the tree.
-      const alongside = ctx.concurrent || (ctx.alongside?.length ?? 0) > 0;
-      if (this.wroteIndex || alongside || this.changed(path, ctx, 'contents') !== false) return undefined;
+      // An index git may have rewritten (`git update-index`, `git stash pop`) may hold any repository in the tree, and
+      // so may one anything else wrote.
+      const writes = this.indexWrites(ctx);
+      if (writes === 'any' || this.changed(path, ctx, 'contents') !== false) return undefined;
       const bytes = files.readBytes(path);
       if (bytes === undefined) {
         this.finding(ctx, 'unknown-file', `What \`${path}\` holds isn't known`, call.span);
         return null;
       }
-      if (bytes === null) return [];
+      const added = writes === 'adds';
+      if (bytes === null) return { links: [], added };
       const size = hashSize(gitDir);
-      return size === undefined ? undefined : gitlinks(bytes, size);
+      const links = size === undefined ? undefined : gitlinks(bytes, size);
+      return links === undefined ? undefined : { links, added };
     };
 
     /**
      * Repositories nested in the work tree at `root` that git looks into, `.gitmodules` or not: the gitlinks the index
      * of `gitDir` records. A command that checks out another commit looks into those of that commit, at any path, so
      * then (and when the index can't be read) every repository in the tree is, found by listing it without following
-     * symlinks, as git doesn't. What can't be looked for is `exec:nested`.
+     * symlinks, as git doesn't. After a plain `git add`, which records none a `.gitignore` ignores, the listing skips
+     * what the `.gitignore` files ignore. What can't be looked for is `exec:nested`.
      */
     const listed = new Set<string>();
     const nestedRepositories = (root: string, gitDir: string): void => {
       if (listed.has(root)) return;
       listed.add(root);
-      const links = writesTree ? undefined : indexed(gitDir);
-      if (links === null) return;
-      if (links !== undefined) {
-        for (const link of links) {
+      const index = writesTree ? undefined : indexed(gitDir);
+      if (index === null) return;
+      if (index !== undefined) {
+        for (const link of index.links) {
           const sub = `${root === '/' ? '' : root}/${link}`;
           const subGit = followNested(sub);
           if (subGit !== undefined) nestedRepositories(sub, subGit);
         }
-        return;
+        if (!index.added) return;
       }
       const files = this.files!;
       if (!files.lists) return unlooked();
+      const ignoring = index !== undefined;
+      // Each listed directory's own `.gitignore`: `null` for none, `undefined` for one that can't be read as git does.
+      const rules = new Map<string, Ignore | null | undefined>();
+      const parents = new Map<string, string>();
+      const rulesOf = (dir: string, real: string | undefined, names: string[]): Ignore | null | undefined => {
+        if (!names.includes('.gitignore')) return null;
+        const path = `${dir === '/' ? '' : dir}/.gitignore`;
+        // Git reads no `.gitignore` through a symlink.
+        if (real === undefined || files.realpath(path) !== `${real === '/' ? '' : real}/.gitignore`) return undefined;
+        if (this.changed(path, ctx, 'contents') !== false) return undefined;
+        const text = files.readFile(path);
+        return typeof text === 'string' ? ignore().add(text) : undefined;
+      };
+      /**
+       * Whether the `.gitignore` files from `dir` up to the root ignore its subdirectory `child`: the deepest whose
+       * patterns match decides.
+       */
+      const ignored = (dir: string, child: string): boolean => {
+        for (let at: string | undefined = dir; at !== undefined; at = parents.get(at)) {
+          const own = rules.get(at);
+          if (own === null) continue;
+          if (own === undefined) return false;
+          const { ignored, unignored } = own.test(`${child.slice(at === '/' ? 1 : at.length + 1)}/`);
+          if (ignored || unignored) return ignored;
+        }
+        return false;
+      };
       const queue: [string, string | undefined][] = [[root, files.physical(root)]];
       // A repository the script may have put in the tree before now (`cp -r`) isn't in its listing.
       const changed = this.reached(root, `${root === '/' ? '' : root}/.git`, ctx);
@@ -3522,6 +3575,7 @@ class Walker {
           continue;
         }
         if (names === null) continue;
+        if (ignoring) rules.set(dir, rulesOf(dir, real, names));
         for (const name of names) {
           const child = `${dir === '/' ? '' : dir}/${name}`;
           // A filesystem that folds case finds `.GIT` where git looks for `.git`.
@@ -3529,6 +3583,8 @@ class Walker {
             if (dir !== root) followNested(dir, name);
             continue;
           }
+          if (ignoring && ignored(dir, child)) continue;
+          parents.set(child, dir);
           // A symlink to a directory is no directory git descends into.
           const childReal = files.realpath(child);
           if (childReal === undefined || real === undefined) {
@@ -3542,10 +3598,17 @@ class Walker {
 
     /** What it may record in the index of `gitDir` (`git add` a nested repository) is read again by a later command. */
     const wroteIndex = (): void => {
-      if (this.wroteIndex || gitKeepsIndex.test(parsed.subcommands[0] ?? '')) return;
+      const subcommand = parsed.subcommands[0] ?? '';
+      if (gitKeepsIndex.test(subcommand)) return;
+      const plain =
+        gitAddsOnly.test(subcommand) &&
+        !parsed.maybeOptions &&
+        parsed.unknownOptions.length === 0 &&
+        !(subcommand !== 'rm' && (parsed.options['--force'] || parsed.options['-f']));
+      const before = this.written.index;
+      for (const written of this.recorded) written.index = widerIndex(written.index, plain ? 'adds' : 'any');
       // Code walked before it (a loop's first pass) is walked again.
-      this.wroteIndex = true;
-      this.writes++;
+      if (this.written.index !== before) this.writes++;
     };
 
     /**
